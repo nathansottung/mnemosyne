@@ -1,0 +1,15 @@
+# compiled binaries
+mnemosyne
+mnemosyne.exe
+mnemosyne-*
+*.zip
+
+# local data - NEVER commit catalogs or keystores
+catalog.json
+config.json
+keystore*.json
+.mnemo/
+
+# editor cruft
+.vscode/*.log
+.DS_Store
