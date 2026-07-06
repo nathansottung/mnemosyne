@@ -1,4 +1,4 @@
-# Mnemosyne v2 — Archival Vault
+# Mnemosyne — Archival Vault
 
 Catalog, chunk, encrypt, write, verify, and restore your archive onto
 LTO tape, hard drives, or optical media — with a restore story that
