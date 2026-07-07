@@ -1,0 +1,13 @@
+HPE Library and Tape Tools - Device Health Report
+Generated: 2026-07-07T10:04:00Z
+Device: /dev/nst0
+Vendor: HPE
+Product: Ultrium 6-SCSI
+Serial Number: HU1234567A
+Firmware: 22CD
+Power On Hours: 12044
+Total Bytes Written: 45000000000000
+Total Bytes Read: 60000000000000
+TapeAlert Active Flags: 20, 8
+Overall Health: Marginal
+Recommendation: Clean the drive and monitor.

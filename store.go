@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,13 +99,15 @@ type Chunk struct {
 	VerifyOK        *bool              `json:"verify_ok"`
 	Error           string             `json:"error"`
 	Files           []ChunkFileRef     `json:"files"`
-	BuildTimings    map[string]float64 `json:"build_timings,omitempty"`   // per-stage seconds: tar, hash, encrypt/stage, par2
+	BuildTimings    map[string]float64 `json:"build_timings,omitempty"`   // per-stage seconds: tar, hash, stage_verify, encrypt/stage, crypt_verify, par2
+	BuildVerified   *BuildVerified     `json:"build_verified,omitempty"`  // build-time proof the payload faithfully contains the source
 	VerifyEvents    []VerifyEvent      `json:"verify_events,omitempty"`   // append-only integrity-check log
 	RingStats       *RingStats         `json:"ring_stats,omitempty"`      // last write's ring-buffer telemetry
 	Spanned         bool               `json:"spanned"`                   // payload split across several media
 	Segments        []Segment          `json:"segments,omitempty"`        // one per medium/tape when Spanned
 	Copies          []Copy             `json:"copies,omitempty"`          // physical copies of this chunk on registered volumes
 	Adopted         bool               `json:"adopted,omitempty"`         // cataloged from pre-existing media, not built here
+	Mirror          bool               `json:"mirror,omitempty"`          // content-hash-matched loose files on a drive (dock mirror adoption), not a packaged payload
 	ListingUnknown  bool               `json:"listing_unknown,omitempty"` // adopted without a manifest/TOC — contents unenumerated
 	CreatedAt       time.Time          `json:"created_at"`
 	WrittenAt       *time.Time         `json:"written_at,omitempty"`
@@ -133,13 +137,54 @@ type Segment struct {
 // drive, a disc. Barcodes come straight off a USB scanner (which types like a
 // keyboard). This is the "where do the Smiths' photos physically live?" record.
 type Volume struct {
-	ID        int       `json:"id"`
-	Label     string    `json:"label"`
-	Barcode   string    `json:"barcode"`
-	Kind      string    `json:"kind"` // TAPE HDD SSD OPTICAL OTHER
-	Location  string    `json:"location"`
+	ID       int    `json:"id"`
+	Label    string `json:"label"`
+	Barcode  string `json:"barcode"`
+	Kind     string `json:"kind"` // TAPE HDD SSD OPTICAL OTHER
+	Location string `json:"location"`
+	// Offsite is the "1" in 3-2-1: whether this medium lives in a different
+	// physical place than the primary copies (a friend's house, a bank box, the
+	// cloud). Distinct from Location, which is free-text ("office safe") and does
+	// not, on its own, tell us whether a copy counts as offsite. Default false
+	// (onsite) so pre-Offsite catalogs read as onsite until the operator says so.
+	Offsite   bool      `json:"offsite,omitempty"`
 	Notes     string    `json:"notes"`
 	CreatedAt time.Time `json:"created_at"`
+	// Physical device identity, best-effort resolved from a mounted path at
+	// register/adopt time (Get-Disk on Windows, lsblk/diskutil on unix). Empty
+	// when it could not be resolved — external docks/USB bridges sometimes mask
+	// the true serial; DeviceNote records that caveat when detected.
+	Serial     string     `json:"serial,omitempty"`
+	Model      string     `json:"model,omitempty"`
+	DeviceSize int64      `json:"device_size,omitempty"` // total device capacity in bytes
+	DeviceNote string     `json:"device_note,omitempty"` // e.g. "USB bridge — serial may be the bridge's, not the drive's"
+	DeviceAt   *time.Time `json:"device_at,omitempty"`   // when identity was last resolved
+	// Drive-mortality (SMART) snapshots, append-only, newest last. A COMPLEMENT to
+	// hash verification — SMART hints at failure risk, it never proves data intact.
+	SmartHistory []SmartSnapshot `json:"smart_history,omitempty"`
+}
+
+// SmartSnapshot is one read of a drive's SMART self-report (smartctl -j). It is a
+// mortality SIGNAL, never a data-integrity guarantee: a PASSED drive can still
+// hold a bit-rotted file, and only the custody-chain hashes prove otherwise.
+// Fields are best-effort across ATA and NVMe; zero/omitted where a device does
+// not report them. Advisory=true means "migrate copies off this volume".
+type SmartSnapshot struct {
+	At           time.Time `json:"at"`
+	Device       string    `json:"device,omitempty"` // smartctl device arg, e.g. /dev/pd0, /dev/sda
+	Type         string    `json:"type,omitempty"`   // ata | nvme | scsi
+	Passed       *bool     `json:"passed,omitempty"` // SMART overall-health self-assessment
+	TempC        int       `json:"temp_c,omitempty"` // current temperature °C
+	PowerOnHours int64     `json:"power_on_hours,omitempty"`
+	Reallocated  int64     `json:"reallocated_sectors"`       // ATA attr 5
+	Pending      int64     `json:"pending_sectors"`           // ATA attr 197
+	MediaErrors  int64     `json:"media_errors,omitempty"`    // NVMe media/data-integrity errors
+	PercentUsed  int       `json:"percent_used,omitempty"`    // NVMe endurance used
+	SpareLeft    int       `json:"available_spare,omitempty"` // NVMe available spare %
+	SpareThresh  int       `json:"spare_threshold,omitempty"` // NVMe spare threshold %
+	Advisory     bool      `json:"advisory"`                  // migrate copies off this volume
+	AdvisoryWhy  string    `json:"advisory_why,omitempty"`    // human reason for the advisory
+	Note         string    `json:"note,omitempty"`            // parse/collection note
 }
 
 // Copy is one physical instance of a chunk on a registered volume. Two verified
@@ -156,6 +201,95 @@ type Copy struct {
 	LastVerifiedAt *time.Time `json:"last_verified_at,omitempty"`
 	VerifyOK       *bool      `json:"verify_ok,omitempty"`
 	Superseded     bool       `json:"superseded,omitempty"`
+}
+
+// BuildVerified is the build-time attestation that the package faithfully
+// contains the source and (when encrypted) decrypts back to the verified tar —
+// the two custody-chain links that used to be fingerprinted but never proven.
+// It rides into the on-medium manifest.json so the media carry the proof.
+//
+//   - Contents (stage_verify): the staged tar was stream-read and every member
+//     hashed and matched byte-exact against the catalog's source-file hashes.
+//   - DecryptRoundtrip (crypt_verify): the ciphertext was decrypted to a hasher
+//     (no plaintext to disk) and the result matched tar_hash. For a plaintext
+//     package this is true by identity — the payload IS the verified tar.
+//
+// Mode is "full" (both checks ran) or "fast" (both skipped, Contents and
+// DecryptRoundtrip false, Warning set) — archival correctness is the default,
+// speed is the explicit opt-out.
+type BuildVerified struct {
+	Mode             string `json:"mode"`
+	Contents         bool   `json:"contents"`
+	DecryptRoundtrip bool   `json:"decrypt_roundtrip"`
+	Warning          string `json:"warning,omitempty"`
+}
+
+// DockDrive is one legacy drive processed in a dock session: which volume it
+// resolved to, its physical serial, the mount it came up on, the content-match
+// stats from mirror adoption, and when it finished. Mode records whether this
+// pass adopted the drive fresh or re-verified an already-known one.
+type DockDrive struct {
+	VolumeID     int        `json:"volume_id"`
+	Serial       string     `json:"serial,omitempty"`
+	Label        string     `json:"label,omitempty"`
+	Letter       string     `json:"letter,omitempty"` // mount path / drive letter this drive came up on
+	Mode         string     `json:"mode"`             // "adopt" | "reverify"
+	Matched      int        `json:"matched"`          // files whose content matches a current cataloged source file
+	MatchedBytes int64      `json:"matched_bytes"`
+	Historical   int        `json:"historical"` // files matching an older/packaged version, not the current source
+	Other        int        `json:"other"`      // readable files matching nothing in the selected archives
+	Unreadable   int        `json:"unreadable"`
+	Sidecar      string     `json:"sidecar,omitempty"` // path of the inventory sidecar written onto the drive
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	Note         string     `json:"note,omitempty"`
+}
+
+// DockSession is a guided, resumable ingest of a stack of legacy backup drives
+// through a dock, one at a time, reconciled against one or more Archives. It
+// persists so the operator can close the app and resume across days; drives are
+// matched by physical serial so a re-inserted drive is recognized, not
+// re-adopted. Baseline holds the mounts present when the session started, so the
+// watcher can diff for newly-appearing drives.
+type DockSession struct {
+	ID         int         `json:"id"`
+	ArchiveIDs []int       `json:"archive_ids"`
+	Baseline   []string    `json:"baseline_mounts,omitempty"`
+	StartedAt  time.Time   `json:"started_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
+	Drives     []DockDrive `json:"drives_processed"`
+	Status     string      `json:"status"` // ACTIVE | CLOSED
+}
+
+// TapeAlertFlag is one active TapeAlert bit reported by a tape drive, rendered
+// in plain language. Severity is one of: clean, warn, error (info flags are
+// dropped). TapeAlert is the drive's own self-report — a diagnostic SIGNAL, like
+// SMART; it never proves the data on a cartridge is intact.
+type TapeAlertFlag struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Severity string `json:"severity"` // clean | warn | error
+	Text     string `json:"text"`
+}
+
+// TapeHealth is one read of a tape drive's diagnostics (TapeAlert + LOG SENSE),
+// via an external tool (ITDT / tapeinfo / sg_logs / HPE L&TT). STRICTLY outside
+// the write path and read-only toward the drive: never issues movement or write
+// commands. A COMPLEMENT to hash verification, never a substitute.
+type TapeHealth struct {
+	At                  time.Time       `json:"at"`
+	Tool                string          `json:"tool"`   // itdt | tapeinfo | sg_logs | hpe-ltt
+	Device              string          `json:"device"` // e.g. \\.\Tape0, /dev/nst0
+	Vendor              string          `json:"vendor,omitempty"`
+	Product             string          `json:"product,omitempty"`
+	Serial              string          `json:"serial,omitempty"`
+	Alerts              []TapeAlertFlag `json:"alerts,omitempty"`
+	CleaningRecommended bool            `json:"cleaning_recommended"`
+	Severity            string          `json:"severity"` // ok | clean | warn | error
+	Summary             string          `json:"summary"`  // plain-language one-liner
+	PowerOnHours        int64           `json:"power_on_hours,omitempty"`
+	BytesWritten        int64           `json:"bytes_written,omitempty"` // lifetime, from LOG SENSE when exposed
+	BytesRead           int64           `json:"bytes_read,omitempty"`
+	Note                string          `json:"note,omitempty"`
 }
 
 // VerifyEvent is one integrity check of a chunk's payload against its
@@ -250,16 +384,23 @@ func (r *DriftReport) Changes() int {
 }
 
 type catalog struct {
-	NextID      map[string]int `json:"next_id"`
-	Collections []*Collection  `json:"collections"`
-	Folders     []*Folder      `json:"folders"`
-	Files       []*File        `json:"files"`
-	Chunks      []*Chunk       `json:"chunks"`
-	Keys        []*KeyMeta     `json:"keys"`
-	BurnQueues  []*BurnQueue   `json:"burn_queues"`
-	Volumes     []*Volume      `json:"volumes"`
-	Drift       []*DriftReport `json:"drift"` // latest reconcile report per collection
-	Audit       []Audit        `json:"audit"`
+	NextID       map[string]int `json:"next_id"`
+	Collections  []*Collection  `json:"collections"`
+	Folders      []*Folder      `json:"folders"`
+	Files        []*File        `json:"files"`
+	Chunks       []*Chunk       `json:"chunks"`
+	Keys         []*KeyMeta     `json:"keys"`
+	BurnQueues   []*BurnQueue   `json:"burn_queues"`
+	Volumes      []*Volume      `json:"volumes"`
+	Drift        []*DriftReport `json:"drift"` // latest reconcile report per collection
+	DockSessions []*DockSession `json:"dock_sessions"`
+	TapeChecks   []TapeHealth   `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
+	// Protection profiles (the 3-2-1 model), their per-archive/per-folder
+	// assignments, and the latest recomputed status summary per collection.
+	Profiles    []*Profile           `json:"profiles"`
+	Assignments []*Assignment        `json:"assignments"`
+	Protection  []*ProtectionSummary `json:"protection"`
+	Audit       []Audit              `json:"audit"`
 }
 
 type Store struct {
@@ -334,10 +475,43 @@ func OpenStore(dataDir string) (*Store, error) {
 			recovered = true
 		}
 	}
+	// Built-in profiles: ensure the three shipped profiles exist and stay
+	// canonical (they are immutable, so we overwrite any drifted copy). Custom
+	// user profiles are never touched. New catalogs start with just these three.
+	if s.seedBuiltinProfilesLocked() {
+		recovered = true
+	}
 	if recovered {
 		_ = s.save()
 	}
 	return s, nil
+}
+
+// seedBuiltinProfilesLocked inserts any missing built-in profiles and refreshes
+// existing ones to their canonical definition (built-ins are immutable). Returns
+// true if anything changed. Caller holds no lock — OpenStore runs single-threaded.
+func (s *Store) seedBuiltinProfilesLocked() bool {
+	changed := false
+	for _, bp := range builtinProfiles() {
+		found := false
+		for i, p := range s.c.Profiles {
+			if p.ID == bp.ID {
+				found = true
+				if !p.Builtin || p.Name != bp.Name || p.RequiredCopies != bp.RequiredCopies ||
+					p.RequiredDistinctMediaKinds != bp.RequiredDistinctMediaKinds ||
+					p.RequiredOffsiteCopies != bp.RequiredOffsiteCopies || p.VerifyDueMonths != bp.VerifyDueMonths {
+					s.c.Profiles[i] = bp
+					changed = true
+				}
+				break
+			}
+		}
+		if !found {
+			s.c.Profiles = append(s.c.Profiles, bp)
+			changed = true
+		}
+	}
+	return changed
 }
 
 func (s *Store) save() error {
@@ -395,6 +569,10 @@ func (s *Store) AddCollection(name string) *Collection {
 	defer s.mu.Unlock()
 	c := &Collection{ID: s.next("collection"), Name: name, CreatedAt: time.Now().UTC()}
 	s.c.Collections = append(s.c.Collections, c)
+	// New Archives default to the canonical 3-2-1 rule (archive-level assignment).
+	if s.profileLocked(DefaultProfileID) != nil {
+		s.c.Assignments = append(s.c.Assignments, &Assignment{CollectionID: c.ID, Path: "", ProfileID: DefaultProfileID})
+	}
 	_ = s.save()
 	return c
 }
@@ -544,12 +722,43 @@ func (s *Store) Search(q string, limit int) []map[string]any {
 	for _, v := range s.c.Volumes {
 		vol[v.ID] = v
 	}
+	// Per-file protection status (the six-status model) so search speaks the same
+	// language as the dashboard and protection tree.
+	fileCopies := map[int]map[string]physCopy{}
+	for _, ch := range s.c.Chunks {
+		if ch.Status == "FAILED" {
+			continue
+		}
+		pcs := chunkPhysCopies(ch, vol)
+		if len(pcs) == 0 {
+			continue
+		}
+		for _, cf := range ch.Files {
+			m := fileCopies[cf.FileID]
+			if m == nil {
+				m = map[string]physCopy{}
+				fileCopies[cf.FileID] = m
+			}
+			for sig, pc := range pcs {
+				m[sig] = pc
+			}
+		}
+	}
+	folderPath := map[int]string{}
+	for _, fo := range s.c.Folders {
+		folderPath[fo.ID] = filepath.ToSlash(fo.Path)
+	}
 	var out []map[string]any
 	for _, f := range s.c.Files {
 		if q != "" && !strings.Contains(strings.ToLower(f.RelPath), q) {
 			continue
 		}
 		row := map[string]any{"file_id": f.ID, "rel_path": f.RelPath, "size_bytes": f.SizeBytes, "hash": f.Hash}
+		pst, pdet, pprof := s.fileProtectionLocked(f, fileCopies, folderPath)
+		row["protection_status"], row["protection_detail"] = pst, pdet
+		if pprof != nil {
+			row["profile_name"] = pprof.Name
+		}
 		if ch, ok := loc[f.ID]; ok {
 			row["chunk"] = ch.Name
 			row["chunk_status"] = ch.Status
@@ -759,7 +968,173 @@ func (s *Store) VolumeByBarcode(barcode string) *Volume {
 	return nil
 }
 
+// VolumeBySerial finds a volume by its resolved physical serial — the key to
+// recognizing a re-inserted drive across dock sessions. Empty serial never
+// matches (many volumes have none).
+func (s *Store) VolumeBySerial(serial string) *Volume {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.c.Volumes {
+		if strings.EqualFold(strings.TrimSpace(v.Serial), serial) {
+			return v
+		}
+	}
+	return nil
+}
+
 func (s *Store) UpdateVolume(v *Volume) { s.mu.Lock(); defer s.mu.Unlock(); _ = s.save() }
+
+// AppendSmartSnapshot records a drive-health reading in the volume's history
+// (newest last), capped to the most recent 50 so trends stay visible across dock
+// sessions without unbounded growth. Persists.
+func (s *Store) AppendSmartSnapshot(v *Volume, snap SmartSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v.SmartHistory = append(v.SmartHistory, snap)
+	if len(v.SmartHistory) > 50 {
+		v.SmartHistory = v.SmartHistory[len(v.SmartHistory)-50:]
+	}
+	_ = s.save()
+}
+
+// ---- tape diagnostics --------------------------------------------------
+
+// AddTapeCheck records a tape-drive diagnostic snapshot (newest last), capped to
+// the most recent 50. Persists.
+func (s *Store) AddTapeCheck(t TapeHealth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.c.TapeChecks = append(s.c.TapeChecks, t)
+	if len(s.c.TapeChecks) > 50 {
+		s.c.TapeChecks = s.c.TapeChecks[len(s.c.TapeChecks)-50:]
+	}
+	_ = s.save()
+}
+
+// LastTapeCheck returns the most recent tape-drive snapshot, or nil if none.
+func (s *Store) LastTapeCheck() *TapeHealth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.c.TapeChecks) == 0 {
+		return nil
+	}
+	t := s.c.TapeChecks[len(s.c.TapeChecks)-1]
+	return &t
+}
+
+// TapeChecks returns a copy of the snapshot history (newest last).
+func (s *Store) TapeChecks() []TapeHealth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]TapeHealth{}, s.c.TapeChecks...)
+}
+
+// ---- dock sessions -----------------------------------------------------
+
+func (s *Store) AddDockSession(ds *DockSession) *DockSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ds.ID = s.next("dock")
+	now := time.Now().UTC()
+	ds.StartedAt, ds.UpdatedAt = now, now
+	if ds.Status == "" {
+		ds.Status = "ACTIVE"
+	}
+	s.c.DockSessions = append(s.c.DockSessions, ds)
+	_ = s.save()
+	return ds
+}
+
+func (s *Store) DockSession(id int) *DockSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ds := range s.c.DockSessions {
+		if ds.ID == id {
+			return ds
+		}
+	}
+	return nil
+}
+
+// ActiveDockSession returns the most recent ACTIVE session (the one a reopened
+// app resumes), or nil when none is open.
+func (s *Store) ActiveDockSession() *DockSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out *DockSession
+	for _, ds := range s.c.DockSessions {
+		if ds.Status == "ACTIVE" && (out == nil || ds.ID > out.ID) {
+			out = ds
+		}
+	}
+	return out
+}
+
+func (s *Store) DockSessions() []*DockSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*DockSession{}, s.c.DockSessions...)
+}
+
+func (s *Store) UpdateDockSession(ds *DockSession) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ds.UpdatedAt = time.Now().UTC()
+	_ = s.save()
+}
+
+// RecordDockDrive appends (or, when the same volume is re-processed, replaces)
+// a drive's result in the session and persists. Matching by volume keeps a
+// re-verify from duplicating the row for a drive already in the session.
+func (s *Store) RecordDockDrive(ds *DockSession, d DockDrive) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	d.FinishedAt = &now
+	for i := range ds.Drives {
+		if ds.Drives[i].VolumeID == d.VolumeID {
+			ds.Drives[i] = d
+			ds.UpdatedAt = now
+			_ = s.save()
+			return
+		}
+	}
+	ds.Drives = append(ds.Drives, d)
+	ds.UpdatedAt = now
+	_ = s.save()
+}
+
+// barcodeSeq matches a "<PREFIX>-<digits>" barcode (dash optional) so the next
+// number in a scheme is max(existing)+1 — no stored counter to drift out of sync.
+var barcodeSeq = regexp.MustCompile(`^(.*?)-?(\d+)$`)
+
+// NextBarcode returns the next unused barcode for prefix, formatted
+// "<prefix>-NNNN" (4-digit, zero-padded, growing past 9999). It scans existing
+// volume barcodes sharing that prefix, takes the highest trailing number, and
+// adds one — so NSP-0001, NSP-0002, … stay gap-free and never collide.
+func (s *Store) NextBarcode(prefix string) string {
+	prefix = strings.TrimRight(strings.TrimSpace(prefix), "-")
+	if prefix == "" {
+		prefix = "NSP"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	max := 0
+	for _, v := range s.c.Volumes {
+		m := barcodeSeq.FindStringSubmatch(strings.TrimSpace(v.Barcode))
+		if m == nil || !strings.EqualFold(strings.TrimRight(m[1], "-"), prefix) {
+			continue
+		}
+		if n, err := strconv.Atoi(m[2]); err == nil && n > max {
+			max = n
+		}
+	}
+	return fmt.Sprintf("%s-%04d", prefix, max+1)
+}
 
 // RecordCopy adds or refreshes the current (non-superseded) copy of chunk c on
 // the given volume and persists. verifiedOK reflects the read-back that just
@@ -853,6 +1228,210 @@ func (c *Chunk) CurrentCopyCount() int {
 		}
 	}
 	return n
+}
+
+// ---- protection profiles + assignments ---------------------------------
+
+func (s *Store) Profiles() []*Profile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]*Profile{}, s.c.Profiles...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Builtin != out[j].Builtin {
+			return out[i].Builtin // built-ins first
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func (s *Store) Profile(id string) *Profile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.profileLocked(id)
+}
+
+func (s *Store) profileLocked(id string) *Profile {
+	for _, p := range s.c.Profiles {
+		if p.ID == id {
+			return p
+		}
+	}
+	return nil
+}
+
+// AddProfile persists a new custom profile. builtin is always forced false; the
+// id is slugified from the name (uniqued with a numeric suffix) unless provided.
+func (s *Store) AddProfile(p Profile) *Profile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p.Builtin = false
+	if strings.TrimSpace(p.ID) == "" {
+		p.ID = s.uniqueProfileIDLocked(slugify(p.Name))
+	} else if s.profileLocked(p.ID) != nil {
+		p.ID = s.uniqueProfileIDLocked(p.ID)
+	}
+	np := p
+	s.c.Profiles = append(s.c.Profiles, &np)
+	_ = s.save()
+	return &np
+}
+
+func (s *Store) uniqueProfileIDLocked(base string) string {
+	if base == "" {
+		base = "profile"
+	}
+	id := base
+	for n := 2; s.profileLocked(id) != nil; n++ {
+		id = fmt.Sprintf("%s-%d", base, n)
+	}
+	return id
+}
+
+// UpdateProfile replaces a custom profile's editable fields. Built-in profiles
+// are immutable and refused.
+func (s *Store) UpdateProfile(p Profile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.profileLocked(p.ID)
+	if cur == nil {
+		return fmt.Errorf("profile %q not found", p.ID)
+	}
+	if cur.Builtin {
+		return fmt.Errorf("%q is a built-in profile and cannot be edited — duplicate it to make a custom copy", cur.Name)
+	}
+	cur.Name = p.Name
+	cur.Description = p.Description
+	cur.RequiredCopies = p.RequiredCopies
+	cur.RequiredDistinctMediaKinds = p.RequiredDistinctMediaKinds
+	cur.RequiredOffsiteCopies = p.RequiredOffsiteCopies
+	cur.MediaKindsAllowed = p.MediaKindsAllowed
+	cur.VerifyDueMonths = p.VerifyDueMonths
+	_ = s.save()
+	return nil
+}
+
+// DeleteProfile removes a custom profile. Built-in profiles are refused, and a
+// profile still assigned to any archive/folder is refused with the list of what
+// uses it so the operator can reassign first.
+func (s *Store) DeleteProfile(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.profileLocked(id)
+	if cur == nil {
+		return fmt.Errorf("profile not found")
+	}
+	if cur.Builtin {
+		return fmt.Errorf("%q is a built-in profile and cannot be deleted", cur.Name)
+	}
+	if users := s.profileUsersLocked(id); len(users) > 0 {
+		return fmt.Errorf("%q is still assigned to %d place(s): %s — reassign them first", cur.Name, len(users), strings.Join(users, "; "))
+	}
+	out := s.c.Profiles[:0]
+	for _, p := range s.c.Profiles {
+		if p.ID != id {
+			out = append(out, p)
+		}
+	}
+	s.c.Profiles = out
+	_ = s.save()
+	return nil
+}
+
+// profileUsersLocked returns human-readable descriptions of every assignment
+// that references profile id ("Photography" / "Photography › To-Delete-2020").
+func (s *Store) profileUsersLocked(id string) []string {
+	name := map[int]string{}
+	for _, c := range s.c.Collections {
+		name[c.ID] = c.Name
+	}
+	var out []string
+	for _, a := range s.c.Assignments {
+		if a.ProfileID != id {
+			continue
+		}
+		desc := name[a.CollectionID]
+		if desc == "" {
+			desc = fmt.Sprintf("archive#%d", a.CollectionID)
+		}
+		if a.Path != "" {
+			desc += " › " + a.Path
+		}
+		out = append(out, desc)
+	}
+	return out
+}
+
+func (s *Store) Assignments() []*Assignment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*Assignment{}, s.c.Assignments...)
+}
+
+func (s *Store) AssignmentsOf(collectionID int) []*Assignment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Assignment
+	for _, a := range s.c.Assignments {
+		if a.CollectionID == collectionID {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// SetAssignment upserts the profile for (collection, path); an empty profileID
+// removes the assignment (so the node falls back to inheriting an ancestor's).
+// path "" is the archive-level assignment. Comparison is path-normalised so a
+// re-typed drive letter/case does not create a duplicate node assignment.
+func (s *Store) SetAssignment(collectionID int, path, profileID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if profileID != "" && s.profileLocked(profileID) == nil {
+		return fmt.Errorf("profile %q not found", profileID)
+	}
+	np := normPath(path)
+	for i, a := range s.c.Assignments {
+		if a.CollectionID == collectionID && normPath(a.Path) == np {
+			if profileID == "" {
+				s.c.Assignments = append(s.c.Assignments[:i], s.c.Assignments[i+1:]...)
+			} else {
+				s.c.Assignments[i].ProfileID = profileID
+			}
+			_ = s.save()
+			return nil
+		}
+	}
+	if profileID != "" {
+		s.c.Assignments = append(s.c.Assignments, &Assignment{CollectionID: collectionID, Path: path, ProfileID: profileID})
+	}
+	_ = s.save()
+	return nil
+}
+
+// resolveProfileLocked returns the nearest-ancestor-wins profile for a logical
+// path in a collection: the assignment whose path is the longest ancestor of
+// fullPath (an empty path is the archive-level root, ancestor of everything),
+// ultimately the archive's assignment. Returns nil when nothing resolves
+// (UNASSIGNED). Caller holds s.mu.
+func (s *Store) resolveProfileLocked(collectionID int, fullPath string) *Profile {
+	bestLen := -1
+	var best *Assignment
+	for _, a := range s.c.Assignments {
+		if a.CollectionID != collectionID {
+			continue
+		}
+		if !pathIsAncestor(a.Path, fullPath) {
+			continue
+		}
+		if l := len(normPath(a.Path)); l > bestLen {
+			bestLen, best = l, a
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return s.profileLocked(best.ProfileID)
 }
 
 // ---- keys (metadata only) ----------------------------------------------

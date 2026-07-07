@@ -232,6 +232,14 @@ func (a *App) AdoptMedia(mountPath string, collectionID, volumeID int, deep bool
 		volumeID = a.Store.EnsureUnregistered().ID
 	}
 	vol := a.Store.Volume(volumeID)
+	// Capture the physical device identity of the medium we're adopting from, so
+	// the volume carries the drive's real serial/model/capacity. Best-effort: a
+	// masked serial or an unmapped mount (network path, optical) changes nothing.
+	if vol != nil {
+		if _, changed := a.resolveVolumeIdentity(vol, mountPath); changed {
+			a.Store.UpdateVolume(vol)
+		}
+	}
 
 	cands := scanAdoptCandidates(mountPath)
 	if len(cands) == 0 {

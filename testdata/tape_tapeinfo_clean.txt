@@ -1,0 +1,16 @@
+Product Type: Tape Drive
+Vendor ID: 'HP      '
+Product ID: 'Ultrium 6-SCSI  '
+Revision: '22CD'
+Attached Changer API: No
+SerialNumber: 'HU1234567A'
+MinBlock: 1
+MaxBlock: 16777216
+SCSI ID: 3
+SCSI LUN: 0
+Ready: yes
+BufferedMode: yes
+Medium Type: 0x00
+Density Code: 0x5c
+BlockSize: 0
+DataCompEnabled: yes

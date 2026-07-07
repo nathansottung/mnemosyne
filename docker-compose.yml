@@ -1,0 +1,46 @@
+# Mnemosyne — the NAS-side brain (catalog / plan / build packages / mirror).
+#
+#   1. Put a strong secret in .env:   MNEMO_AUTH_TOKEN=$(openssl rand -hex 32)
+#   2. docker compose up -d
+#   3. Open http://<nas-ip>:7821 and paste the token when prompted.
+#
+# Tape/optical burning, the docking flow, and SMART are hardware-in-the-loop and
+# belong on a NATIVE binary next to the drive — see the README.
+
+services:
+  mnemosyne:
+    # Pull the released multi-arch image…
+    image: ghcr.io/nsottung/mnemosyne:latest
+    # …or build locally instead:
+    # build: .
+    container_name: mnemosyne
+    restart: unless-stopped
+    command: ["-listen", "0.0.0.0:7821", "-data", "/data"]
+    ports:
+      - "7821:7821"
+    environment:
+      # REQUIRED for the 0.0.0.0 bind above — the binary refuses to serve off-box
+      # without it. Keep it in a .env file, not in this committed compose.
+      MNEMO_AUTH_TOKEN: "${MNEMO_AUTH_TOKEN:?set MNEMO_AUTH_TOKEN in .env to a long random secret}"
+    volumes:
+      # Persistent catalog + config + daily backups. Back THIS up.
+      - ./data:/data
+      # Scratch for package builds (big + fast; safe to lose between builds).
+      - ./staging:/staging
+
+      # --- SOURCE DATASETS: ALWAYS mount :ro -----------------------------------
+      # The ":ro" makes the mount read-only at the KERNEL level: even a bug (or a
+      # malicious request) physically cannot write to your originals — the syscall
+      # fails in the kernel, not just in Mnemosyne's own AssertOutsideSources guard.
+      # Mnemosyne is read-only toward sources by design; ":ro" enforces it in the
+      # one place software can't override. Add one line per dataset you catalog,
+      # then point Scan at the /sources/... path.
+      - /mnt/tank/photos:/sources/photos:ro
+      - /mnt/tank/documents:/sources/documents:ro
+    healthcheck:
+      # The static UI root is public (only /api is token-gated), so this needs no
+      # token to confirm the server is alive.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7821/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

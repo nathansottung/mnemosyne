@@ -14,7 +14,10 @@ callees; everything is `package main`.
 ```
 main.go        HTTP server + REST API + embedded UI (//go:embed ui).
                Wires routes to App methods via runJob() (background jobs),
-               registers OAIS aliases (/api/archives, /api/packages).
+               registers OAIS aliases (/api/archives, /api/packages). -listen
+               binds localhost by default; a non-localhost bind (containers)
+               REFUSES to start without a bearer token, and authMiddleware then
+               gates every /api call (static UI stays public so it can prompt).
                  │
                  ▼
 pipeline.go    App + Config. Keystores, parallel Scan, Plan (group files into
@@ -34,17 +37,50 @@ privacy.go     ReadMediumManifest: decrypt a private manifest.json.gpg off a
 adopt.go       AdoptMedia: catalog pre-existing *.tar/*.tar.gpg media in place —
                hash payloads, import manifests, "deep adopt" via tar -tvf,
                idempotent by payload hash. Never rewrites the medium.
+dock.go        DockSession ingest: watch for a docked drive, mirror-adopt it by
+               CONTENT hash against selected archives, write a drive sidecar,
+               track coverage, export a session report. Mounts enumerated in
+               dock_mounts_windows.go / dock_mounts_unix.go.
+mirror.go      MirrorToVolume: native mirror backup — copy an archive's files to a
+               volume as PLAIN FILES (copy-then-verify via .mnemo_tmp → atomic
+               rename), recorded as verified file-level copies (same Chunk.Mirror
+               record dock adoption makes, so drift/coverage count them), plus the
+               reusable writeVolumeInventory sidecar. One job per volume; peers
+               with packages.
+deviceid.go    resolveVolumeIdentity: best-effort physical device identity
+               (serial/model/capacity) behind a mounted path. Platform resolvers
+               in deviceid_windows.go / deviceid_unix.go. Non-fatal everywhere.
+smart.go       VolumeHealth: drive-mortality signals via smartctl (-j), parsed
+               for ATA + NVMe into a SmartSnapshot with a "migrate copies off"
+               advisory. Device mapping in smart_windows.go / smart_unix.go. A
+               COMPLEMENT to hash verification — never in the write path.
+tape.go        TapeCheck: optional tape-drive diagnostics (TapeAlert + LOG SENSE)
+               via ITDT / tapeinfo / sg_logs / HPE L&TT. Flag catalogue + tool
+               registry here; one parser per tool in tape_parsers.go (tested
+               against testdata/). Read-only toward the drive; never a write/move
+               command; strictly outside the write path.
+label.go       volumeLabelHTML: a self-contained printable volume label —
+               Code128 of the barcode + QR of the volume ID + human identity.
 recoverykit.go Recovery Kit export (README + inventory + QR cards + runbook).
+profiles.go    Protection Profiles + the six-status 3-2-1 model. Built-in
+               profiles, nearest-ancestor assignment resolution, per-file status
+               derivation across copies × distinct media kinds × offsite, folder
+               worst-of aggregation, and the recompute job. Reads the catalog via
+               Store methods; the persisted structs live in store.go.
                  │
                  ▼
 store.go       The catalog. ALL persisted structs (Archive/Collection, File,
                Chunk/Package, Segment, Volume, Copy, VerifyEvent, DriftReport,
-               BurnQueue …) and the Store: atomic JSON writes, daily backups,
+               BurnQueue, Profile, Assignment, ProtectionSummary …) and the
+               Store: atomic JSON writes, daily backups,
                migrations, and reboot recovery. The only file that touches
                catalog.json.
 
 ltfs_windows.go / ltfs_unix.go       build-tagged: detect a mounted LTFS volume.
 diskfree_windows.go / diskfree_unix.go  build-tagged: free-space per platform.
+deviceid_windows.go / deviceid_unix.go  build-tagged: physical device identity.
+smart_windows.go / smart_unix.go     build-tagged: mount → smartctl device node.
+dock_mounts_windows.go / dock_mounts_unix.go  build-tagged: enumerate mounts.
 ui/index.html  single-file SPA (vanilla JS, no build step); embedded at compile.
 ```
 
@@ -56,7 +92,15 @@ the UI) touches one file's surface.
 ## Custody chain
 
 Integrity is a chain of hashes, each link independently checkable. Nothing is
-trusted transitively — every arrow is a hash you can recompute by hand.
+trusted transitively — every arrow is a hash you can recompute by hand. Two
+links used to be *fingerprinted but never proven* — the tar was hashed but its
+contents unproven, the ciphertext was hashed but its decryptability unproven.
+Both are now **proven at build time**, before a package can ever reach media:
+
+```
+  source → [contents-verified] tar → [roundtrip-verified] ciphertext
+         → [stream-verified] write → [read-back-verified] medium
+```
 
 ```
   source files on disk
@@ -64,10 +108,18 @@ trusted transitively — every arrow is a hash you can recompute by hand.
         ▼
   tar (POSIX, no compression)
         │  SHA-256 of the tar                        ← Chunk.TarHash
+        │  ── stage_verify: stream-read the tar with Go's archive/tar (no
+        │     extraction, no external tool), hash every member, compare each to
+        │     the catalog's source hash. Proves the package CONTAINS the source,
+        │     byte-exact.                             ← BuildVerified.Contents
         ▼
   payload  =  tar            (plaintext package)
           or  gpg(tar)       (encrypted package, AES-256)
         │  SHA-256 of the payload as written to media ← Chunk.EncHash  ("enc_hash")
+        │  ── crypt_verify (encrypted only): gpg -d piped straight into a SHA-256
+        │     hasher (no plaintext to disk), result compared to tar_hash. Proves
+        │     the ciphertext DECRYPTS back to the verified tar.
+        │                                            ← BuildVerified.DecryptRoundtrip
         ▼
   par2 parity  (computed OVER the payload)
         │
@@ -91,6 +143,19 @@ trusted transitively — every arrow is a hash you can recompute by hand.
   path (verify, verify-campaign, restore, burn-verify, span rejoin, and the
   `par2SetFiles` lookup) also accepts that legacy name — previously staged/written
   media keep verifying and restoring unchanged.
+- **Build-time verification fixes both proofs at the source:** `stage_verify`
+  and `crypt_verify` run inside `BuildChunk` *before* par2/manifest, so a package
+  that does not faithfully contain the source, or whose ciphertext will not
+  decrypt, **fails the build** and never reaches media — a bad artifact can never
+  be faithfully preserved. Both record their result + duration in
+  `Chunk.BuildTimings` (`stage_verify`, `crypt_verify`) and the append-only
+  `VerifyEvent` log, and the attestation `{"contents":…,"decrypt_roundtrip":…}`
+  rides into the on-medium `manifest.json` (`BuildVerified`). Spanned packages run
+  both checks on the staged payload *before* segmentation, unchanged. Config
+  `build_verify` is `"full"` by default; `"fast"` skips both with an explicit
+  amber warning in the UI and manifest (`mode:"fast"`, both false) — archival
+  correctness is the default, speed is the opt-out. Cost of full: roughly one
+  extra read pass + one decrypt pass per package build.
 - **Repair is key-independent:** par2 sits *over the ciphertext*, so a rotted
   tape is repaired with no passphrase — custody of secrets and repair of media
   are separate problems.
@@ -177,6 +242,110 @@ CGO) slots into `store.go` alone.** Every other file talks to the `Store`
 methods (`AddChunk`, `Chunks`, `RecordCopy`, `AppendVerifyEvent`, …), not to the
 JSON — so the storage engine can change without touching pipeline, writer,
 burner, or the API. The `Store` method surface *is* the seam.
+
+## Volume identity & labels
+
+A `Volume` is a physical medium the operator can hold. Beyond the human label,
+barcode, kind, and location, it carries the **drive's own identity** — serial,
+model, and capacity — resolved best-effort from a mounted path:
+
+- **Windows** (`deviceid_windows.go`): one PowerShell/CIM shot,
+  `Get-Partition -DriveLetter → Get-Disk`, emitted as JSON via `ConvertTo-Json`
+  and parsed. No WMI COM, no CGO.
+- **Linux** (`deviceid_unix.go`): `lsblk -J -b …`, walking the tree to the disk
+  whose subtree owns the path's mountpoint.
+- **macOS** (`deviceid_unix.go`): `diskutil info`, following *Part of Whole* to
+  the physical disk for media name and capacity.
+
+Resolution is **non-fatal by construction** (`resolveVolumeIdentity` never
+returns an error the caller must handle) and it **never overwrites a good serial
+with a blank one** — a later resolve through a dock that masks the serial cannot
+erase a real serial captured earlier. External USB/1394 bridges frequently
+report the *enclosure's* identity rather than the drive's; when the bus type
+says so, `DeviceNote` records the caveat and the UI/inventory/label flag it with
+an asterisk. Identity is captured on **register** (`POST /api/volumes` with a
+`mount_path`), on **adopt** (from the medium being adopted), and on demand
+(`POST /api/volumes/{id}/identify`). It surfaces on the volume cards, the
+Recovery Kit's `MEDIA_INVENTORY.md` "Physical volumes" table, and the label.
+
+**Media health** (`smart.go`) reads a drive's SMART self-report via `smartctl`
+on the volume view and dock ingest — mapping the mount to a device node with the
+same identity plumbing (drive letter → disk number → `/dev/pdN`), parsing ATA and
+NVMe into a `SmartSnapshot`, and appending it to `Volume.SmartHistory` so trends
+are visible across sessions. It raises a "migrate copies off" advisory on
+reallocated/pending sectors or a FAILING self-assessment. It is deliberately a
+**complement** to the custody chain, never a substitute: a mortality *signal*
+(will this drive die?) carries no claim about data *integrity* (are the bytes
+intact?) — only the hashes prove that. Never in the write path; timeouts, and
+failures are silent-but-logged; absent `smartctl` hides the feature.
+
+The **tape** analogue is `tape.go` (TapeAlert + LOG SENSE via ITDT / `tapeinfo` /
+`sg_logs` / HPE L&TT). Same doctrine, same guardrails: read-only toward the drive
+(it never issues a movement or write command — no rewind/space/load/erase),
+strictly outside the write path, one defensive parser per tool tested against
+`testdata/` sample outputs, hidden behind an install hint when no tool is present.
+It renders cleaning/error advisories in plain language and feeds the write
+dialog's "check before a big write" nudge. Live validation requires the drive
+attached; the parsers are the tested unit.
+
+**Labels** (`label.go`, `GET /api/volumes/{id}/label`) are a self-contained,
+print-ready HTML page: a **Code128** of the volume barcode (so a printed label
+scans straight back into the barcode lookup), a **QR** of the volume ID, and the
+human-readable identity. A volume with no barcode is offered the **next barcode
+from the configured scheme** (`barcode_scheme` prefix + gap-free counter, e.g.
+`NSP-0001`) at label time — `Store.NextBarcode` derives the number from the max
+existing barcode, so there is no stored counter to drift out of sync.
+
+## Dock — guided legacy-drive ingest
+
+`dock.go` is a resumable mode for ingesting a stack of old backup drives through
+a dock, one at a time, hands-off after insertion. A `DockSession` (persisted in
+`store.go`, so it survives closing the app and resumes across days) reconciles
+against one or more Archives and remembers every drive it processed.
+
+- **Watch:** at start the session snapshots the mounts present (`Baseline`);
+  `DockCandidates` diffs the live mounts (`enumerateMounts`, platform-tagged)
+  against it, so only *newly-inserted* drives are offered, each annotated with
+  its resolved serial/model/size and whether it's been seen before.
+- **Mirror adoption** is the heart: `IngestDrive` → `mirrorAdopt` hashes every
+  loose file on the drive and matches it **by content** against the selected
+  archives' cataloged source hashes. Matches are recorded as an
+  `ADOPTED-VERIFIED` **mirror** package (`Chunk.Mirror`) per archive, with a
+  verified `Copy` on the drive's `Volume` — so the *existing* coverage/redundancy
+  machinery counts them with zero special-casing. Files are bucketed as *matched*
+  (a current source file), *historical* (an older packaged version), *other*
+  (readable but foreign), or *unreadable*.
+- **Identity & idempotency:** the drive's `Volume` is matched by physical
+  **serial** (`VolumeBySerial`), so re-inserting a drive already ingested — even
+  on a different mount letter — is recognized and run as a **re-verify** (updates
+  the copy's verify timestamp) instead of a duplicate adopt. Idempotent across
+  sessions.
+- **Read-only toward sources (Prompt 31):** the NAS archive folders are only ever
+  *hashed*. The one write onto media — the drive's `MNEMOSYNE_DOCK/` inventory
+  sidecar + `catalog_snapshot.json` — goes through `AssertOutsideSources`, so it
+  can never land on a source path. The drive walk skips its own sidecar dir.
+- **Coverage & report:** `archiveCoverage` computes, across all chunks with a
+  verified copy, how many of the selected archives' files now have ≥1 copy
+  (matched by file-id or content hash). `SessionReportMarkdown` is the exportable
+  documentation trail — every drive's serial/label/contents summary plus running
+  coverage.
+
+## Dependencies
+
+Two tiny, pure-Go, CGO-free libraries — each earns its place against the
+"one static binary, hand-restorable, no service" bargain:
+
+- **`github.com/skip2/go-qrcode`** — QR images for key recovery cards and
+  volume-ID labels.
+- **`github.com/boombuler/barcode`** — Code128 for volume labels. Pure Go, no
+  transitive dependencies, renders to the standard-library `image.Image` we PNG
+  ourselves. A printed label that scans back into the catalog is worth one small
+  dependency; rolling our own Code128 encoder would be more code and more risk
+  than importing a focused, widely-used one.
+
+Everything else — tar, gpg, par2 — is an **external tool** shelled out to, on
+purpose (see the custody chain and Recovery Kit): the restore story must not
+depend on Mnemosyne's Go code existing.
 
 ## Request/job lifecycle
 

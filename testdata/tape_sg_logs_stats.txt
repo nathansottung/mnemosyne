@@ -1,0 +1,9 @@
+IBM       ULT3580-TD6       G9R1
+Sequential access device page  [0xc]
+  Data bytes received with WRITE commands: 1200 GB
+  Data bytes written to media by WRITE commands: 1150 GB
+  Data bytes read from media by READ commands: 3400 GB
+  Data bytes transferred to initiator by READ commands: 3401 GB
+  Native capacity from BOP to EOD: 2400 GB
+  Native capacity from BOP to EW: 2500 GB
+  Cleaning action required or in progress: 0

@@ -4,6 +4,7 @@ package main
 // Restore doctrine: par2 -> gpg -> tar, always runnable by hand.
 
 import (
+	"archive/tar"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -47,14 +49,32 @@ type Config struct {
 	BurnVerifyMount       string            `json:"burn_verify_mount"`
 	VerifyDueMonths       int               `json:"verify_due_months"`
 	RequiredCopies        int               `json:"required_copies"`                // redundancy goal; fewer verified copies = under-protected
+	BuildVerify           string            `json:"build_verify"`                   // "full" (default): prove contents + decrypt round-trip; "fast": skip both (unproven)
+	BarcodeScheme         string            `json:"barcode_scheme"`                 // prefix for auto-assigned volume barcodes, e.g. "NSP" -> NSP-0001
+	TapeTool              string            `json:"tape_tool"`                      // path to a tape-diagnostics CLI (itdt/tapeinfo/sg_logs/hp_ltt); blank = auto-probe PATH
+	TapeDevice            string            `json:"tape_device"`                    // tape drive device path, e.g. \\.\Tape0, /dev/nst0, /dev/sg1; blank = per-OS default
+	AuthToken             string            `json:"auth_token"`                     // bearer token required on every /api call when the server binds a non-localhost address (containers); env MNEMO_AUTH_TOKEN overrides
 	DriftInformational    []string          `json:"drift_informational_extensions"` // muted in reconcile, excluded from alarm totals
 	Tools                 map[string]string `json:"tools"`
 }
 
 func defaultConfig() Config {
 	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, Par2ExtraArgs: "-t0", BufferGB: 8, BlockMB: 64,
-		VerifyDueMonths: 12, RequiredCopies: 2, DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
+		VerifyDueMonths: 12, RequiredCopies: 2, BuildVerify: "full", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
 }
+
+// buildVerifyMode normalises the configured build-verification level. Anything
+// other than an explicit "fast" means "full": archival correctness is the
+// default, so a blank/legacy/typo'd value proves the chain rather than skipping
+// it. Speed is the deliberate opt-out.
+func (cfg Config) buildVerifyMode() string {
+	if strings.EqualFold(strings.TrimSpace(cfg.BuildVerify), "fast") {
+		return "fast"
+	}
+	return "full"
+}
+
+const fastBuildWarning = "FAST build: stage-vs-source and decrypt round-trip verification were SKIPPED — this package's contents and decryptability are UNPROVEN."
 
 type App struct {
 	DataDir string
@@ -138,6 +158,18 @@ func (a *App) Preflight() map[string]any {
 	// Absence just means "no tape mounted"; HDD and optical need no LTFS.
 	ltfs := detectLTFSMounts()
 	out["ltfs"] = map[string]any{"mounted": len(ltfs) > 0, "mounts": ltfs}
+	// smartctl (drive-mortality signals) is OPTIONAL — informational only, never
+	// affects "ok". Present = the Media health card lights up on volumes; absent =
+	// the feature hides behind an install hint. It complements hash verification.
+	sp, serr := a.tool("smartctl")
+	smart := map[string]any{"ok": serr == nil, "path": sp}
+	if serr != nil {
+		smart["hint"] = smartInstallHint
+	}
+	out["smartctl"] = smart
+	// Tape diagnostics tool (ITDT / tapeinfo / sg_logs / HPE L&TT) — OPTIONAL and
+	// informational; never affects "ok". Reads drive health only.
+	out["tape_tool"] = a.TapeToolStatus()
 	out["ok"] = allOK && ks["ok"].(bool)
 	out["hints"] = hints
 	return out
@@ -547,6 +579,103 @@ func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 in
 
 // ---- building ------------------------------------------------------------
 
+// Build-time fault-injection hooks. nil in production; only integration tests
+// set them, to prove the verification stages actually catch a corrupted tar or
+// a broken encryption step. buildAfterTarHook fires on the freshly written tar
+// BEFORE stage verification; buildDecryptPassphraseHook rewrites the passphrase
+// the crypt-verify decrypt uses (return a wrong one to simulate a corrupted
+// encryption step). Guarded so a stray non-nil value can never affect a real
+// build path — they are wired only from *_test.go in this package.
+var (
+	buildAfterTarHook          func(tarPath string)
+	buildDecryptPassphraseHook func(pass string) string
+)
+
+// verifyTarContents streams the staged tar with Go's stdlib archive/tar reader
+// (no extraction to disk, no external tool), hashes every regular-file member,
+// and compares each against the catalog's source-file hash for that rel_path.
+// It proves the package CONTAINS the source, byte-exact: any hash mismatch,
+// missing source file, or unexpected extra member fails with the file named.
+// A ChunkFileRef with an empty Hash (e.g. a hand-built chunk in a unit test)
+// only has its presence checked — there is no source hash to compare against.
+func verifyTarContents(tarPath string, files []ChunkFileRef) error {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	want := make(map[string]string, len(files))
+	for _, cf := range files {
+		want[path.Clean(cf.RelPath)] = cf.Hash
+	}
+	seen := make(map[string]bool, len(files))
+	tr := tar.NewReader(f)
+	buf := make([]byte, 1<<20)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("stage verification: cannot read the staged tar (%v) — package is not a faithful archive", err)
+		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			continue // directories, symlinks, etc. carry no cataloged source hash
+		}
+		name := path.Clean(strings.TrimPrefix(filepath.ToSlash(hdr.Name), "./"))
+		exp, ok := want[name]
+		if !ok {
+			return fmt.Errorf("stage verification: package contains %q, which is not a cataloged member of this package (unexpected extra member)", name)
+		}
+		if seen[name] {
+			return fmt.Errorf("stage verification: package contains %q more than once", name)
+		}
+		h := sha256.New()
+		if _, err := io.CopyBuffer(h, tr, buf); err != nil {
+			return fmt.Errorf("stage verification: reading %q from the tar: %w", name, err)
+		}
+		if exp != "" && hex.EncodeToString(h.Sum(nil)) != exp {
+			return fmt.Errorf("stage verification: %s in the package does not match its source hash — the tar does not faithfully contain the source", name)
+		}
+		seen[name] = true
+	}
+	for rel := range want {
+		if !seen[rel] {
+			return fmt.Errorf("stage verification: source file %s is missing from the package", rel)
+		}
+	}
+	return nil
+}
+
+// decryptRoundtripHash runs `gpg -d` on the ciphertext with stdout piped
+// directly into a SHA-256 hasher — no plaintext ever lands on disk — and
+// returns the hash of the decrypted stream. Used to prove the ciphertext
+// actually decrypts back to the verified tar (compare against tar_hash).
+func decryptRoundtripHash(gpgBin, ciphertext, pass string) (string, error) {
+	cmd := exec.Command(gpgBin, "--batch", "--yes", "--pinentry-mode", "loopback",
+		"--passphrase-fd", "0", "-d", ciphertext)
+	cmd.Stdin = strings.NewReader(pass)
+	var errb strings.Builder
+	cmd.Stderr = &errb
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	_, copyErr := io.CopyBuffer(h, pipe, make([]byte, 8<<20))
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		return "", fmt.Errorf("gpg -d failed: %s", tail(errb.String(), 300))
+	}
+	if copyErr != nil {
+		return "", copyErr
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	cfg := a.LoadConfig()
 	c := a.Store.Chunk(id)
@@ -623,6 +752,16 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 		progress(frac, strings.Join(summary, " · "))
 	}
 
+	// build_verify doctrine: "full" (default) PROVES the two custody links that
+	// were previously only fingerprinted — the tar contains the source byte-exact
+	// (stage_verify) and the ciphertext decrypts back to the tar (crypt_verify).
+	// "fast" skips both and records the honest amber warning. See buildVerifyMode.
+	mode := cfg.buildVerifyMode()
+	bv := &BuildVerified{Mode: mode}
+	if mode == "fast" {
+		bv.Warning = fastBuildWarning
+	}
+
 	progress(0.05, "tar…")
 	t := time.Now()
 	// SOURCE READ-ONLY: `tar -c … -C <SrcRoot> -T list` only READS the source
@@ -631,13 +770,32 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	if err := run(tarBin, "", "--format=posix", "-cf", tarPath, "-C", c.SrcRoot, "-T", list); err != nil {
 		return fail(err)
 	}
-	finish("tar", t, 0.30)
+	finish("tar", t, 0.28)
+	if buildAfterTarHook != nil { // test-only fault injection between tar and hash
+		buildAfterTarHook(tarPath)
+	}
 
 	t = time.Now()
 	if c.TarHash, err = hashFileHex(tarPath); err != nil {
 		return fail(err)
 	}
-	finish("hash", t, 0.38)
+	finish("hash", t, 0.34)
+
+	// (1) STAGE-VS-SOURCE — prove the package CONTAINS the source, byte-exact,
+	// by stream-reading the tar and hashing every member against the catalog.
+	// This runs before encryption (and before the tar may be deleted). "fast"
+	// skips it; contents stay unproven.
+	if mode == "full" {
+		t = time.Now()
+		if err := verifyTarContents(tarPath, c.Files); err != nil {
+			return fail(err)
+		}
+		finish("stage_verify", t, 0.40)
+		bv.Contents = true
+		now := time.Now().UTC()
+		a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: true, Path: tarPath,
+			Note: fmt.Sprintf("stage_verify: %d member(s) byte-exact vs catalog source hashes", len(c.Files))})
+	}
 
 	var fpr string
 	var chunkPass string // held to also encrypt the medium manifest when private
@@ -660,10 +818,32 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 		if st, err := os.Stat(payloadPath); err == nil {
 			c.EncBytes = st.Size()
 		}
+		finish("encrypt", t, 0.66)
+
+		// (2) DECRYPT ROUND-TRIP — prove the ciphertext actually decrypts back to
+		// the verified tar. gpg -d is piped straight into a SHA-256 hasher, so no
+		// plaintext ever lands on disk; the result must equal tar_hash. "fast"
+		// skips it; decryptability stays unproven.
+		if mode == "full" {
+			t = time.Now()
+			pass := chunkPass
+			if buildDecryptPassphraseHook != nil { // test-only: simulate a corrupt encryption step
+				pass = buildDecryptPassphraseHook(pass)
+			}
+			dh, derr := decryptRoundtripHash(gpgBin, payloadPath, pass)
+			if derr != nil || dh != c.TarHash {
+				return fail(fmt.Errorf("ciphertext does not decrypt to the verified tar — encryption step corrupted"))
+			}
+			finish("crypt_verify", t, 0.72)
+			bv.DecryptRoundtrip = true
+			now := time.Now().UTC()
+			a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: true, Path: payloadPath,
+				Note: "crypt_verify: ciphertext decrypts to the verified tar (tar_hash matched)"})
+		}
+		// Delete the intermediate tar only after both proofs are done with it.
 		if cfg.DeleteTarAfterEncrypt {
 			_ = os.Remove(tarPath)
 		}
-		finish("encrypt", t, 0.72)
 	} else {
 		// No encryption requested: the tar IS the payload, and payloadName(c) is
 		// <name>.tar, so it already sits at payloadPath (== tarPath) — no rename,
@@ -675,6 +855,12 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 			c.EncBytes = st.Size()
 		}
 		finish("stage", t, 0.72)
+		// A plaintext package has no encryption step to corrupt: its payload IS the
+		// stage-verified tar, so the decrypt round-trip holds true by identity when
+		// contents were proven. It is left false in fast mode (contents unproven).
+		if mode == "full" {
+			bv.DecryptRoundtrip = true
+		}
 	}
 
 	progress(0.75, strings.Join(summary, " · ")+" · par2…")
@@ -685,6 +871,7 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	}
 	finish("par2", t, 0.90)
 	c.BuildTimings = timings
+	c.BuildVerified = bv // build-time attestation, carried into the manifest below
 	if c.Spanned {
 		// Finalize the segment plan against the real payload + par2 size now
 		// that both exist, so the manifest/RESTORE.txt written below match.
@@ -832,6 +1019,13 @@ func writeManifest(dir string, c *Chunk, keyFpr string) error {
 		// so `sha256sum <payload_file>` still matches this value.
 		"ciphertext_hash": c.EncHash, "ciphertext_bytes": c.EncBytes,
 		"par2_redundancy_percent": c.Par2, "files": c.Files,
+	}
+	// build_verified attests, on the medium itself, that this package was proven
+	// to contain the source (contents) and to decrypt back to the verified tar
+	// (decrypt_roundtrip) at build time. A "fast" build carries mode:"fast" with
+	// both false and a warning, so a reader of the tape knows what was NOT proven.
+	if c.BuildVerified != nil {
+		m["build_verified"] = c.BuildVerified
 	}
 	if c.Encrypted {
 		m["cipher"] = "GnuPG symmetric AES-256, compression none"

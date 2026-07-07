@@ -47,6 +47,16 @@ Match the surrounding code — it is intentional, not accidental:
   existing comment density and naming.
 - **UI is one vanilla-JS file** (`ui/index.html`), no build step. Keep it that
   way; changes ship by editing the file.
+- **Protection status is ALWAYS colour + icon + text label together — never
+  colour alone.** The six statuses (`UNASSIGNED` ○, `NOT_BACKED_UP` ✕, `PARTIAL`
+  ◐, `COMPLETE` ✓, `OVER_COMPLETE` ✓+, `OUT_OF_POLICY` ⚠) each pair a colour with
+  an icon *and* a text label everywhere they appear (dashboard counts, workbench
+  tree dots, drift report, search results). Colour alone fails for colour-blind
+  users and in grayscale print — so it is not allowed. Use the `protBadge()`
+  helper; do not hand-roll a coloured dot. The palette is fixed: `ok #2E5E4E`,
+  `warn #9A6B1F`, `bad #A03123`, `idle #8A938C`, plus blue `#1E3D8F`
+  (over-complete) and purple `#6B2D86` (out-of-policy). **Introduce no other
+  status colours anywhere.**
 - **Line endings are normalized by `.gitattributes`.** The repo root carries a
   `.gitattributes` with `* text=auto` plus explicit `eol=lf` for `*.go`, `*.md`,
   and `*.html`, and `eol=crlf` for `*.bat` (so `cmd.exe` parses batch files

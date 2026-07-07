@@ -1,0 +1,11 @@
+IBM       ULT3580-TD6       G9R1
+Tape alert page  [0x2e]
+  Parameter code 0x1: 0
+  Parameter code 0x2: 0
+  Parameter code 0x3: 0
+  Parameter code 0x4: 0
+  Parameter code 0x5: 1
+  Parameter code 0x6: 0
+  Parameter code 0x14: 1
+  Parameter code 0x15: 0
+  Parameter code 0x1e: 1

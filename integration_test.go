@@ -174,7 +174,12 @@ func (s *itServer) scanPlanBuild(src string, targetGB float64, encrypted bool, p
 
 func (s *itServer) addVolume(label, loc string) int {
 	m := s.obj("POST", "/api/volumes", map[string]any{"label": label, "kind": "HDD", "location": loc})
-	return int(m["id"].(float64))
+	// POST /api/volumes returns {volume, detected} (consistent with the GET views).
+	v, ok := m["volume"].(map[string]any)
+	if !ok {
+		s.t.Fatalf("expected a volume in the register response, got: %v", m)
+	}
+	return int(v["id"].(float64))
 }
 
 // ---- shared assertions -------------------------------------------------

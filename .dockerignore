@@ -1,0 +1,10 @@
+# Keep the build context small. NOTE: do NOT exclude ui/ or docs/RESTORE_RUNBOOK.md
+# — both are compiled into the binary via //go:embed, so the build needs them.
+.git
+.github
+dist/
+_*/
+*.exe
+*.exe~
+mnemosyne
+docs/img/

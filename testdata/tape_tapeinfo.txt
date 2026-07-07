@@ -1,0 +1,18 @@
+Product Type: Tape Drive
+Vendor ID: 'IBM     '
+Product ID: 'ULT3580-TD6     '
+Revision: 'G9R1'
+Attached Changer API: No
+SerialNumber: '1013000123'
+TapeAlert[8]:       Not Data Grade: The tape is not data-grade. Any data you back up to the tape is at risk. Replace the cartridge with a data-grade tape.
+TapeAlert[20]:      Clean Now: The tape drive needs cleaning NOW.
+MinBlock: 1
+MaxBlock: 8388608
+SCSI ID: 5
+SCSI LUN: 0
+Ready: yes
+BufferedMode: yes
+Medium Type: 0x58
+Density Code: 0x5a
+BlockSize: 0
+DataCompEnabled: yes

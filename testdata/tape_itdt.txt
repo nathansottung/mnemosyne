@@ -1,0 +1,11 @@
+IBM Tape Diagnostic Tool - Standard Edition 9.6.0.20230815
+Copyright (c) IBM Corporation 2005, 2023
+Opening device \\.\Tape0 ...
+Drive:  IBM     ULT3580-HH6      FW: J4G1   S/N: 1013000123
+Power On Hours: 8571
+Total Bytes Written: 128000000000000
+Total Bytes Read: 210000000000000
+TapeAlert Flags reported by the drive:
+  Flag 21 (0x15)  Clean Periodic - The tape drive is due for a periodic cleaning.
+No media/hardware error flags reported.
+Operation completed successfully. Exit (0)

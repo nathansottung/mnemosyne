@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -146,6 +147,11 @@ func mediaInventoryMD(chunks []*Chunk, volm map[int]*Volume) string {
 			"    gpg -d NAME.manifest.json.gpg\n")
 	}
 
+	// Physical volumes: the drives/tapes/discs themselves, with the device
+	// identity resolved at register/adopt time — so a serial on a shelf label can
+	// be matched back to the catalog, and a dead drive identified by model/serial.
+	writeVolumesTable(&b, volm)
+
 	// Copies & placement: where each package physically lives, straight from the
 	// catalog's copies and (for spanned packages) per-segment records.
 	b.WriteString("\n## Copies & placement\n\n")
@@ -158,6 +164,64 @@ func mediaInventoryMD(chunks []*Chunk, volm map[int]*Volume) string {
 		}
 	}
 	return b.String()
+}
+
+// writeVolumesTable lists every registered volume with its physical device
+// identity (serial/model/capacity), the "which drive is this, really?" record.
+func writeVolumesTable(b *strings.Builder, volm map[int]*Volume) {
+	// Stable order by ID; skip the auto "(unregistered)" bucket when it's the only
+	// thing present and carries no identity.
+	ids := make([]int, 0, len(volm))
+	for id := range volm {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	rows := 0
+	var body strings.Builder
+	anyNote := false
+	for _, id := range ids {
+		v := volm[id]
+		if v == nil {
+			continue
+		}
+		serial := v.Serial
+		if serial == "" {
+			serial = "—"
+		} else if v.DeviceNote != "" {
+			serial += " *"
+			anyNote = true
+		}
+		model := v.Model
+		if model == "" {
+			model = "—"
+		}
+		cap := "—"
+		if v.DeviceSize > 0 {
+			cap = humanBytes(v.DeviceSize)
+		}
+		barcode := v.Barcode
+		if barcode == "" {
+			barcode = "—"
+		}
+		loc := v.Location
+		if loc == "" {
+			loc = "—"
+		}
+		body.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
+			mdCell(v.Label), mdCell(barcode), mdCell(v.Kind), mdCell(loc), mdCell(serial), mdCell(model), cap))
+		rows++
+	}
+	if rows == 0 {
+		return
+	}
+	b.WriteString("\n## Physical volumes\n\n")
+	b.WriteString("Every registered medium and — where the OS could resolve it — the drive's real serial, model, and capacity (captured when the volume was registered or media adopted).\n\n")
+	b.WriteString("| Label | Barcode | Kind | Location | Serial | Model | Capacity |\n")
+	b.WriteString("|-------|---------|------|----------|--------|-------|---------:|\n")
+	b.WriteString(body.String())
+	if anyNote {
+		b.WriteString("\n\\* Serial reported via a USB/1394 bridge or dock may be the enclosure's, not the drive's — treat it as a hint, not a fingerprint.\n")
+	}
 }
 
 // volDesc renders a volume as "Label (location)" for inline placement text,

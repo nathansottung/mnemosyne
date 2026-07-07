@@ -10,6 +10,9 @@
   --bg:#e7eae6; --panel:#fcfcfa; --line:#c9cfc9; --line-2:#e2e5e0;
   --act:#2e5e4e; --act-ink:#f2f5f2;
   --ok:#2e5e4e; --warn:#9a6b1f; --bad:#a03123; --idle:#8a938c;
+  /* the six protection-status colors — ok/warn/bad/idle reused, plus blue
+     (over-complete) and purple (out-of-policy). No other status colors exist. */
+  --blue:#1e3d8f; --purple:#6b2d86;
   --mono:ui-monospace,'Cascadia Mono','JetBrains Mono',Menlo,Consolas,monospace;
   --sans:system-ui,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
 }
@@ -101,6 +104,22 @@ a:focus-visible,[tabindex]:focus-visible,tr[role="button"]:focus-visible{outline
 nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 
+/* ---- protection status: ALWAYS color + icon + text together, never color alone ---- */
+.protbadge{display:inline-flex;align-items:center;gap:5px;font:11px var(--mono);border:1px solid;
+  border-radius:3px;padding:1px 7px;letter-spacing:.02em;white-space:nowrap;vertical-align:1px}
+.protbadge b{font-weight:700}
+.protrow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.protcount{flex:1;min-width:118px;background:var(--panel);border:1px solid var(--line);border-left-width:3px;
+  border-radius:5px;padding:9px 12px;text-decoration:none;color:inherit}
+.protcount .n{font:600 22px var(--sans);line-height:1.05}
+.protcount .l{font:10.5px var(--mono);letter-spacing:.04em;text-transform:uppercase;margin-top:1px}
+/* ---- protection tree rows ---- */
+.tnode{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line-2)}
+.tnode:last-child{border-bottom:none}
+.tname{font:12.5px var(--mono);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tprof{font:10.5px var(--mono);color:var(--ink-3)}
+.tprof.explicit{color:var(--ink-2);font-weight:600}
+
 /* ---- view header + inline help ---- */
 .hd{display:flex;align-items:center;gap:9px}
 .help{background:transparent;border:1px solid var(--line);color:var(--ink-3);border-radius:50%;
@@ -137,9 +156,11 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <div class="wordsub">archival vault · v2</div>
   <a href="#home" data-v="home">Home</a>
   <a href="#vault" data-v="vault">Vault</a>
+  <a href="#protection" data-v="protection">Protection</a>
   <a href="#packages" data-v="packages">Packages</a>
   <a href="#burn" data-v="burn">Burn</a>
   <a href="#volumes" data-v="volumes">Volumes</a>
+  <a href="#dock" data-v="dock">Dock</a>
   <a href="#keys" data-v="keys">Keys</a>
   <a href="#jobs" data-v="jobs">Jobs</a>
   <a href="#settings" data-v="settings">Settings</a>
@@ -150,7 +171,25 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 
 <script>
 const $=q=>document.querySelector(q);
-const api=async(m,u,b)=>{const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j};
+/* Auth: a remote (non-localhost) server requires a bearer token. We store it in
+   sessionStorage and attach it to every /api call; on a 401 we prompt ONCE
+   (concurrent 401s share the single prompt), save it, and retry. */
+let _tok=sessionStorage.getItem('mnemo_token')||'';let _tokPrompt=null;
+function setToken(t){_tok=(t||'').trim();if(_tok)sessionStorage.setItem('mnemo_token',_tok);else sessionStorage.removeItem('mnemo_token');}
+function askToken(){if(_tokPrompt)return _tokPrompt;
+  _tokPrompt=new Promise(res=>{const t=window.prompt('This Mnemosyne server requires an access token.\nPaste the Authorization Bearer token (config auth_token / MNEMO_AUTH_TOKEN):','');setToken(t);_tokPrompt=null;res(_tok);});
+  return _tokPrompt;}
+/* mediaURL appends the token as a query param for browser-native GETs (opening a
+   label/QR/report in a new tab can't set an Authorization header). */
+function mediaURL(u){return _tok?u+(u.includes('?')?'&':'?')+'token='+encodeURIComponent(_tok):u;}
+const api=async(m,u,b)=>{
+  const go=()=>{const h={'Content-Type':'application/json'};if(_tok)h['Authorization']='Bearer '+_tok;
+    return fetch(u,{method:m,headers:h,body:b?JSON.stringify(b):undefined});};
+  let r=await go();
+  if(r.status===401){await askToken();r=await go();}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||r.statusText);
+  return j;};
 const GB=n=>((n||0)/1e9).toFixed(2);
 
 // ---- space advice: all numbers/verdicts come from GET /api/space-advice; the
@@ -171,9 +210,11 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const HELP={
   home:['Home — archive health at a glance','This board shows the state of everything you keep. The strip across the top (Catalog → Package → Write → Verify) shows live totals for each stage of the pipeline and doubles as navigation — click a stage to go there. The table below breaks every archive down by package status, protection (verified copies vs. your goal), unresolved drift, and packages due for re-verification. Every number links straight to the relevant view.'],
   vault:['Vault — archives & file search','An Archive is a body of work you keep together (e.g. "Personal", "Photography Business"). Scan folders into it — every file is SHA-256 hashed at the source. Plan groups files into media-sized packages; Rescan & compare detects what changed since you backed up. The search box answers the real question: which package and which physical volume holds a given file.'],
+  protection:['Protection — the 3-2-1 model, made explicit','The real 3-2-1 rule has THREE dimensions: how many copies, across how many distinct kinds of media, and how many offsite. A Profile expresses all three; you assign one to an Archive and, optionally, override it on any folder path (nearest-ancestor-wins). Every file then gets exactly one of six statuses — Unassigned, Not backed up, Partial, Complete, Over-complete, Out-of-policy — always shown as colour + icon + text. Only verified copies count toward requirements. Built-in profiles are immutable; duplicate one to start a custom policy.'],
   packages:['Packages — the archival units','A Package is one self-contained, media-sized unit: a tar of files + par2 parity + manifest + RESTORE.txt (an OAIS AIP in plain English). The lifecycle rail reads PLANNED → BUILDING → STAGED → WRITING → WRITTEN → VERIFIED; red means FAILED. Build a package, then Write it to a volume with read-back verification. Packages too big for one medium are spanned across several, one tape at a time.'],
   burn:['Burn — the optical disc queue','Optical media can\'t stream continuously, so discs are fed one at a time. A burn queue holds one disc per package and survives reboots (a disc caught mid-burn resets to pending — it may be a coaster). Click "Burn next disc", wait, then write the package name on the physical disc. Square colours: green = done, red = failed, amber = in progress, grey = pending.'],
   volumes:['Volumes — where the bytes physically live','A Volume is a physical medium you can hold: a tape, drive, or disc, with a barcode, kind, and free-text location ("office safe"). Each Copy records which package sits on which volume and when it last verified. Scan a barcode into the lookup box to jump straight to a medium\'s contents — no mounting needed.'],
+  dock:['Dock — ingest a stack of legacy drives, one at a time','Pick the Archive(s) to reconcile against, then dock drives one by one. Mnemosyne watches for each newly-inserted drive, and on one click does everything hands-off: identifies the drive by serial, hashes every file and matches it by CONTENT against your archives, records the matches as verified copies, and writes an inventory sidecar onto the drive itself. It is strictly read-only toward your sources — NAS folders are only ever hashed. A re-inserted drive is recognized by serial and re-verified, not re-adopted. The session survives closing the app; resume it days later.'],
   keys:['Keys — encryption secrets','Encrypted packages use per-package random ~288-bit passphrases that live ONLY in keystore files — the catalog stores fingerprints, never the secret. Encrypted builds refuse to run until ≥2 keystores on different devices are registered and in sync. Print a QR card per key, and export a Recovery Kit for the fireproof box.'],
   jobs:['Jobs — background work','Long operations (scan, build, write, verify, reconcile, recovery kit) run in the background so the UI stays responsive. It is safe to navigate away; this list refreshes automatically while anything is still running.'],
   settings:['Settings — one config file','Everything lives in one config.json in the data folder: paths to the external tools, the staging folder, keystore locations, redundancy goal, re-verify window, write throttle, and the optical burn command. Preflight at the top shows whether tar/gpg/par2 (and any LTFS tape) are ready.'],
@@ -204,11 +245,19 @@ function rail(c){
   return h+'</div><div class="raillbl">'+esc(c.status)+(c.verify_ok===false?' · MEDIA CHECK FAILED':'')+'</div>';
 }
 
-const TORDER=['tar','hash','encrypt','stage','par2'];
+const TORDER=['tar','hash','stage_verify','encrypt','stage','crypt_verify','par2'];
 function timingStr(t){if(!t)return '';const parts=[];
   for(const k of TORDER)if(t[k]!=null)parts.push(`${k} ${(+t[k]).toFixed(1)}s`);
   for(const k in t)if(!TORDER.includes(k))parts.push(`${k} ${(+t[k]).toFixed(1)}s`);
   return parts.length?'⏱ '+parts.join(' · '):''}
+/* Build-time attestation: every hop of the custody chain now PROVEN. "full"
+   shows a green stamp; "fast" shows the amber warning that contents +
+   decryptability are unproven. */
+function buildVerifiedStr(c){const b=c.build_verified;if(!b)return '';
+  if(b.mode==='fast')return `<div style="font-size:11px;margin-top:2px"><span class="etag due" title="${esc(b.warning||'')}">⚠ fast build — contents & decrypt UNPROVEN</span></div>`;
+  const parts=[];if(b.contents)parts.push('contents');if(b.decrypt_roundtrip)parts.push('decrypt round-trip');
+  if(!parts.length)return '';
+  return `<div class="dim" style="font-size:11px;margin-top:2px" title="stage-vs-source + decrypt round-trip proven at build">🛡 build-verified: ${parts.join(' · ')}</div>`}
 
 /* ---- verification history + due tracking ---- */
 function latestOKTime(c){let t=null;
@@ -245,11 +294,165 @@ async function lamp(){try{const p=await api('GET','/api/preflight');const l=$('#
   l.querySelector('span').textContent=p.ok?'tar · gpg · par2 · keys ready':'setup needed — see Settings';
 }catch(e){}}
 
+/* ---------------- Protection profiles & the six-status model ----------------
+   The real 3-2-1 rule has THREE dimensions: copies, distinct media kinds, and
+   offsite copies. A file's status is derived against its RESOLVED profile across
+   all three. HARD UI RULE: a status is ALWAYS color + icon + text together —
+   never color alone. */
+const PROT={
+  COMPLETE:{c:'var(--ok)',i:'✓',t:'Complete'},
+  OVER_COMPLETE:{c:'var(--blue)',i:'✓+',t:'Over-complete'},
+  PARTIAL:{c:'var(--warn)',i:'◐',t:'Partial'},
+  NOT_BACKED_UP:{c:'var(--bad)',i:'✕',t:'Not backed up'},
+  OUT_OF_POLICY:{c:'var(--purple)',i:'⚠',t:'Out of policy'},
+  UNASSIGNED:{c:'var(--idle)',i:'○',t:'Unassigned'},
+};
+const PROT_ORDER=['COMPLETE','OVER_COMPLETE','PARTIAL','NOT_BACKED_UP','OUT_OF_POLICY','UNASSIGNED'];
+function protBadge(st,detail){const p=PROT[st]||PROT.UNASSIGNED;
+  return `<span class="protbadge" style="border-color:${p.c};color:${p.c}"><b aria-hidden="true">${p.i}</b> ${p.t}${detail?` · <span style="opacity:.85">${esc(detail)}</span>`:''}</span>`}
+function reqStr(p){return `${p.required_copies} cop${p.required_copies===1?'y':'ies'} · ${p.required_distinct_media_kinds} media kind${p.required_distinct_media_kinds===1?'':'s'} · ${p.required_offsite_copies} offsite`}
+const COUNTS_NOTE='<div class="dim" style="font-size:11.5px;margin-bottom:12px">Only <b>verified</b> copies count toward requirements — a written-but-unverified copy does not close a gap.</div>';
+/* Surface recompute deltas from any profile/assignment/offsite change — never silent. */
+function recomputeToast(r){if(!r)return;const d=(r.recompute&&r.recompute.deltas)||r.deltas||{};const parts=[];
+  if(d.PARTIAL)parts.push(`${d.PARTIAL} newly Partial`);
+  if(d.OUT_OF_POLICY)parts.push(`${d.OUT_OF_POLICY} newly Out-of-policy`);
+  if(d.NOT_BACKED_UP)parts.push(`${d.NOT_BACKED_UP} newly Not-backed-up`);
+  toast(parts.length?('Protection recomputed — '+parts.join(' · ')):'Protection recomputed',parts.length>0);}
+/* Six-count strip — the canonical dashboard read of the model. */
+function protStrip(totals){const t=totals||{};
+  if(!PROT_ORDER.some(s=>t[s]))return '';
+  let h='<div class="protrow" role="group" aria-label="protection status counts">';
+  for(const s of PROT_ORDER){const p=PROT[s];
+    h+=`<a class="protcount" href="#protection" style="border-left-color:${p.c}"><div class="n" style="color:${p.c}">${(t[s]||0).toLocaleString()}</div><div class="l"><span aria-hidden="true">${p.i}</span> ${p.t}</div></a>`}
+  return h+'</div>'}
+
+async function vProtection(){
+  const [pr,cs,profs]=await Promise.all([api('GET','/api/protection'),api('GET','/api/collections'),api('GET','/api/profiles')]);
+  const totals=pr.totals||{}; const sums={}; for(const s of (pr.summaries||[]))sums[s.collection_id]=s.files||{};
+  let h=hdr('Protection','the 3-2-1 model · copies × media kinds × offsite','protection');
+  h+=`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
+    <h2 style="margin:0">Status across every archive</h2>
+    <button class="btn ghost" onclick="doRecompute()">Recompute now</button></div>
+    <div class="dim" style="font-size:11.5px;margin:6px 0 12px">3-2-1 means three copies, on two distinct kinds of media, with one offsite. Every file is evaluated against its resolved profile across all three dimensions.</div>
+    ${protStrip(totals)||'<div class="dim">No status computed yet — Recompute, or make an assignment.</div>'}
+    ${COUNTS_NOTE}</div>`;
+  // ---- Profiles manager ----
+  h+=`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
+    <h2 style="margin:0">Profiles</h2><button class="btn" onclick="profileDlg()">New profile…</button></div>
+    <div class="dim" style="font-size:11.5px;margin:4px 0 8px">Built-in profiles are immutable — duplicate one to start a custom profile.</div>
+    <table><tr><th>Profile</th><th>Copies</th><th>Media kinds</th><th>Offsite</th><th>Allowed media</th><th>Verify due</th><th></th></tr>`;
+  for(const p of profs||[]){
+    h+=`<tr><td><b>${esc(p.name)}</b>${p.builtin?' <span class="etag enc">built-in</span>':''}<div class="dim" style="font-size:11px">${esc(p.description||'')}</div></td>
+      <td class="num">${p.required_copies}</td><td class="num">${p.required_distinct_media_kinds}</td><td class="num">${p.required_offsite_copies}</td>
+      <td class="dim mono" style="font-size:11px">${(p.media_kinds_allowed&&p.media_kinds_allowed.length)?esc(p.media_kinds_allowed.join(', ')):'any'}</td>
+      <td class="num">${p.verify_due_months} mo</td>
+      <td class="row" style="justify-content:flex-end">
+        <button class="btn ghost" style="font-size:11px;padding:2px 8px" onclick='dupProfile(${JSON.stringify(p.id)},${JSON.stringify(p.name)})'>Duplicate</button>
+        ${p.builtin?'':`<button class="btn ghost" style="font-size:11px;padding:2px 8px" onclick='editProfile(${JSON.stringify(p)})'>Edit</button>
+        <button class="btn danger" style="font-size:11px;padding:2px 8px" onclick='delProfile(${JSON.stringify(p.id)},${JSON.stringify(p.name)})'>Delete</button>`}
+      </td></tr>`}
+  h+='</table></div>';
+  // ---- Per-archive status + drill-in ----
+  h+='<div class="panel"><h2>Archives</h2>';
+  if(!(cs||[]).length)h+='<div class="empty">No archives yet.</div>';
+  else{h+='<table><tr><th>Archive</th><th>Status breakdown</th><th></th></tr>';
+    for(const c of cs){const sm=sums[c.id]||{};
+      const badges=PROT_ORDER.filter(s=>sm[s]).map(s=>{const p=PROT[s];return `<span class="protbadge" style="border-color:${p.c};color:${p.c}"><b aria-hidden="true">${p.i}</b> ${sm[s]}</span>`}).join(' ')||'<span class="dim">not computed</span>';
+      h+=`<tr><td><b>${esc(c.name)}</b></td><td class="row" style="gap:6px">${badges}</td>
+        <td class="row" style="justify-content:flex-end"><button class="btn ghost" onclick="vArchiveProtection(${c.id})">Manage folders & assignment…</button></td></tr>`}
+    h+='</table>'}
+  h+='</div>';
+  $('#view').innerHTML=h;
+}
+async function doRecompute(){try{const r=await api('POST','/api/protection/recompute');recomputeToast({recompute:r});vProtection()}catch(e){toast(e.message,1)}}
+
+/* Per-archive: archive-level assignment + a folder tree with nearest-ancestor
+   resolution. Inherited assignments render muted; explicit ones render solid. */
+let _tnodes=[];let _tcid=0;
+async function vArchiveProtection(id){
+  const [d,profs,cs]=await Promise.all([api('GET','/api/collections/'+id+'/protection'),api('GET','/api/profiles'),api('GET','/api/collections')]);
+  const res=d.protection||{}; _tnodes=res.nodes||[]; _tcid=id;
+  const name=((cs||[]).find(c=>c.id===id)||{}).name||('Archive #'+id);
+  const ap=res.archive_profile;
+  window._profs=profs||[];
+  let h=`<h1>Protection — ${esc(name)}</h1><div class="crumb">3-2-1 model · nearest-ancestor-wins assignment</div>
+  <div class="row" style="margin-bottom:12px"><button class="btn ghost" onclick="loc('protection')">← Protection</button>
+    <button class="btn ghost" onclick="doRecompute2(${id})">Recompute</button></div>
+  ${COUNTS_NOTE}
+  <div class="panel"><h2>Archive-level profile</h2>
+    <div class="row" style="align-items:center;gap:10px">
+      <div style="flex:1">Every folder without its own assignment inherits this. ${ap?`<b>${esc(ap.name)}</b> <span class="dim">· ${esc(reqStr(ap))}</span>`:'<span class="protbadge" style="border-color:var(--idle);color:var(--idle)"><b aria-hidden="true">○</b> Unassigned</span>'}</div>
+      <button class="btn" onclick="assignDlgArchive(${id},'${esc(ap?ap.id:'')}')">Assign profile…</button></div></div>
+  <div class="panel"><h2>Folders — assign a profile to override (context action per row)</h2>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">Muted profile = inherited from an ancestor. Solid = an explicit assignment on this folder. A folder's status is the worst status among its files.</div>`;
+  if(!_tnodes.length)h+='<div class="empty">No scanned files yet — scan a folder into this archive first.</div>';
+  else _tnodes.forEach((n,i)=>h+=treeRow(i));
+  h+='</div>';
+  $('#view').innerHTML=h;
+}
+function treeRow(i){const n=_tnodes[i];
+  const prof=n.profile_name?`${esc(n.profile_name)}${n.inherited?' · inherited':''}`:'unassigned';
+  return `<div class="tnode" style="padding-left:${(n.depth||0)*16}px">
+    <span class="tname" title="${esc(n.path)}">${n.depth?'└ ':''}${esc(n.name)} <span class="dim">· ${n.files} file${n.files===1?'':'s'}</span></span>
+    ${protBadge(n.status,n.detail)}
+    <span class="tprof ${n.inherited?'':'explicit'}">${prof}</span>
+    <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="assignDlgNode(${i})">Assign…</button></div>`}
+function profileOptions(sel,includeInherit){
+  let o=includeInherit?`<option value="">— inherit from parent —</option>`:'';
+  for(const p of (window._profs||[]))o+=`<option value="${esc(p.id)}"${p.id===sel?' selected':''}>${esc(p.name)} (${esc(reqStr(p))})</option>`;
+  return o}
+function assignDlgNode(i){const n=_tnodes[i];
+  dlg(`<h1>Assign profile</h1>
+    <div class="dim mono" style="font-size:11.5px;margin-bottom:8px">${esc(n.path)}</div>
+    <label>Profile for this folder and its descendants</label>
+    <select id="d1" class="full">${profileOptions(n.inherited?'':n.profile_id,true)}</select>
+    <div class="dim" style="font-size:11px;margin-top:4px">“Inherit from parent” removes this folder's own assignment so it follows the nearest ancestor again.</div>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Save assignment</button></div>`,
+  async()=>{const pid=$('#d1').value;
+    const r=await api('POST','/api/collections/'+_tcid+'/assign',{path:n.path,profile_id:pid});
+    recomputeToast(r);vArchiveProtection(_tcid)})}
+function assignDlgArchive(id,cur){window._profs=window._profs||[];
+  dlg(`<h1>Archive-level profile</h1>
+    <label>Default profile for this Archive</label>
+    <select id="d1" class="full">${profileOptions(cur,true)}</select>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Save</button></div>`,
+  async()=>{const pid=$('#d1').value;
+    const r=await api('POST','/api/collections/'+id+'/assign',{path:'',profile_id:pid});
+    recomputeToast(r);vArchiveProtection(id)})}
+async function doRecompute2(id){try{const r=await api('POST','/api/protection/recompute');recomputeToast({recompute:r});vArchiveProtection(id)}catch(e){toast(e.message,1)}}
+
+/* ---- profile create / edit / duplicate / delete ---- */
+function profileDlg(){profileForm(null)}
+function editProfile(p){profileForm(p)}
+function profileForm(p){const e=p||{required_copies:3,required_distinct_media_kinds:2,required_offsite_copies:1,verify_due_months:12,media_kinds_allowed:[]};
+  dlg(`<h1>${p?'Edit profile':'New profile'}</h1>
+    <label>Name</label><input id="pf_name" class="full" value="${esc(e.name||'')}" placeholder="e.g. Wedding Masters">
+    <label>Description</label><input id="pf_desc" class="full" value="${esc(e.description||'')}" placeholder="what this policy is for">
+    <div class="row"><div style="flex:1"><label>Required copies</label><input id="pf_c" class="full" type="number" min="0" value="${e.required_copies}"></div>
+      <div style="flex:1"><label>Distinct media kinds</label><input id="pf_k" class="full" type="number" min="0" value="${e.required_distinct_media_kinds}"></div>
+      <div style="flex:1"><label>Offsite copies</label><input id="pf_o" class="full" type="number" min="0" value="${e.required_offsite_copies}"></div></div>
+    <label>Allowed media kinds (comma-separated; blank = any). Copies on other kinds are Out-of-policy.</label>
+    <input id="pf_m" class="full" style="font:12px var(--mono)" value="${esc((e.media_kinds_allowed||[]).join(', '))}" placeholder="e.g. TAPE, HDD">
+    <label>Re-verify due after (months)</label><input id="pf_v" class="full" type="number" min="0" value="${e.verify_due_months}">
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">${p?'Save changes':'Create profile'}</button></div>`,
+  async()=>{const body={name:$('#pf_name').value.trim(),description:$('#pf_desc').value.trim(),
+      required_copies:parseInt($('#pf_c').value)||0,required_distinct_media_kinds:parseInt($('#pf_k').value)||0,
+      required_offsite_copies:parseInt($('#pf_o').value)||0,verify_due_months:parseInt($('#pf_v').value)||0,
+      media_kinds_allowed:$('#pf_m').value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)};
+    if(!body.name){toast('Name required',1);return}
+    if(p){const r=await api('PUT','/api/profiles/'+encodeURIComponent(p.id),body);recomputeToast(r);toast('Profile saved')}
+    else{await api('POST','/api/profiles',body);toast('Profile created')}
+    vProtection()})}
+async function dupProfile(id,name){try{await api('POST','/api/profiles/'+encodeURIComponent(id)+'/duplicate',{name:name+' (copy)'});
+  toast('Duplicated — edit the copy');vProtection()}catch(e){toast(e.message,1)}}
+async function delProfile(id,name){if(!confirm('Delete profile “'+name+'”? In-use profiles are refused until reassigned.'))return;
+  try{await api('DELETE','/api/profiles/'+encodeURIComponent(id));toast('Profile deleted');vProtection()}catch(e){toast(e.message,1)}}
+
 /* ---------------- Home / Dashboard ---------------- */
 async function vHome(){
-  const [cs,chunks,cfgr,pre,adv]=await Promise.all([
+  const [cs,chunks,cfgr,pre,adv,pr]=await Promise.all([
     api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/preflight'),
-    api('GET','/api/space-advice').catch(()=>null)]);
+    api('GET','/api/space-advice').catch(()=>null),api('GET','/api/protection').catch(()=>null)]);
   const archives=cs||[]; const pkgs=chunks||[]; const cfg=(cfgr&&cfgr.config)||{};
   const required=cfg.required_copies||2; const months=cfg.verify_due_months||12;
   // Empty catalog → guided first run.
@@ -261,6 +464,8 @@ async function vHome(){
   const due=dueCount(pkgs,months);
   const byArch={}; for(const c of pkgs){(byArch[c.collection_id]=byArch[c.collection_id]||[]).push(c)}
   let h=hdr('Home','archive health at a glance','home');
+  const protStripHTML=protStrip((pr&&pr.totals)||{});
+  if(protStripHTML)h+=`<a href="#protection" style="text-decoration:none;color:var(--ink-3);font:11px var(--mono);letter-spacing:.06em;text-transform:uppercase">Protection — 3-2-1 status →</a>`+protStripHTML;
   if(under||due)h+=`<div class="row" style="margin-bottom:14px">
     ${under?`<a class="btn danger" href="#packages">⚠ ${under} under-protected package${under>1?'s':''}</a>`:''}
     ${due?`<a class="btn ghost" href="#packages">${due} package${due>1?'s':''} verify-due</a>`:''}</div>`;
@@ -355,6 +560,8 @@ async function vVault(){
       <td class="num">${c.chunks}</td><td class="row" style="justify-content:flex-end">
       <button class="btn ghost" onclick="scanDlg(${c.id},'${esc(c.name)}')">Scan folder…</button>
       <button class="btn ghost" onclick="planDlg(${c.id},'${esc(c.name)}')">Plan packages…</button>
+      <button class="btn ghost" onclick="mirrorDlg(${c.id},'${esc(c.name)}')">Mirror backup…</button>
+      <button class="btn ghost" onclick="vArchiveProtection(${c.id})">Protection…</button>
       <button class="btn ghost" onclick="doReconcile(${c.id},'${esc(c.name)}')">Rescan & compare</button></td></tr>`}
     h+='</table>'}
   h+='</div>';
@@ -362,6 +569,47 @@ async function vVault(){
 }
 async function doReconcile(id,name){try{await api('POST','/api/collections/'+id+'/reconcile');
   toast('Rescan & compare started — see Jobs; drift shows on the archive when done');loc('jobs')}catch(e){toast(e.message,1)}}
+/* Mirror backup — plain-file copies (source tree preserved) to one or more
+   volumes, copy-then-verified. The browsable complement to sealed packages. */
+async function mirrorDlg(id,name){
+  const [folders,vols]=await Promise.all([api('GET','/api/collections/'+id+'/folders'),api('GET','/api/volumes')]);
+  if(!(vols||[]).length){toast('Register a target Volume first (Volumes → Register volume…)',1);return}
+  window._mvols=(vols||[]).map(r=>r.volume||r);
+  const folderChecks=(folders||[]).length
+    ? folders.map(f=>`<label class="row" style="gap:8px;align-items:center"><input type="checkbox" class="mfolder" value="${f.id}" checked style="width:auto"> <span class="mono" style="font-size:11.5px">${esc(f.path)}</span> <span class="dim">· ${f.files} files · ${GB(f.bytes)} GB</span></label>`).join('')
+    : '<div class="dim">No folders scanned into this archive yet — scan one first.</div>';
+  dlg(`<h1>Mirror ${esc(name)} to volume(s)</h1>
+    <div class="dim" style="margin-bottom:8px">A <b>mirror</b> copies files as <b>plain files</b> (source tree preserved) — browse or restore them with any file manager; no key, no unpack. Each file is copy-then-verified (SHA-256) and recorded as a verified copy, so drift &amp; coverage count it. The live, browsable complement to sealed <b>packages</b> (tar+par2, encrypted, for tape/optical). 🛡 Sources are only read.</div>
+    <label>Folders to mirror</label>
+    <div style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px">${folderChecks}</div>
+    <label style="margin-top:10px">Target volumes — add more than one to fill several drives at once (one job per volume)</label>
+    <div id="mtargets"></div>
+    <button class="btn ghost" style="margin-top:6px" onclick="addMirrorTarget()">＋ add another volume</button>
+    <label style="margin-top:10px">Throttle MB/s (blank/0 = setting; caps write speed to keep drives cool)</label>
+    <input id="mthrottle" class="full" type="number" step="1" placeholder="0 = use setting">
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Start mirror job(s)</button></div>`,
+  async()=>{
+    const folder_ids=[...document.querySelectorAll('.mfolder:checked')].map(e=>parseInt(e.value));
+    const targets=[...document.querySelectorAll('.mtarget')].map(row=>{
+      const dest=row.querySelector('.mdest').value.trim();
+      const vid=parseInt(row.querySelector('.mvol').value)||0;
+      return dest&&vid?{dest_dir:dest,volume_id:vid}:null}).filter(Boolean);
+    if(!targets.length){toast('Add at least one target (dest folder + volume)',1);return}
+    const r=await api('POST','/api/mirror',{collection_id:id,folder_ids:folder_ids,
+      throttle_mbps:parseFloat($('#mthrottle').value)||0,targets:targets});
+    toast(`${(r.jobs||[]).length} mirror job(s) started — see Jobs`);loc('jobs');
+  });
+  addMirrorTarget();
+}
+function addMirrorTarget(){
+  const c=$('#mtargets');if(!c)return;
+  const opts=(window._mvols||[]).map(v=>`<option value="${v.id}">${esc(v.label)}${v.location?' · '+esc(v.location):''}${v.kind?' · '+esc(v.kind):''}</option>`).join('');
+  const row=document.createElement('div');row.className='row mtarget';row.style.marginTop='6px';
+  row.innerHTML=`<input class="mdest" placeholder="T:\\Mirror  or  /mnt/backup" style="flex:2">
+    <select class="mvol" style="flex:1">${opts}</select>
+    <button class="btn ghost" onclick="this.parentNode.remove()" title="remove target">✕</button>`;
+  c.appendChild(row);
+}
 async function vDrift(id,name){
   const d=await api('GET','/api/collections/'+id+'/drift');const c=d.counts||{};const info=d.info_counts||{};
   const changes=(c.new||0)+(c.modified||0)+(c.missing||0)+(c.moved||0);
@@ -408,8 +656,9 @@ function searchCopies(r){const cps=r.copies||[];
 let sT;function doSearch(q){clearTimeout(sT);sT=setTimeout(async()=>{
   if(!q){$('#sres').innerHTML='';return}
   const rs=await api('GET','/api/search?q='+encodeURIComponent(q));
-  let h='<table><tr><th>File</th><th class="num">Size</th><th>Package</th><th>Copies / volumes</th></tr>';
+  let h='<table><tr><th>File</th><th class="num">Size</th><th>Protection</th><th>Package</th><th>Copies / volumes</th></tr>';
   for(const r of rs||[]) h+=`<tr><td class="mono">${esc(r.rel_path)}</td><td class="num">${GB(r.size_bytes)} GB</td>
+    <td>${protBadge(r.protection_status,r.protection_detail)}${r.profile_name?`<div class="dim" style="font-size:10px">${esc(r.profile_name)}</div>`:''}</td>
     <td>${r.chunk?'<span class="chip">'+esc(r.chunk)+'</span>':'<span class="dim">not packaged</span>'}</td>
     <td>${searchCopies(r)}</td></tr>`;
   $('#sres').innerHTML=(rs&&rs.length)?h+'</table>':'<div class="empty">No matches.</div>';
@@ -466,6 +715,7 @@ async function vChunks(){
     for(const c of chunks.sort((a,b)=>b.id-a.id)){
       h+=`<tr><td><div class="mono">${esc(c.name)} <span class="etag ${c.encrypted?'enc':'plain'}">${c.encrypted?'AES-256':'plaintext'}</span>${c.adopted?' <span class="etag" title="cataloged from pre-existing media">adopted</span>':''}${c.listing_unknown?' <span class="etag due" title="contents not enumerated — restore or deep-adopt to list">listing unknown</span>':''}${isVerifyDue(c,months)?' <span class="etag due">verify due</span>':''}${copyTag(c,required)}</div><div class="dim" style="font-size:11.5px">${esc(c.media_kind)} · ${esc(c.src_root||(c.adopted?'adopted in place':''))}</div>
         ${c.build_timings?`<div class="dim mono" style="font-size:11px">${esc(timingStr(c.build_timings))}</div>`:''}
+        ${buildVerifiedStr(c)}
         ${ringStr(c)}
         ${segStr(c)}
         ${copiesLine(c,volmap)}
@@ -528,11 +778,12 @@ async function doBuild(id){
   dlg(body,async()=>{await api('POST',`/api/chunks/${id}/build`);toast('Build started — see Jobs');loc('jobs')});
 }
 async function writeDlg(id,name,payload){
-  const vols=await api('GET','/api/volumes')||[];
+  const [vols,tape]=await Promise.all([api('GET','/api/volumes'),api('GET','/api/tape/status').catch(()=>({}))]);
   dlg(`<h1>Write ${esc(name)}</h1>
   <label>Destination (LTFS tape mount, archive drive, burn folder)</label>
   <input id="d1" class="full" placeholder="T:\\  or  /mnt/ltfs  or  E:\\archive" oninput="checkDest(${id})">
   <div id="dwarn"></div>
+  <div id="tapenudge">${tapeNudge(tape)}</div>
   ${volPicker(vols)}
   <div class="row"><div style="flex:1"><label>RAM buffer GB (blank = setting)</label><input id="d2" class="full" type="number" step="0.5" placeholder="16"></div>
     <div style="flex:1"><label>Block size MB (blank = setting)</label><input id="d4" class="full" type="number" step="1" placeholder="64"></div></div>
@@ -669,14 +920,15 @@ function volPicker(vols){
       <label>Barcode (scan or type)</label><input id="nvbc" class="full" placeholder="scan…">
       <div class="row"><div style="flex:1"><label>Kind</label><select id="nvkind" class="full"><option>TAPE</option><option>HDD</option><option>SSD</option><option>OPTICAL</option><option>OTHER</option></select></div>
       <div style="flex:1"><label>Location</label><input id="nvloc" class="full" placeholder="office safe"></div></div>
+      <label class="row" style="gap:6px;margin-top:8px"><input id="nvoff" type="checkbox" style="width:auto"> Offsite (the “1” in 3-2-1 — a different physical location)</label>
     </div>`}
 function volChoice(){const sel=$('#vol');if(!sel)return {};
   if(sel.value==='new'){const label=($('#nvlabel').value.trim())||($('#nvbc').value.trim());if(!label)throw new Error('New volume needs a label or barcode');
-    return {new_volume:{label,barcode:$('#nvbc').value.trim(),kind:$('#nvkind').value,location:$('#nvloc').value.trim()}}}
+    return {new_volume:{label,barcode:$('#nvbc').value.trim(),kind:$('#nvkind').value,location:$('#nvloc').value.trim(),offsite:!!($('#nvoff')&&$('#nvoff').checked)}}}
   return {volume_id:parseInt(sel.value)||0}}
 
 async function vVolumes(){
-  const vols=await api('GET','/api/volumes')||[];
+  const [vols,tape]=await Promise.all([api('GET','/api/volumes'),api('GET','/api/tape/status').catch(()=>({}))]);
   let h=`${hdr('Volumes','physical media — where the bytes actually live','volumes')}
   <div class="panel"><div class="row">
     <input id="bclookup" placeholder="Scan a barcode → jump to its contents" style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')volLookup()">
@@ -684,21 +936,90 @@ async function vVolumes(){
     <button class="btn ghost" onclick="adoptDlg()">Adopt media…</button>
     <button class="btn" onclick="newVolumeDlg()">Register volume…</button></div>
     <div class="dim" style="font-size:11.5px;margin-top:6px">Have archives written before Mnemosyne (or by hand with tar+par2)? <b>Adopt media…</b> catalogs them in place — no rewriting.</div></div>
+  ${tapePanel(tape)}
   <div class="panel"><h2>Registered media (${vols.length})</h2>`;
   if(!vols.length)h+='<div class="empty">No volumes yet — a volume is a physical tape/drive/disc with a barcode and location.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="newVolumeDlg()">Register volume…</button></div></div>';
   else{h+='<table><tr><th>Label</th><th>Barcode</th><th>Kind</th><th>Location</th><th class="num">Packages</th><th class="num">Bytes</th><th>Last verified</th></tr>';
     for(const r of vols){const v=r.volume;
-      h+=`<tr style="cursor:pointer" tabindex="0" role="button" aria-label="Open volume ${esc(v.label)}" onclick="volDetail(${v.id})" onkeydown="if(event.key==='Enter')volDetail(${v.id})"><td><b>${esc(v.label)}</b></td><td class="mono">${esc(v.barcode||'—')}</td>
-        <td>${esc(v.kind)}</td><td>${esc(v.location||'—')}</td><td class="num">${r.chunk_count}</td>
+      h+=`<tr style="cursor:pointer" tabindex="0" role="button" aria-label="Open volume ${esc(v.label)}" onclick="volDetail(${v.id})" onkeydown="if(event.key==='Enter')volDetail(${v.id})"><td><b>${esc(v.label)}</b>${(v.model||v.serial)?`<div class="dim" style="font-size:10.5px">🖴 ${esc([v.model,v.serial].filter(Boolean).join(' · '))}</div>`:''}</td><td class="mono">${esc(v.barcode||'—')}</td>
+        <td>${esc(v.kind)}</td><td>${esc(v.location||'—')} ${v.offsite?'<span class="etag enc" title="counts as an offsite copy">offsite</span>':'<span class="etag" style="color:var(--ink-3)">onsite</span>'}</td><td class="num">${r.chunk_count}</td>
         <td class="num">${GB(r.total_bytes)} GB</td><td class="dim" style="font-size:11.5px">${esc(ageStr(r.last_verified_at))}</td></tr>`}
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
 }
+/* Tape-drive diagnostics — OPTIONAL, strictly read-only toward the drive; never
+   moves the tape or writes. A maintenance/mortality signal that complements —
+   never replaces — hash verification. */
+const TAPE_SEV={ok:'var(--ok)',clean:'var(--warn)',warn:'var(--warn)',error:'var(--bad)'};
+function tapeSevBadge(sev){const map={ok:['VERIFIED','healthy'],clean:['due','cleaning'],warn:['due','warnings'],error:['FAILED','error']};
+  const [cls,txt]=map[sev]||['due',sev];return `<span class="stamp ${cls==='VERIFIED'?'VERIFIED':cls==='FAILED'?'FAILED':''}" style="color:${TAPE_SEV[sev]}">${esc(txt)}</span>`}
+function tapeBytes(n){return n?GB(n)+' GB':'—'}
+function tapeAlertsHtml(alerts){if(!alerts||!alerts.length)return '';
+  return '<div style="margin-top:8px">'+alerts.map(f=>`<div style="display:flex;gap:8px;align-items:baseline;margin:3px 0">
+    <span style="color:${TAPE_SEV[f.severity]||'var(--warn)'};font-weight:700">●</span>
+    <div><b>${esc(f.name)}</b> <span class="dim mono" style="font-size:10.5px">flag ${f.id}</span><div class="dim" style="font-size:11.5px">${esc(f.text||'')}</div></div></div>`).join('')+'</div>'}
+function tapeHealthBody(th){
+  let h=`<div class="row" style="gap:16px;flex-wrap:wrap;align-items:baseline">
+    <div style="font-size:15px;font-weight:600;color:${TAPE_SEV[th.severity]||''}">${esc(th.summary||'')}</div></div>`;
+  if(th.cleaning_recommended)h+=`<div style="margin-top:6px;color:var(--warn);font-weight:600">🧽 Cleaning cartridge recommended.</div>`;
+  const stats=[];
+  if(th.vendor||th.product)stats.push([th.vendor,th.product].filter(Boolean).join(' '));
+  if(th.serial)stats.push('S/N '+th.serial);
+  if(th.power_on_hours)stats.push((Math.round(th.power_on_hours/8.76)/1000)+' yr power-on');
+  if(th.bytes_written)stats.push('written '+tapeBytes(th.bytes_written));
+  if(th.bytes_read)stats.push('read '+tapeBytes(th.bytes_read));
+  if(stats.length)h+=`<div class="dim mono" style="font-size:11.5px;margin-top:8px">${esc(stats.join(' · '))}</div>`;
+  h+=tapeAlertsHtml(th.alerts);
+  h+=`<div class="dim" style="font-size:11px;margin-top:10px">Read ${esc((th.at||'').replace('T',' ').slice(0,16))} via ${esc(th.tool||'')} on ${esc(th.device||'')}. Diagnostics only — Mnemosyne never issues movement or write commands. A drive signal, not a data-integrity guarantee: only the custody-chain hashes prove your bytes intact.</div>`;
+  return h;
+}
+function tapePanel(tape){
+  if(!tape||(!tape.available&&!tape.last))return ''; // feature hidden; install hint lives in Settings
+  let h=`<div class="panel"><div class="row" style="align-items:center"><h2 style="flex:1">Tape drive <span class="dim" style="font-weight:400;font-size:12px">· optional diagnostics</span></h2>`;
+  if(tape.available)h+=`<button class="btn ghost" onclick="checkTape()">Check now</button>`;
+  h+=`</div>`;
+  if(tape.last)h+=`<div style="margin-top:4px">${tapeSevBadge(tape.last.severity)} ${tapeHealthBody(tape.last)}</div>`;
+  else h+=`<div class="dim" style="font-size:12px">Tool detected (${esc(tape.tool||'')} on ${esc(tape.device||'')}). No reading yet — <b>Check now</b> with a drive attached. Reads drive health only; never moves the tape.</div>`;
+  return h+`</div>`;
+}
+/* "Check before a big write" nudge for the write dialog — shows the last tape
+   diagnostic's age and a one-click refresh when a tape tool is available. */
+function tapeNudge(tape){
+  if(!tape||(!tape.available&&!tape.last))return '';
+  const last=tape.last;
+  let inner;
+  if(last)inner=`Tape drive last checked <b>${esc(ageStr(last.at))}</b> · ${tapeSevBadge(last.severity)} ${last.cleaning_recommended?'· 🧽 cleaning recommended':''}${last.severity==='error'?' · <span style="color:var(--bad)">drive reports an error</span>':''}`;
+  else inner=`Tape drive not checked yet`;
+  return `<div style="margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:12px">
+    <div class="dim" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.05em">Check before a big write (tape)</div>
+    <div style="margin-top:3px">${inner} ${tape.available?'<a href="#" onclick="tapeNudgeRefresh();return false" style="color:var(--act)">refresh now</a>':''}</div></div>`;
+}
+async function tapeNudgeRefresh(){
+  const el=$('#tapenudge');if(el)el.innerHTML='<div class="dim" style="font-size:12px;margin-top:8px">Reading tape diagnostics…</div>';
+  try{await api('POST','/api/tape/check',{});}catch(e){}
+  const tape=await api('GET','/api/tape/status').catch(()=>({}));
+  if($('#tapenudge'))$('#tapenudge').innerHTML=tapeNudge(tape);
+}
+async function checkTape(dev){
+  try{toast('Reading tape drive diagnostics…');
+    const r=await api('POST','/api/tape/check',dev?{device:dev}:{});
+    if(r.available===false)toast('No tape tool installed — see Settings',1);
+    else if(r.error)toast('Tape read failed: '+r.error,1);
+    else if(r.snapshot)toast(r.snapshot.cleaning_recommended?'🧽 Cleaning recommended':(r.snapshot.severity==='error'?'⚠ Drive reports an error':'Tape diagnostics recorded'));
+  }catch(e){toast(e.message,1)}
+  if(location.hash==='#volumes')vVolumes();
+}
 async function volLookup(){const bc=$('#bclookup').value.trim();if(!bc)return;
   try{const v=await api('GET','/api/volumes/by-barcode?barcode='+encodeURIComponent(bc));volDetail(v.id)}catch(e){toast(e.message,1)}}
 async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v=d.volume;const cs=d.chunks||[];
-  let h=`<h1>${esc(v.label)}</h1><div class="crumb">${esc(v.kind)} · ${esc(v.location||'no location on file')} · barcode ${esc(v.barcode||'—')}</div>
-  <div class="row" style="margin-bottom:10px"><button class="btn ghost" onclick="loc('volumes')">← all volumes</button></div>
+  let h=`<h1>${esc(v.label)}</h1><div class="crumb">${esc(v.kind)} · ${esc(v.location||'no location on file')} · ${v.offsite?'OFFSITE':'ONSITE'} · barcode ${esc(v.barcode||'—')}</div>
+  ${deviceIdStr(v)}
+  <div class="row" style="margin-bottom:10px"><button class="btn ghost" onclick="loc('volumes')">← all volumes</button>
+    <button class="btn ghost" onclick="printLabel(${v.id},'${esc(v.barcode||'')}')">🖨 Print label</button>
+    <button class="btn ghost" onclick="identifyDlg(${v.id})">Detect drive identity…</button>
+    <button class="btn ghost" onclick="toggleOffsite(${v.id},${v.offsite?true:false})">${v.offsite?'Mark onsite':'Mark offsite'}</button>
+    ${v.barcode?'':`<button class="btn ghost" onclick="assignBarcode(${v.id})">Assign barcode</button>`}</div>
+  ${mediaHealthCard(d)}
   <div class="panel"><h2>Contents (${cs.length} package${cs.length===1?'':'s'}) — click a package to see its files (from the catalog)</h2>`;
   if(!cs.length)h+='<div class="empty">Nothing recorded on this volume yet.</div>';
   else cs.forEach((c,i)=>{
@@ -711,6 +1032,78 @@ async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v
     </div>`});
   $('#view').innerHTML=h+'</div>';
 }
+/* Physical device identity — the drive behind the volume. */
+function deviceIdStr(v){const bits=[];
+  if(v.model)bits.push('model '+esc(v.model));
+  if(v.serial)bits.push('S/N <span class="mono">'+esc(v.serial)+'</span>');
+  if(v.device_size)bits.push('capacity '+GB(v.device_size)+' GB');
+  if(!bits.length)return `<div class="dim" style="font-size:11.5px;margin-bottom:6px">No drive identity captured yet — <b>Detect drive identity…</b> with the drive mounted.</div>`;
+  let h=`<div class="dim" style="font-size:11.5px;margin-bottom:6px">🖴 ${bits.join(' · ')}</div>`;
+  if(v.device_note)h+=`<div class="etag due" style="margin-bottom:6px" title="${esc(v.device_note)}">⚠ serial via bridge — may be the enclosure's</div>`;
+  return h}
+async function printLabel(id,barcode){
+  if(!barcode){
+    let nb='';try{nb=(await api('GET','/api/volumes/next-barcode')).next}catch(e){}
+    if(confirm(`This volume has no barcode. Assign ${nb||'the next barcode'} from the scheme and print it on the label?`)){
+      try{const r=await api('POST',`/api/volumes/${id}/assign-barcode`,{});toast('Assigned '+r.barcode)}catch(e){toast(e.message,1)}}
+  }
+  window.open(mediaURL('/api/volumes/'+id+'/label'),'_blank');
+}
+async function toggleOffsite(id,cur){
+  try{const r=await api('POST',`/api/volumes/${id}/offsite`,{offsite:!cur});
+    recomputeToast(r);volDetail(id)}catch(e){toast(e.message,1)}}
+async function assignBarcode(id){try{const r=await api('POST',`/api/volumes/${id}/assign-barcode`,{});
+  toast(r.assigned?('Assigned '+r.barcode):('Already has '+r.barcode));volDetail(id)}catch(e){toast(e.message,1)}}
+/* Media health — SMART drive-mortality signals. A COMPLEMENT to hash
+   verification, never a substitute: it flags a drive likely to die, not whether
+   the bytes on it are intact. */
+function smartMetric(label,val){return `<div style="min-width:96px"><div class="dim" style="font-size:10.5px">${label}</div><div style="font-size:15px">${val}</div></div>`}
+function smartTrend(hist){if((hist||[]).length<2)return '';
+  const a=hist[0],b=hist[hist.length-1];
+  const d=((b.reallocated_sectors||0)+(b.pending_sectors||0))-((a.reallocated_sectors||0)+(a.pending_sectors||0));
+  return d>0?` · <span style="color:var(--bad)">bad sectors +${d} since first read</span>`:''}
+function mediaHealthCard(d){
+  const v=d.volume, hist=v.smart_history||[], last=hist[hist.length-1];
+  if(!last&&!d.smart_available)
+    return `<div class="panel"><h2>Media health <span class="dim" style="font-weight:400;font-size:12px">· optional</span></h2><div class="dim" style="font-size:12px">${esc(d.smart_hint||'smartctl not installed.')}</div></div>`;
+  if(!last)
+    return `<div class="panel"><h2>Media health</h2><div class="dim" style="font-size:12px;margin-bottom:8px">No drive-mortality reading yet. SMART <b>complements</b> hash verification — it flags a drive likely to fail; it never proves your bytes intact.</div><button class="btn ghost" onclick="healthDlg(${v.id})">Check health now…</button></div>`;
+  const passed=last.passed===true?'<span class="stamp VERIFIED">PASSED</span>':last.passed===false?'<span class="stamp FAILED">FAILING</span>':'<span class="dim">unknown</span>';
+  const m=[smartMetric('SMART',passed)];
+  if(last.temp_c)m.push(smartMetric('Temp',last.temp_c+' °C'));
+  if(last.power_on_hours)m.push(smartMetric('Power-on',(Math.round(last.power_on_hours/8.76)/1000)+' yr'));
+  m.push(smartMetric('Reallocated',last.reallocated_sectors||0));
+  m.push(smartMetric('Pending',last.pending_sectors||0));
+  if((last.type||'').indexOf('nvme')>=0){
+    if(last.media_errors!=null)m.push(smartMetric('Media errors',last.media_errors));
+    if(last.percent_used)m.push(smartMetric('Endurance used',last.percent_used+'%'));
+    if(last.available_spare)m.push(smartMetric('Spare',last.available_spare+'%'));
+  }
+  let h=`<div class="panel"><h2>Media health <span class="dim" style="font-weight:400;font-size:12px">· ${esc(last.device||'')} ${esc(last.type||'')}</span></h2>`;
+  if(last.advisory)h+=`<div class="err" style="margin-bottom:10px;font-weight:600">⚠ ${esc(last.advisory_why||'Migrate copies off this volume.')}</div>`;
+  h+=`<div class="row" style="gap:16px;flex-wrap:wrap">${m.join('')}</div>`;
+  h+=`<div class="dim" style="font-size:11px;margin-top:10px">Last read ${esc((last.at||'').replace('T',' ').slice(0,16))} · ${hist.length} reading${hist.length>1?'s':''} on record${smartTrend(hist)}</div>`;
+  h+=`<div class="dim" style="font-size:11px;margin-top:4px">SMART is a <b>mortality signal</b>: it flags a drive likely to <i>die</i>, not whether your bytes are intact — only the custody-chain hashes prove that. Complement, never substitute.</div>`;
+  h+=`<div style="margin-top:10px"><button class="btn ghost" onclick="healthDlg(${v.id})">Re-check now…</button></div>`;
+  return h+'</div>';
+}
+function healthDlg(id){dlg(`<h1>Check media health (SMART)</h1>
+  <div class="dim" style="margin-bottom:8px">Reads the drive's SMART self-report (<span class="mono">smartctl</span>) from a mounted path and records a snapshot. Read-only. A <b>complement</b> to hash verification — it flags mortality risk, it never proves data intact. On Windows this may need Administrator; failures are silent and logged.</div>
+  <label>Mounted path (drive letter or folder on the drive)</label><input id="d1" class="full" placeholder="E:\\  or  /mnt/disk">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Read SMART</button></div>`,
+  async()=>{const mp=$('#d1').value.trim();if(!mp)return;
+    const r=await api('POST',`/api/volumes/${id}/health`,{mount_path:mp});
+    if(r.available===false)toast('smartctl not installed — see the card for install steps',1);
+    else if(r.error)toast('SMART read failed: '+r.error,1);
+    else if(r.snapshot)toast(r.snapshot.advisory?'⚠ Advisory — migrate copies off this volume':'Health recorded');
+    volDetail(id)})}
+function identifyDlg(id){dlg(`<h1>Detect drive identity</h1>
+  <div class="dim" style="margin-bottom:8px">Point at where this drive is mounted; Mnemosyne reads the physical serial, model, and capacity from the OS (Get-Disk on Windows, lsblk/diskutil on Unix). External docks and USB bridges sometimes mask the true serial — that's recorded as a caveat, not an error.</div>
+  <label>Mounted path (drive letter or folder on the drive)</label><input id="d1" class="full" placeholder="E:\\  or  /mnt/disk">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Detect</button></div>`,
+  async()=>{const mp=$('#d1').value.trim();if(!mp)return;
+    const r=await api('POST',`/api/volumes/${id}/identify`,{mount_path:mp});
+    toast(r.detected&&r.detected.model?('Detected '+r.detected.model):'Detected device identity');volDetail(id)})}
 function readMediumDlg(id,name){dlg(`<h1>Read manifest from medium — ${esc(name)}</h1>
   <div class="dim" style="margin-bottom:8px">For a found tape/disc when the catalog is gone. Points at the mount, finds <span class="mono">${esc(name)}.manifest.json(.gpg)</span>, and (if private) decrypts it with the keystore passphrase.</div>
   <label>Mounted medium path</label><input id="d1" class="full" placeholder="T:\\ or E:\\ or /mnt/tape">
@@ -747,11 +1140,16 @@ function newVolumeDlg(){dlg(`<h1>Register volume</h1>
   <label>Label (defaults to the barcode)</label><input id="d1" class="full" placeholder="e.g. NSP-0007">
   <div class="row"><div style="flex:1"><label>Kind</label><select id="d2" class="full"><option>TAPE</option><option>HDD</option><option>SSD</option><option>OPTICAL</option><option>OTHER</option></select></div>
     <div style="flex:1"><label>Location</label><input id="d3" class="full" placeholder="office safe / parents' house"></div></div>
+  <label style="margin-top:10px">Onsite / Offsite — the “1” in 3-2-1 (does this medium live in another physical place?)</label>
+  <div class="row" style="gap:14px"><label class="row" style="gap:6px;margin:0"><input type="radio" name="d6" value="onsite" checked style="width:auto"> Onsite</label>
+    <label class="row" style="gap:6px;margin:0"><input type="radio" name="d6" value="offsite" style="width:auto"> Offsite</label></div>
   <label>Notes</label><input id="d4" class="full">
+  <label>Mounted path (optional) — capture the drive's serial/model/capacity now</label><input id="d5" class="full" placeholder="E:\\  or  /mnt/disk">
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Register</button></div>`,
   async()=>{const bc=$('#d0').value.trim();const label=$('#d1').value.trim()||bc;if(!label){toast('Scan a barcode or enter a label',1);return}
-    await api('POST','/api/volumes',{barcode:bc,label:label,kind:$('#d2').value,location:$('#d3').value.trim(),notes:$('#d4').value.trim()});
-    toast('Volume registered');vVolumes()});
+    const off=(document.querySelector('input[name="d6"]:checked')||{}).value==='offsite';
+    const r=await api('POST','/api/volumes',{barcode:bc,label:label,kind:$('#d2').value,location:$('#d3').value.trim(),offsite:off,notes:$('#d4').value.trim(),mount_path:$('#d5').value.trim()});
+    toast(r.detected&&r.detected.model?('Volume registered · detected '+r.detected.model):'Volume registered');vVolumes()});
   setTimeout(()=>{const e=$('#d0');if(e)e.focus()},60);
 }
 
@@ -774,7 +1172,7 @@ async function vKeys(){
   else{h+='<table><tr><th>Ref</th><th>Note</th><th>Fingerprint (SHA-256 of passphrase)</th><th></th></tr>';
     for(const m of k.keys)h+=`<tr><td><span class="chip">${esc(m.key_ref)}</span></td><td>${esc(m.note)}</td>
       <td class="mono dim">${esc((m.fingerprint||'').slice(0,24))}…</td>
-      <td><a class="btn ghost" style="text-decoration:none" href="/api/keys/${esc(m.key_ref)}/qr.png" target="_blank">Print QR card</a></td></tr>`;
+      <td><a class="btn ghost" style="text-decoration:none" href="${esc(mediaURL('/api/keys/'+m.key_ref+'/qr.png'))}" target="_blank">Print QR card</a></td></tr>`;
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
 }
@@ -803,6 +1201,106 @@ async function vJobs(){
   if(js.some(j=>j.status==='RUNNING'))jobsTimer=setTimeout(()=>{if(location.hash==='#jobs')vJobs()},1200);
 }
 
+/* ---------------- Dock — guided legacy-drive ingest ---------------- */
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function waitJob(jobId){
+  for(;;){const jobs=await api('GET','/api/jobs');const j=(jobs||[]).find(x=>x.id===jobId);
+    if(j&&j.status==='COMPLETED')return j;
+    if(j&&j.status==='FAILED')throw new Error((j.label||'ingest failed').replace(/^.*ERROR:\s*/,''));
+    await sleep(700)}}
+let dockTimer=null, dockBanner=null;
+async function vDock(){
+  clearInterval(dockTimer);
+  const d=await api('GET','/api/dock/session');
+  if(!d.session)return dockStart();
+  renderDock(d);
+  const sid=d.session.id;
+  refreshCandidates(sid);
+  dockTimer=setInterval(()=>{if(location.hash!=='#dock'){clearInterval(dockTimer);return}refreshCandidates(sid).catch(()=>{})},5000);
+}
+async function dockStart(){
+  const colls=await api('GET','/api/collections')||[];
+  let h=`${hdr('Dock','ingest a stack of legacy drives, one at a time','dock')}
+  <div class="panel"><div class="dim" style="margin-bottom:8px">🛡 <b>Read-only toward your sources.</b> Mnemosyne only ever <b>hashes</b> the archive folders on the NAS to match drive contents — it never writes to them. The only writes are to the catalog and each drive's own inventory sidecar.</div>
+    <h2>Start a session</h2>
+    <div class="dim" style="font-size:12px;margin-bottom:6px">Choose the Archive(s) these drives should be reconciled against (e.g. both a business and a personal archive that live on the NAS).</div>`;
+  if(!colls.length)h+='<div class="empty">Create an Archive first (Vault → Create archive), then start a dock session.</div>';
+  else{h+=colls.map(c=>`<label class="row" style="gap:8px;align-items:center"><input type="checkbox" class="dka" value="${c.id}" style="width:auto"> <b>${esc(c.name)}</b> <span class="dim">· ${c.files||0} files</span></label>`).join('');
+    h+=`<div class="row" style="margin-top:14px"><button class="btn" onclick="doStartDock()">Start dock session →</button></div>`}
+  $('#view').innerHTML=h+'</div>';
+}
+async function doStartDock(){
+  const ids=[...document.querySelectorAll('.dka:checked')].map(e=>parseInt(e.value));
+  if(!ids.length){toast('Pick at least one archive',1);return}
+  try{await api('POST','/api/dock/sessions',{archive_ids:ids});toast('Dock session started');vDock()}catch(e){toast(e.message,1)}}
+function covBar(pct){return `<div style="background:var(--line);border-radius:6px;height:10px;overflow:hidden"><div style="width:${Math.max(0,Math.min(100,pct||0))}%;height:100%;background:var(--ok)"></div></div>`}
+function renderDock(d){
+  const ds=d.session, cov=d.coverage||{}, banner=dockBanner; dockBanner=null;
+  let h=hdr('Dock','ingest a stack of legacy drives, one at a time','dock');
+  if(banner)h+=`<div class="panel" style="border:2px solid var(--ok);background:rgba(60,180,90,.08)"><div style="font-size:20px;font-weight:700">✅ ${esc(banner.message||'DONE')}</div>
+    <div class="dim" style="margin-top:4px">${esc(banner.detail||'')}</div></div>`;
+  h+=`<div class="panel"><div class="row" style="align-items:center;gap:10px">
+    <div style="flex:1"><b>Session #${ds.id}</b> <span class="dim">· started ${esc((ds.started_at||'').slice(0,10))} · ${(ds.drives_processed||[]).length} drive(s)</span></div>
+    <button class="btn ghost" onclick="window.open(mediaURL('/api/dock/session/${ds.id}/report'),'_blank')">Export report (.md)</button>
+    <button class="btn ghost" onclick="closeDock(${ds.id})">Close session</button></div>
+    <div class="dim" style="font-size:11.5px;margin-top:6px">🛡 Read-only toward sources — NAS folders are only hashed, never written. Reconciling against: ${(d.archives||[]).map(a=>esc(a.name)).join(', ')||'—'}</div></div>`;
+
+  // Coverage dashboard
+  h+=`<div class="panel"><h2>Coverage</h2>
+    <div style="font-size:15px;font-weight:600">${cov.pct||0}% of selected archives now have ≥1 verified copy</div>
+    <div class="dim" style="margin-bottom:8px">${cov.covered_files||0} of ${cov.total_files||0} files covered · <b>${cov.uncovered_files||0} files still on 0 copies</b></div>`;
+  for(const a of (cov.archives||[]))h+=`<div style="margin:8px 0"><div class="row" style="justify-content:space-between"><span>${esc(a.name)}</span><span class="dim">${a.pct||0}% · ${a.covered_files}/${a.total_files} · ${a.uncovered_files} on 0 copies</span></div>${covBar(a.pct)}</div>`;
+  h+=`</div>`;
+
+  // Newly-docked drives (watcher) + manual path
+  h+=`<div class="panel"><h2>Insert a drive</h2>
+    <div class="dim" style="font-size:12px;margin-bottom:6px">Dock a drive — it appears below within ~5s. Click <b>Ingest</b> and Mnemosyne does the rest, then tells you when it's safe to eject.</div>
+    <div id="dockcands"><div class="dim">Watching for a newly-inserted drive…</div></div>
+    <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+      <label>…or ingest a specific mounted path / folder</label>
+      <div class="row"><input id="dockmanual" class="full" placeholder="E:\\  or  /mnt/olddrive" style="flex:1">
+        <button class="btn" onclick="const p=$('#dockmanual').value.trim();if(p)dockIngest(${ds.id},p,'')">Ingest path</button></div></div></div>`;
+
+  // Per-drive history
+  h+=`<div class="panel"><h2>Drives processed (${(ds.drives_processed||[]).length})</h2>`;
+  if(!(ds.drives_processed||[]).length)h+='<div class="empty">No drives ingested yet.</div>';
+  else{h+='<table><tr><th>Label</th><th>Serial</th><th>Pass</th><th class="num">Matched</th><th class="num">GB</th><th class="num">Historical</th><th class="num">Unreadable</th></tr>';
+    for(const dr of ds.drives_processed)h+=`<tr><td><b>${esc(dr.label||'—')}</b></td><td class="mono" style="font-size:11px">${esc(dr.serial||'—')}</td>
+      <td>${dr.mode==='reverify'?'<span class="etag due">re-verify</span>':'<span class="etag">adopt</span>'}</td>
+      <td class="num">${dr.matched||0}</td><td class="num">${GB(dr.matched_bytes)}</td><td class="num">${dr.historical||0}</td><td class="num">${dr.unreadable||0}</td></tr>`;
+    h+='</table>'}
+  h+='</div>';
+  $('#view').innerHTML=h;
+}
+async function refreshCandidates(sid){
+  const el=document.getElementById('dockcands'); if(!el)return;
+  const cs=await api('GET',`/api/dock/session/${sid}/candidates`)||[];
+  if(!cs.length){el.innerHTML='<div class="dim">Watching for a newly-inserted drive… (none detected since the session started)</div>';return}
+  el.innerHTML=cs.map(c=>{
+    const id=c.serial||c.model||''; const bits=[c.label,c.size_bytes?GB(c.size_bytes)+' GB':'',c.model,c.serial?'S/N '+c.serial:''].filter(Boolean).map(esc).join(' · ');
+    const reverify=c.already_processed;
+    const btn=reverify
+      ? `<button class="btn ghost" onclick="dockIngest(${sid},'${esc(c.path)}','reverify')">Re-verify</button>`
+      : `<button class="btn" onclick="dockIngest(${sid},'${esc(c.path)}','')">Ingest this drive</button>`;
+    return `<div class="row" style="align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1"><span class="mono">${esc(c.path)}</span> ${reverify?'<span class="etag due">seen before</span>':''}${c.processed_in_session?'<span class="etag">this session</span>':''}<div class="dim" style="font-size:11.5px">${bits||'identity not resolved (external bridge?)'}</div></div>${btn}</div>`;
+  }).join('');
+}
+async function dockIngest(sid,path,mode){
+  try{
+    toast('Ingesting '+path+' — hashing & matching…');
+    const r=await api('POST',`/api/dock/session/${sid}/ingest`,{mount_path:path,mode:mode||''});
+    await waitJob(r.job_id);
+    // Pull the just-finished result off the refreshed session for the banner.
+    const d=await api('GET',`/api/dock/session/${sid}`);
+    const last=(d.session.drives_processed||[]).slice().sort((a,b)=>new Date(b.finished_at||0)-new Date(a.finished_at||0))[0]||{};
+    dockBanner={message:'DONE — safe to eject. Insert the next drive.',
+      detail:`${last.label||'drive'}: ${last.matched||0} files matched (${GB(last.matched_bytes)} GB)${last.mode==='reverify'?' · re-verified':''} · ${last.unreadable||0} unreadable. ${d.coverage.pct||0}% of the selected archives now covered.`};
+    vDock();
+  }catch(e){toast(e.message,1)}
+}
+async function closeDock(id){try{await api('POST',`/api/dock/session/${id}/close`);toast('Session closed');vDock()}catch(e){toast(e.message,1)}}
+
 /* ---------------- Settings ---------------- */
 async function vSettings(){
   const [c,p]=await Promise.all([api('GET','/api/config'),api('GET','/api/preflight')]);
@@ -817,6 +1315,8 @@ async function vSettings(){
   <div class="panel"><h2>External tools (the whole restore story)</h2>
     <table><tr><td>tar</td><td>${tool('tar')}</td></tr><tr><td>gpg</td><td>${tool('gpg')}</td></tr>
     <tr><td>par2</td><td>${tool('par2')}</td></tr>
+    <tr><td>smartctl <span class="dim" style="font-size:11px">(optional · drive health)</span></td><td>${p.smartctl&&p.smartctl.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.smartctl.path||'')}</span>`:`<span class="dim">not installed — drive-health signals hidden. smartmontools.org · <span class="mono">choco/apt/brew install smartmontools</span>. Complements hash verification; never replaces it.</span>`}</td></tr>
+    <tr><td>tape diag <span class="dim" style="font-size:11px">(optional · read-only)</span></td><td>${p.tape_tool&&p.tape_tool.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.tape_tool.tool||'')} · ${esc(p.tape_tool.bin||'')}</span>`:`<span class="dim">not installed — tape-drive diagnostics hidden. IBM ITDT (free, Fix Central) · sg3_utils (<span class="mono">apt/brew install sg3-utils</span>) · HPE L&amp;TT. Reads drive health only — never moves the tape or writes.</span>`}</td></tr>
     <tr><td>LTFS tape</td><td>${ltfsCell}</td></tr></table>
     ${(p.hints||[]).map(x=>`<div class="err" style="margin-top:8px">${esc(x)}</div>`).join('')}</div>
   <div class="panel"><h2>Pipeline</h2>
@@ -825,6 +1325,12 @@ async function vSettings(){
     <label>Keystore paths — one per line, minimum 2, different physical devices</label>
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
     <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Private media — encrypt the file listing (manifest) written to media, so a lost tape reveals no filenames (encrypted packages only; staging &amp; catalog stay plaintext)</label>
+    <label style="margin-top:10px">Build verification — how thoroughly each build proves the payload before you write it to media</label>
+    <select id="bvf" class="full" onchange="document.getElementById('bvwarn').style.display=this.value==='fast'?'block':'none'">
+      <option value="full" ${(cfg.build_verify||'full')!=='fast'?'selected':''}>Full (default) — prove the tar contains the source byte-exact AND the ciphertext decrypts back to it</option>
+      <option value="fast" ${cfg.build_verify==='fast'?'selected':''}>Fast — skip both proofs (faster, but contents &amp; decryptability are unproven)</option>
+    </select>
+    <div id="bvwarn" class="err" style="display:${cfg.build_verify==='fast'?'block':'none'};margin-top:8px">⚠ Fast build skips stage-vs-source and decrypt round-trip verification. A package could archive a corrupt or undecryptable payload without warning. Full adds roughly one read pass + one decrypt pass per build — the price of never archiving a lie.</div>
     <div class="row"><div style="flex:1"><label>RAM buffer (GB)</label><input id="bg" class="full" type="number" step="0.5" value="${cfg.buffer_gb||8}"></div>
       <div style="flex:1"><label>Block size (MB)</label><input id="bm" class="full" type="number" value="${cfg.block_mb||64}"></div>
       <div style="flex:1"><label>par2 redundancy %</label><input id="pr" class="full" type="number" value="${cfg.par2_redundancy||10}"></div></div>
@@ -836,6 +1342,13 @@ async function vSettings(){
       <input id="vd" class="full" type="number" min="1" value="${cfg.verify_due_months||12}"></div>
       <div style="flex:1"><label>Required copies (redundancy goal)</label>
       <input id="rc" class="full" type="number" min="1" value="${cfg.required_copies||2}"></div></div>
+    <label>Volume barcode scheme (prefix) — auto-assigned as <span class="mono dim">PREFIX-0001</span>, PREFIX-0002 … at label time for volumes with no barcode</label>
+    <input id="bs" class="full" style="font:12px var(--mono)" value="${esc(cfg.barcode_scheme||'NSP')}" placeholder="NSP">
+    <div class="row"><div style="flex:2"><label>Tape diagnostics tool (optional; blank = auto-probe PATH for itdt/tapeinfo/sg_logs/hp_ltt)</label>
+      <input id="tt" class="full" style="font:12px var(--mono)" value="${esc(cfg.tape_tool||'')}" placeholder="C:\\Program Files\\IBM\\ITDT\\itdt.exe"></div>
+      <div style="flex:1"><label>Tape device (blank = OS default)</label>
+      <input id="td" class="full" style="font:12px var(--mono)" value="${esc(cfg.tape_device||'')}" placeholder="\\\\.\\Tape0  /dev/nst0"></div></div>
+    <div class="dim" style="font-size:11px">Tape diagnostics read drive health only — TapeAlert flags, cleaning status, hours, bytes. Mnemosyne never issues movement or write commands.</div>
     <label>Drift informational extensions (comma-separated — muted in reconcile, excluded from alarm totals)</label>
     <input id="di" class="full" style="font:12px var(--mono)" value="${esc((cfg.drift_informational_extensions||[]).join(', '))}" placeholder=".xmp, .thm">
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>
@@ -851,10 +1364,13 @@ async function saveCfg(){
   try{await api('PUT','/api/config',{staging_dir:$('#st').value.trim(),
     keystore_paths:$('#ks').value.split('\n').map(s=>s.trim()).filter(Boolean),
     private_media:$('#pm').checked,
+    build_verify:$('#bvf').value,
     buffer_gb:parseFloat($('#bg').value)||8,block_mb:parseInt($('#bm').value)||64,
     throttle_mbps:parseFloat($('#tm').value)||0,
     par2_redundancy:parseInt($('#pr').value)||10,par2_extra_args:$('#pe').value.trim(),
     verify_due_months:parseInt($('#vd').value)||12,required_copies:parseInt($('#rc').value)||2,
+    barcode_scheme:$('#bs').value.trim()||'NSP',
+    tape_tool:$('#tt').value.trim(),tape_device:$('#td').value.trim(),
     drift_informational_extensions:$('#di').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),
     burn_command:$('#bc').value.trim(),burn_verify_mount:$('#bv').value.trim()});
     toast('Settings saved');lamp();vSettings()}catch(e){toast(e.message,1)}}
@@ -866,7 +1382,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,packages:vChunks,burn:vBurn,volumes:vVolumes,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,packages:vChunks,burn:vBurn,volumes:vVolumes,dock:vDock,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
 function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));

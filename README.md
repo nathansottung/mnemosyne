@@ -78,6 +78,95 @@ sha256sum -c SHA-256SUMS.txt          # Linux / macOS / Git Bash
 Builds are produced by the tag-triggered [release workflow](.github/workflows/release.yml)
 (pure Go, `CGO_ENABLED=0`, `-ldflags "-s -w -X main.appVersion=<tag>"`).
 
+## Docker — the NAS-side brain
+
+Mnemosyne also ships as a small multi-arch container image on GHCR, built by the
+same release tag:
+
+```
+ghcr.io/nsottung/mnemosyne:latest      # or pin a version, e.g. :2.1.0
+```
+
+The image is multi-stage: a static, CGO-free binary on top of Alpine with the
+three restore-story tools baked in (`apk add tar gnupg par2cmdline` — Alpine's
+`tar` is GNU tar). It exposes port **7821** and declares two volumes:
+
+- **`/data`** — `catalog.json`, `config.json`, daily backups. *Persist and back
+  this up.*
+- **`/staging`** — scratch for package builds (big + fast; safe to lose).
+
+### What runs in the container, and what doesn't
+
+The container is the **NAS-side brain**: it catalogs your datasets, plans and
+**builds packages**, and **mirrors** to spinning drives — everything that is
+pure file I/O over the network-attached storage. The **hardware-in-the-loop**
+workflows — **tape** and **optical** burning, the **docking** flow for a stack of
+loose drives, and **SMART**/tape-drive diagnostics — want a device physically
+attached, so they belong on a **native binary running next to the hardware**
+(download one above). Point that native instance at the same NAS shares; the
+catalog is one JSON file, so both can operate on the same data. *Bytes-to-metal
+lives at the metal; the container does the thinking.*
+
+### Auth is mandatory off-box
+
+Binding anything other than localhost (which a container must, to be reachable)
+**requires a bearer token** — the binary refuses to start otherwise. Set a strong
+secret via **`MNEMO_AUTH_TOKEN`** (env, recommended) or **`auth_token`** in
+`config.json`; then every `/api` request needs `Authorization: Bearer <token>`.
+The web UI prompts once and remembers it for the browser session. The static UI
+itself is public (so it can load and prompt); only `/api` is gated.
+
+```bash
+# Quick run (creates a token, persists /data, mirrors a read-only source):
+docker run -d --name mnemosyne -p 7821:7821 \
+  -e MNEMO_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  -v mnemo-data:/data -v mnemo-staging:/staging \
+  -v /mnt/tank/photos:/sources/photos:ro \
+  ghcr.io/nsottung/mnemosyne:latest
+```
+
+Or use the committed **[`docker-compose.yml`](docker-compose.yml)** (put the token
+in a `.env` as `MNEMO_AUTH_TOKEN=…`).
+
+### Source datasets: always mount `:ro`
+
+Mount every source dataset **read-only** (`:ro`). Mnemosyne is already read-only
+toward sources by design (its `AssertOutsideSources` guard refuses any write into
+a registered source root), but `:ro` enforces that in the **kernel** — even a bug
+or a crafted request physically cannot write to your originals, because the write
+syscall fails below the application entirely. Belt *and* suspenders:
+
+```yaml
+volumes:
+  - /mnt/tank/photos:/sources/photos:ro     # scan/mirror point at /sources/...
+  - /mnt/tank/documents:/sources/documents:ro
+```
+
+### TrueNAS SCALE
+
+TrueNAS SCALE runs containers natively, which makes it an ideal host for the
+brain:
+
+1. **Apps → Discover Apps → Custom App** (or *Install via YAML* and paste the
+   compose above).
+2. **Image:** `ghcr.io/nsottung/mnemosyne:latest`.
+3. **Environment:** add `MNEMO_AUTH_TOKEN` = a long random secret.
+4. **Storage / host-path volumes:**
+   - a dataset → **`/data`** (read-write; this is your catalog — snapshot it),
+   - a scratch dataset → **`/staging`** (read-write),
+   - each pool dataset you want to protect → **`/sources/<name>`** set
+     **read-only** (SCALE exposes a per-mount read-only toggle — turn it **on**;
+     it becomes a kernel `:ro` bind).
+5. **Port:** publish **7821**.
+6. Browse to `http://<truenas-ip>:7821`, paste the token, then **Scan** the
+   `/sources/...` paths and **Mirror** or **Build packages** to another dataset or
+   an attached drive.
+
+For the tape drive bolted into that same TrueNAS box, run the **native Linux
+binary** on the host (or in a privileged container with the tape `/dev` node
+passed through) — the build/catalog it shares with the app is the same
+`catalog.json`.
+
 ## Quickstart
 
 **1. Download & run.** Grab the binary for your OS (see [Download](#download)) —
@@ -131,9 +220,62 @@ Mnemosyne follows the life of your data. Each step earns its place:
 - **Build** produces `tar → gpg → par2` with **no compression anywhere** —
   *because compression is a future dependency and a single-bit-error amplifier;
   raw bytes + Reed–Solomon parity age better.*
+- **Build-time verification** proves the two custody links that used to be only
+  fingerprinted, *before* the package can reach media — *because a bad artifact
+  must never be faithfully preserved:*
+  - **Contents (stage-vs-source)** — the staged tar is stream-read with Go's
+    `archive/tar` (no extraction, no external tool), every member hashed and
+    compared byte-exact against the catalog's source hash; any mismatch, missing,
+    or extra member **fails the build with the file named**.
+  - **Decrypt round-trip** — the ciphertext is decrypted with `gpg -d` piped
+    straight into a hasher (*no plaintext ever touches disk*) and compared to the
+    tar hash; a mismatch fails with *"ciphertext does not decrypt to the verified
+    tar — encryption step corrupted."* Plaintext packages skip this — their
+    payload **is** the verified tar.
+
+  The attestation `build_verified: {contents, decrypt_roundtrip}` is written into
+  every medium's `manifest.json`, so the tapes carry their own proof. Config
+  `build_verify` defaults to **`full`**; **`fast`** skips both checks with an
+  explicit amber warning in the UI and manifest — *archival correctness is the
+  default, speed is the opt-out.* **Honest cost:** full verification adds roughly
+  one read pass + one decrypt pass per package build — the price of never
+  archiving a lie.
 - **Spanning** splits a package larger than one medium across several, with
   eject-and-continue and full reboot-resume — *because a 200 GB package
   shouldn't be un-backup-able just because your discs are 100 GB.*
+
+### 🪞 Mirror — the browsable complement to packages
+
+Mnemosyne backs up two ways, and they are peers — every archive can have both:
+
+|                | **Packages** | **Mirrors** |
+|----------------|--------------|-------------|
+| On the medium  | sealed `tar → gpg → par2` units | **plain files**, source tree preserved |
+| Best for       | **tape & optical** (LTO, BD-R) | **spinning drives / SSDs** |
+| Encryption     | AES-256 (optional) | none — *un-encrypted by design* |
+| Error-correction | par2 parity | none (the filesystem is the store) |
+| To read back   | par2 → gpg → tar | open the file in any file manager |
+| Integrity      | read-back verified, sealed | **copy-then-verified** per file |
+
+- **Mirror backup** copies an archive's folders to one (or several) target
+  Volumes as **plain files that preserve the source tree** — so you, or anyone,
+  can browse and restore them decades from now with nothing but a file manager,
+  *no Mnemosyne, no key, no unpack step.* Each file is copied with v1's
+  **copy-then-verify** discipline: staged to `<name>.mnemo_tmp`, hashed, read
+  back off the destination, and only then **atomically renamed** into place — so
+  a half-written or corrupted file never appears under its real name.
+- **Multi-volume at once** — mirror to several drives concurrently, one job per
+  volume, *because filling three parents'-house drives shouldn't be three
+  sequential waits.* Writes honor the **throttle (MB/s)** to keep drives cool.
+- **Mirrors are copies too** — each mirrored file is recorded as a **verified
+  file-level copy** on its volume, the *same record* an adopted mirror produces,
+  so **drift and coverage count mirrors and packages identically**. Two verified
+  copies in two locations is the goal whether they're sealed tapes or live
+  drives. The volume's inventory sidecar is refreshed so the medium
+  self-documents.
+- *Packages are the sealed, verified, encrypted form for cold media; mirrors are
+  the live, browsable form for the spinning drive on the shelf.* Use whichever
+  fits the medium — or both, for belt-and-suspenders.
 
 ### ✍️ Write
 - **RAM ring buffer** decouples reading from writing so a slow tape never
@@ -145,6 +287,15 @@ Mnemosyne follows the life of your data. Each step earns its place:
   "the write returned success" is not the same as "the bytes are on the disc."*
 
 ### ✅ Verify
+
+Every hop of the custody chain is now independently proven — nothing is trusted
+transitively:
+
+```
+source → [contents-verified] tar → [roundtrip-verified] ciphertext
+       → [stream-verified] write → [read-back-verified] medium
+```
+
 - **Verify a medium / campaign** re-checks one tape (or everything on it) in
   one click — *because bit-rot is silent; you find it on a schedule, not during
   a restore.*
@@ -167,6 +318,77 @@ Mnemosyne follows the life of your data. Each step earns its place:
   verified copies as *under-protected* — *because two copies in two locations
   is the actual goal, and gaps should be visible at a glance.*
 
+### 🛡 Protection profiles & the six-status model
+
+3-2-1 is not one number — it has **three dimensions**: **three copies**, on
+**two distinct kinds of media**, with **one offsite**. A *Profile* expresses all
+three, and every file is evaluated against its resolved profile across all three
+at once. Only **verified** copies count toward requirements.
+
+**Offsite is a property of the Volume, not the Profile**, because "is this copy
+in another building?" is a fact about a physical medium, not about a policy: the
+same 3-2-1 profile is satisfied or not depending on *where the tapes actually
+live*. So each Volume carries an **Onsite/Offsite** flag (the free-text location
+stays, for the human), and flipping a volume offsite→onsite re-derives the status
+of every file whose copies land on it. Without that flag, the "1" in 3-2-1 is
+unknowable.
+
+Ship with three built-in profiles (immutable, but duplicatable as a starting
+point for your own):
+
+| Built-in | copies | distinct kinds | offsite | verify due | intent |
+|---|---|---|---|---|---|
+| Single Copy | 1 | 1 | 0 | 12 mo | low-value / re-creatable data |
+| 3-2-1 Standard | 3 | 2 | 1 | 12 mo | the canonical rule; default for new Archives |
+| Pre-Deletion Hold | 4 | 2 | 1 | 6 mo | over-protect data whose SOURCE is about to be deleted |
+
+**Assign per Archive and per folder path.** A profile is assignable to a whole
+Archive and, optionally, overridden on any folder path within it. Resolution is
+**nearest-ancestor-wins**: a folder without its own assignment inherits the
+closest ancestor's, ultimately the Archive's. Inherited assignments render muted
+("3-2-1 Standard · inherited"); explicit ones render solid. The canonical
+example: Archive **Photography** on *3-2-1 Standard*, with its subfolder
+**To-Delete-2020** explicitly on *Pre-Deletion Hold*.
+
+**Every file gets exactly one of six statuses** (folders take the worst status
+among their children), evaluated across all three dimensions. Status is **always
+shown as colour + icon + text label together — never colour alone**:
+
+| Status | Meaning | Colour | Icon |
+|---|---|---|---|
+| UNASSIGNED | no profile resolves | `#8A938C` gray | ○ |
+| NOT_BACKED_UP | 0 qualifying copies | `#A03123` red | ✕ |
+| PARTIAL | some protection, but at least one dimension short — the UI states which, e.g. "2/3 copies · kinds ok · 0/1 offsite" | `#9A6B1F` amber | ◐ |
+| COMPLETE | all three dimensions met, all verifies current | `#2E5E4E` green | ✓ |
+| OVER_COMPLETE | exceeds requirements | `#1E3D8F` blue | ✓+ |
+| OUT_OF_POLICY | copies on disallowed media kinds, verifies older than `verify_due_months`, or a profile/assignment change invalidated prior compliance | `#6B2D86` purple | ⚠ |
+
+Any profile edit, assignment change, or volume offsite-flag change triggers a
+**status recomputation job** that surfaces newly `OUT_OF_POLICY` / `PARTIAL`
+counts in a toast and on the dashboard — *never silently.* The old
+"under-protected" idea is now `PARTIAL`, with its dimension breakdown.
+
+#### Designing your profiles
+
+Think in terms of *how much you'd grieve losing it*, then pick the dimensions to
+match — the two built-ins that anchor the range are illustrative:
+
+- **A wedding you shot** is irreplaceable but not under threat: the couple isn't
+  deleting anything, you just must never lose it. *3-2-1 Standard* (3 copies, 2
+  media kinds, 1 offsite) is exactly right — enough redundancy and geographic
+  spread that no single fire, theft, or drive death takes it out.
+- **A client folder whose SOURCE is about to be wiped** is different: once they
+  reclaim the NAS, *your copies are the only copies*, so the moment of maximum
+  risk is right after deletion. *Pre-Deletion Hold* over-protects on purpose — 4
+  copies and a tighter 6-month re-verify window — so you carry extra redundancy
+  through exactly the window where a mistake is unrecoverable. Assign it to the
+  specific to-delete folder, let the rest of the archive stay on 3-2-1, and drop
+  the folder back to Standard once the source is safely gone.
+
+To make your own, **duplicate** the closest built-in and adjust the three
+dimensions (and, if you care, restrict the allowed media kinds so a copy landing
+on the wrong medium reads as `OUT_OF_POLICY`).
+
 ### 🔎 Find & track
 - **Adopt existing media** — catalog archives written *before* Mnemosyne (or by
   hand with `tar`+`par2`) without rewriting a byte. Point **Volumes → Adopt
@@ -179,6 +401,64 @@ Mnemosyne follows the life of your data. Each step earns its place:
 - **Volumes** are physical media with barcode, kind, and free-text location;
   scan a barcode to jump straight to a tape's contents — *because a shelf of
   unlabeled LTO cartridges is a museum of unknowns.*
+- **Drive identity capture** records each volume's real **serial, model, and
+  capacity**, read from the OS behind a mounted path (Windows `Get-Disk` via a
+  PowerShell/CIM one-shot; Linux `lsblk`; macOS `diskutil`) — *so a dead drive is
+  identifiable by serial, and the catalog knows a 4 TB HGST from a 2 TB Seagate.*
+  Captured at register and adopt time, or on demand with **Detect drive
+  identity…**. It surfaces on the volume cards, the Recovery Kit inventory, and
+  the label. *Caveat:* external docks and USB-SATA bridges frequently report the
+  **enclosure's** serial (or none) rather than the drive's — Mnemosyne records
+  whatever the bridge reports and flags it, so treat a bridged serial as a hint,
+  not a fingerprint. Resolution failure is never fatal; the field just stays
+  blank.
+- **Media health (SMART)** reads a drive's own mortality self-report via
+  `smartctl` (smartmontools) — overall status, temperature, power-on hours, and
+  reallocated/pending sectors (or the NVMe equivalents) — and raises a red
+  **"migrate copies off this volume"** advisory when reallocated/pending sectors
+  appear or SMART reports FAILING. Snapshots are recorded per volume so trends
+  show across dock sessions. The hard part — mapping a mounted volume to its
+  physical device — reuses the identity plumbing (drive letter → disk number →
+  `/dev/pdN` on Windows; `lsblk` parent on Linux). It reads only on the volume
+  view and dock ingest, never in the write path, with timeouts and silent-but-
+  logged failures; if `smartctl` isn't installed the feature simply hides behind
+  an install hint.
+  > **What SMART does and doesn't tell you.** SMART is a *mortality* signal, not
+  > an *integrity* one. It estimates how likely a drive is to **die**; it says
+  > nothing about whether the bytes already written are **intact**. A drive that
+  > reports "PASSED" can still hand back a bit-rotted file, and a drive flagged
+  > "FAILING" may still read its verified copies perfectly. So Mnemosyne treats
+  > SMART strictly as an early-warning nudge to move copies *before* a drive
+  > dies — it never marks data good or bad. Only the custody-chain hashes
+  > (read-back, verify, restore) prove your bytes are still your bytes. Health is
+  > a complement to verification, never a substitute for it.
+- **Tape-drive diagnostics** *(optional)* read a tape drive's own self-report
+  (TapeAlert flags + LOG SENSE pages) and render it in plain language:
+  **CLEAN NOW / CLEAN PERIODIC → "cleaning cartridge recommended"**, media/drive
+  error flags as **amber/red advisories**, plus power-on hours and lifetime bytes
+  read/written when the tool exposes them. It surfaces on the **Volumes** page and
+  as a **"check before a big write"** nudge in the write dialog. Three tool
+  families are supported, auto-probed on `PATH` (or set an explicit path in
+  Settings): **IBM ITDT** (`itdt`), **sg3_utils** (`tapeinfo` / `sg_logs`), and
+  **HPE Library & Tape Tools** (`hp_ltt`). When none is present the feature hides
+  behind an install hint. Each tool has its own defensive parser checked against
+  captured sample outputs in `testdata/`.
+  > **Windows:** IBM's **ITDT** is a free download from IBM Fix Central and is the
+  > easiest way to get TapeAlert on Windows. **This feature reads drive
+  > diagnostics only — it NEVER issues movement or write commands** (no rewind,
+  > space, load/unload, erase, or write). It runs strictly *outside* the write
+  > path, on the Volumes view and the pre-write nudge, with per-command timeouts,
+  > and any failure is silent-but-logged. Like SMART, it is a maintenance/
+  > mortality *signal* that **complements** hash verification — a "clean me" or
+  > "I'm failing" hint from the drive, never a claim that the data on a cartridge
+  > is intact. Only the custody-chain hashes prove that.
+- **Print label** generates a self-contained, print-ready HTML label per volume:
+  a **Code128** barcode of the volume's barcode (scans straight back into the
+  lookup box), a **QR** of the volume ID, and the human-readable label, kind,
+  capacity, serial, and date — at common label sizes. A volume with no barcode is
+  offered the **next one from a configurable scheme** (`barcode_scheme` prefix →
+  `NSP-0001`, `NSP-0002`, …) right at label time — *because an unlabeled tape is a
+  future mystery, and the barcode you print should be the barcode you can scan.*
 - **Copies** record every (package × volume) with its verify state — *so a
   search answers "on tape NSP-0007 (office safe) and HDD ARCH-03 (parents'
   house), both verified 2026-03."*
@@ -186,6 +466,32 @@ Mnemosyne follows the life of your data. Each step earns its place:
   UNARCHIVED (present on disk, not yet in any package) / MODIFIED / MISSING /
   MOVED, per file-type — *because you need to know a `.NEF` went missing, and
   not be drowned in expected `.xmp` churn.*
+
+### 🧲 Dock — ingest a stack of legacy drives
+- **Guided, resumable, hands-off.** Pick the Archive(s) to reconcile against,
+  then dock old backup drives one at a time. Mnemosyne **watches** for each
+  newly-inserted drive (polling mounts, diffed against session start) and, on one
+  click, does everything: identifies the drive by **serial**, hashes every file
+  and **matches it by content** against your archives, records the matches as
+  verified copies, writes an inventory sidecar onto the drive, and shows a big
+  **"DONE — safe to eject. Insert the next drive."** — *because migrating a shelf
+  of unlabeled drives should be a rhythm, not a research project.*
+- **Content match, not filename match** — a photo that was reorganized into a
+  different folder on the old drive still counts, because matching is by SHA-256.
+  Each drive reports *matched / historical (older versions) / unrecognized /
+  unreadable*.
+- **Recognized by serial** — re-insert a drive you already processed and
+  Mnemosyne knows it (even on a different letter) and offers **re-verify**, not a
+  duplicate adopt. Idempotent across sessions.
+- **Resumable across days** — the session persists; close the app and reopen it
+  to exactly where you were, coverage and all.
+- **Running coverage + a report you keep** — a live dashboard ("62% of *Photos*
+  now has ≥1 verified copy; 9,412 files still on 0 copies") and an exportable
+  markdown **session report** listing every drive's serial, label, and contents
+  summary — the documentation trail for the migration.
+- **Read-only toward your sources** — the NAS archive folders are *only ever
+  hashed* for comparison; the one write onto media is the drive's own sidecar,
+  guarded so it can never touch a source path. The view says so plainly.
 
 ### 🔓 Restore
 - **Three-command restore**, documented on every medium in `RESTORE.txt` —
