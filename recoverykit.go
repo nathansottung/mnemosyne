@@ -66,6 +66,13 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 		return nil, err
 	}
 
+	// Format sustainability: what formats these archives hold and how to read
+	// them — so "which tools open a .NEF in 2050?" travels with the kit.
+	progress(0.62, "format census")
+	if err := os.WriteFile(filepath.Join(kit, "FORMATS.md"), []byte(formatCensusMD(a.FormatCensus(0))), 0o644); err != nil {
+		return nil, err
+	}
+
 	progress(0.7, "key QR cards")
 	qrWritten := 0
 	for i, k := range keys {

@@ -578,6 +578,23 @@ func api(mux *http.ServeMux, app *App) {
 		}))
 	})
 
+	// format sustainability — the registry and the per-archive census (0 = all).
+	mux.HandleFunc("GET /api/formats", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.formatRegistry())
+	})
+	mux.HandleFunc("GET /api/census", func(w http.ResponseWriter, r *http.Request) {
+		cid, _ := strconv.Atoi(r.URL.Query().Get("collection_id"))
+		jsonOut(w, app.FormatCensus(cid))
+	})
+	register(mux, "GET /api/collections/{id}/census", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		if app.Store.Collection(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		jsonOut(w, app.FormatCensus(id))
+	})
+
 	// planning + chunks
 	mux.HandleFunc("POST /api/plan", func(w http.ResponseWriter, r *http.Request) {
 		b := body(r)

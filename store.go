@@ -887,6 +887,21 @@ func (s *Store) FileByID(id int) *File {
 	return nil
 }
 
+// ExtTally counts files and bytes per extension for a collection (0 = all),
+// computed under the lock so the format census never copies the whole file list.
+func (s *Store) ExtTally(collectionID int) *extTally {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := newExtTally()
+	for _, f := range s.c.Files {
+		if collectionID != 0 && f.CollectionID != collectionID {
+			continue
+		}
+		t.add(f.RelPath, f.SizeBytes)
+	}
+	return t
+}
+
 // SearchQuery bundles the search filters. Empty fields are ignored, so a bare
 // path query behaves exactly as before.
 type SearchQuery struct {

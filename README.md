@@ -511,6 +511,51 @@ The Volumes view shows sealed volumes distinctly (a blue 🔒 SEALED tag), and t
 volume page carries the full seal/unseal history. Unsealing is one click, needs a
 reason, and is logged — because re-opening a sealed box should leave a mark.
 
+### 🗂 Format sustainability — will you still open these in 2050?
+
+A perfectly-verified copy is worthless if nothing can *read* the file. So
+Mnemosyne keeps an **editable format registry** and shows a **per-archive
+census**: every file extension tagged with a longevity **tier**, a one-line
+rationale, the open-source **reader projects** that decode it, and — where one
+exists — a **migration** suggestion.
+
+**The tiers rate the *format*, by two criteria only:**
+
+1. **Is the format publicly documented?**
+2. **Are there multiple independent, healthy open-source readers?**
+
+| Tier | Meaning | Examples |
+|---|---|---|
+| **OPEN** | public spec, multiple independent readers | `.dng` `.tif` `.jpg` `.png` `.pdf` `.txt` `.wav` `.flac` |
+| **DOCUMENTED-PROPRIETARY** | closed spec, but healthy open-source readers | `.nef` `.cr3` `.arw` `.psd` `.heic` |
+| **AT-RISK** | single-vendor, weak/no open readers | vendor catalogs (`.lrcat`), obscure project files |
+| **UNKNOWN** | not in the registry | anything unrated |
+
+**Crucially, vendor financial health is *not* a criterion.** A format from a
+giant company can be AT-RISK (a proprietary catalog only one app reads), and a
+format from a defunct camera line can be DOCUMENTED-PROPRIETARY (because
+`libraw`/`dcraw` decode it robustly, forever, regardless of the vendor).
+
+**Worked example — NEF vs DNG.** A Nikon `.NEF` is **DOCUMENTED-PROPRIETARY**:
+Nikon never published the spec, but `libraw`, `dcraw`, RawTherapee and darktable
+all decode it well, so it is not endangered. Adobe's `.DNG` is **OPEN**: it is
+publicly documented, TIFF/EP-based, and read by many independent tools. So the
+registry's suggestion for NEF is *"retain the original NEF **and** consider
+archiving a DNG sibling for extra longevity."* Note what it does **not** say: it
+never suggests deleting the NEF. **Tiers are advisory. Mnemosyne never proposes
+deleting an original — ever.** The census is a "keep an eye on this" signal, not
+an alarm.
+
+The census surfaces on the dashboard as *"97% of bytes in OPEN/DOCUMENTED
+formats,"* with a per-archive breakdown table (colours map to the palette: OPEN
+green, DOCUMENTED amber-muted, AT-RISK amber, UNKNOWN gray). The census **and the
+per-format reader references travel with your media** — written into the Recovery
+Kit (`FORMATS.md`) and every volume inventory sidecar — so *"which tools open a
+.NEF?"* is answered on the medium itself, decades from now. The registry is
+`formats.json`, embedded in the binary and **overridable**: drop your own
+`formats.json` in the data dir to correct or extend it (entries merge by
+extension, yours winning).
+
 ### 🔎 Find & track
 - **Adopt existing media** — catalog archives written *before* Mnemosyne (or by
   hand with `tar`+`par2`) without rewriting a byte. Point **Volumes → Adopt

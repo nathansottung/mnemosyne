@@ -263,6 +263,7 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 		Files          []string       `json:"files"`
 	}
 	pkgs := make([]invPkg, 0, len(chunks))
+	tally := newExtTally() // format census of what this sealed volume holds
 	for _, c := range chunks {
 		var lv *time.Time
 		for _, cp := range c.Copies {
@@ -273,10 +274,12 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 		files := make([]string, 0, len(c.Files))
 		for _, cf := range c.Files {
 			files = append(files, cf.RelPath)
+			tally.add(cf.RelPath, cf.SizeBytes)
 		}
 		pkgs = append(pkgs, invPkg{Name: c.Name, Bytes: c.EncBytes, Encrypted: c.Encrypted,
 			Spanned: c.Spanned, LastVerifiedAt: lv, Integrity: c.BuildVerified, Files: files})
 	}
+	census := a.censusFromTally(tally)
 
 	frec := map[string]any{"mnemosyne_finalization": 1, "generated_utc": now.Format(time.RFC3339),
 		"volume": v, "finalization": fin, "checks": as.Checks}
@@ -286,7 +289,7 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 		}
 	}
 	snap := map[string]any{"mnemosyne_seal_snapshot": 1, "generated_utc": now.Format(time.RFC3339),
-		"volume": v, "package_count": len(pkgs), "packages": pkgs}
+		"volume": v, "package_count": len(pkgs), "packages": pkgs, "formats": census}
 	sb, _ := json.MarshalIndent(snap, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "catalog_snapshot.json"), sb, 0o644); err != nil {
 		return dir, err
@@ -318,6 +321,9 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("---\n\n")
+	b.WriteString(fmt.Sprintf("**Formats:** %.0f%% of these bytes are in OPEN or DOCUMENTED formats.\n\n", census.SafePct))
+	b.WriteString("```\n" + readersReference(census) + "```\n")
 	if err := os.WriteFile(filepath.Join(dir, "INVENTORY.md"), []byte(b.String()), 0o644); err != nil {
 		return dir, err
 	}

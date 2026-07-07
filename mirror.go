@@ -333,6 +333,7 @@ func (a *App) writeVolumeInventory(destDir string, vol *Volume) (string, error) 
 	var archives []invArchive
 	var totalFiles int
 	var totalBytes int64
+	tally := newExtTally() // format census of exactly what this volume holds
 	for _, c := range a.Store.Chunks(0) {
 		on := false
 		for _, cp := range c.Copies {
@@ -348,6 +349,7 @@ func (a *App) writeVolumeInventory(destDir string, vol *Volume) (string, error) 
 		for _, ref := range c.Files {
 			files = append(files, invFile{RelPath: ref.RelPath, Hash: ref.Hash, Size: ref.SizeBytes})
 			totalBytes += ref.SizeBytes
+			tally.add(ref.RelPath, ref.SizeBytes)
 		}
 		sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 		totalFiles += len(files)
@@ -358,9 +360,11 @@ func (a *App) writeVolumeInventory(destDir string, vol *Volume) (string, error) 
 		archives = append(archives, invArchive{ArchiveID: c.CollectionID, Archive: name, Chunk: c.Name, Mirror: c.Mirror, Integrity: c.BuildVerified, Files: files})
 	}
 
+	census := a.censusFromTally(tally)
 	snap := map[string]any{
 		"mnemosyne_volume_inventory": 1, "generated_utc": now.Format(time.RFC3339),
 		"volume": vol, "total_files": totalFiles, "total_bytes": totalBytes, "archives": archives,
+		"formats": census,
 	}
 	sb, _ := json.MarshalIndent(snap, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "catalog_snapshot.json"), sb, 0o644); err != nil {
@@ -390,6 +394,9 @@ func (a *App) writeVolumeInventory(destDir string, vol *Volume) (string, error) 
 			b.WriteString(fmt.Sprintf("- `%s`\n", f.RelPath))
 		}
 	}
+	b.WriteString("\n---\n\n")
+	b.WriteString(fmt.Sprintf("**Formats:** %.0f%% of these bytes are in OPEN or DOCUMENTED formats.\n\n", census.SafePct))
+	b.WriteString("```\n" + readersReference(census) + "```\n")
 	if err := os.WriteFile(filepath.Join(dir, "INVENTORY.md"), []byte(b.String()), 0o644); err != nil {
 		return dir, err
 	}

@@ -67,6 +67,11 @@ integrity.go   Named integrity presets (ARCHIVAL/BALANCED/FAST) unifying the
                and (always-on) read-back into one choice — global or per-archive
                (Collection.Integrity), with the effective settings attested into
                each package's build_verified block.
+formats.go     Format-sustainability registry (embedded formats.json, override in
+               the data dir) + per-archive census: tiers OPEN / DOCUMENTED-
+               PROPRIETARY / AT-RISK / UNKNOWN by documentation + independent
+               readers (not vendor health), reader projects, migrations. Feeds
+               the dashboard, Recovery Kit (FORMATS.md), and volume inventories.
 browse.go      Read-only server-side folder browser (GET /api/browse) powering
                the path picker: lists a directory's immediate subfolders only,
                never file contents, and only where the operator navigates.

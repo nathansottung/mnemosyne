@@ -42,6 +42,7 @@ Open the `mnemosyne-recovery-kit` folder. You should now see:
 - **`MEDIA_INVENTORY.md`** — a plain list of every package and which volume (drive, disc, or tape) holds it. This is your map: "the 2019 photos are on the blue drive."
 - **`README_RECOVERY.md`** — a short "start here" note explaining what the kit is and what to do first.
 - **`RESTORE_RUNBOOK.md`** — the authoritative, long-form restore instructions, written to still make sense **30 years** from now. This is the deep, careful version of the by-hand method (par2 → gpg → tar).
+- **`FORMATS.md`** — a "how to read these formats" reference: which kinds of files you have (like `.nef` or `.jpg`), and the free open-source tools that open each one. So a helper decades from now knows what opens a Nikon raw file, not just how to un-package it.
 - **A `keys/` folder** — inside it, for **each** encryption key, one **QR-code image** (a `.png` file) plus a matching **text card** (a `.txt` file). The text card lists the key's name; the QR image encodes the actual passphrase.
 
 ![The contents of the recovery kit folder](../img/09-kit-contents.png)

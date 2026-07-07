@@ -599,11 +599,45 @@ async function integrityArchiveDlg(cid,name){
 async function clearArchiveIntegrity(cid){try{await api('PUT',`/api/collections/${cid}/integrity`,{clear:true});
   const d=$('#dlg');if(d)d.close();toast('Archive now inherits global integrity');vArchiveProtection(cid)}catch(e){toast(e.message,1)}}
 
+/* ---------------- Format sustainability census ----------------
+   Tiers rate a FORMAT's long-term readability (documented? independent open
+   readers?) — never the vendor's health, never a suggestion to delete anything.
+   Colours map to the palette: OPEN green, DOCUMENTED amber-muted, AT-RISK amber,
+   UNKNOWN gray. */
+const FMT_TIER={
+  'OPEN':{c:'var(--ok)',t:'Open',fill:false},
+  'DOCUMENTED-PROPRIETARY':{c:'#8a6d10',t:'Documented',fill:false},
+  'AT-RISK':{c:'var(--warn)',t:'At-risk',fill:true},
+  'UNKNOWN':{c:'var(--idle)',t:'Unknown',fill:false},
+};
+const FMT_ORDER=['OPEN','DOCUMENTED-PROPRIETARY','AT-RISK','UNKNOWN'];
+function fmtBadge(tier){const p=FMT_TIER[tier]||FMT_TIER.UNKNOWN;
+  return p.fill?`<span class="protbadge" style="border-color:${p.c};background:${p.c};color:#fff">${p.t}</span>`
+    :`<span class="protbadge" style="border-color:${p.c};color:${p.c}">${p.t}</span>`}
+function censusBar(c){const tb=c.tier_bytes||{};const tot=c.total_bytes||1;
+  let h='<div style="display:flex;height:10px;border-radius:5px;overflow:hidden;border:1px solid var(--line)">';
+  for(const t of FMT_ORDER){const b=tb[t]||0;if(!b)continue;const p=FMT_TIER[t];const pct=b/tot*100;
+    h+=`<div title="${p.t}: ${GB(b)} GB (${pct.toFixed(0)}%)" style="width:${pct}%;background:${p.c}${p.fill?'':'99'}"></div>`}
+  return h+'</div>'}
+function censusSummary(c){return `<b>${(c.safe_pct||0).toFixed(0)}%</b> of bytes in OPEN/DOCUMENTED formats <span class="dim">— readable with independent open-source tools</span>`}
+async function censusDlg(cid,name){
+  const c=await api('GET','/api/census'+(cid?('?collection_id='+cid):''));
+  if(!c.total_files){dlg(`<h1>Format census — ${esc(name||'All archives')}</h1><div class="empty">No cataloged files yet.</div>`,async()=>{});return}
+  let h=`<h1>Format census — ${esc(name||'All archives')}</h1>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">Tiers rate how easily each format can still be opened years from now — by whether it's publicly documented and has independent open-source readers, <b>not</b> by how the vendor is doing. Advisory only; always keep your originals.</div>
+    <div style="margin-bottom:6px">${censusSummary(c)}</div>${censusBar(c)}
+    <div class="dim" style="font-size:11px;margin-top:6px">${c.total_files.toLocaleString()} files · ${GB(c.total_bytes)} GB</div>
+    <div style="max-height:50vh;overflow:auto;margin-top:12px"><table><tr><th>Type</th><th class="num">Files</th><th class="num">Size</th><th>Tier</th><th>Readers / notes</th></tr>`;
+  for(const r of c.rows||[])h+=`<tr><td class="mono">${esc(r.ext)}</td><td class="num">${r.count.toLocaleString()}</td><td class="num">${GB(r.bytes)} GB</td>
+    <td>${fmtBadge(r.tier)}</td><td class="dim" style="font-size:11px">${esc(r.rationale||'')}${(r.readers&&r.readers.length)?`<div>readers: ${esc(r.readers.join(', '))}</div>`:''}${r.migration?`<div style="color:var(--warn)">↪ ${esc(r.migration)}</div>`:''}</td></tr>`;
+  dlg(h+'</table></div>',async()=>{});
+}
+
 /* ---------------- Home / Dashboard ---------------- */
 async function vHome(){
-  const [cs,chunks,cfgr,pre,adv,pr]=await Promise.all([
+  const [cs,chunks,cfgr,pre,adv,pr,cen]=await Promise.all([
     api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/preflight'),
-    api('GET','/api/space-advice').catch(()=>null),api('GET','/api/protection').catch(()=>null)]);
+    api('GET','/api/space-advice').catch(()=>null),api('GET','/api/protection').catch(()=>null),api('GET','/api/census').catch(()=>null)]);
   const archives=cs||[]; const pkgs=chunks||[]; const cfg=(cfgr&&cfgr.config)||{};
   const required=cfg.required_copies||2; const months=cfg.verify_due_months||12;
   // Empty catalog → guided first run.
@@ -617,6 +651,9 @@ async function vHome(){
   let h=hdr('Home','archive health at a glance','home');
   const protStripHTML=protStrip((pr&&pr.totals)||{});
   if(protStripHTML)h+=`<a href="#protection" style="text-decoration:none;color:var(--ink-3);font:11px var(--mono);letter-spacing:.06em;text-transform:uppercase">Protection — 3-2-1 status →</a>`+protStripHTML;
+  if(cen&&cen.total_files)h+=`<div class="panel" style="padding:12px 16px"><div class="row" style="justify-content:space-between;align-items:center;gap:14px">
+    <div style="flex:1;min-width:0">${censusSummary(cen)}<div style="margin-top:6px;max-width:560px">${censusBar(cen)}</div></div>
+    <button class="btn ghost" onclick="censusDlg(0,'All archives')">Format census…</button></div></div>`;
   if(under||due)h+=`<div class="row" style="margin-bottom:14px">
     ${under?`<a class="btn danger" href="#packages">⚠ ${under} under-protected package${under>1?'s':''}</a>`:''}
     ${due?`<a class="btn ghost" href="#packages">${due} package${due>1?'s':''} verify-due</a>`:''}</div>`;
@@ -722,6 +759,7 @@ async function vVault(){
       <button class="btn ghost" onclick="planDlg(${c.id},'${esc(c.name)}')">Plan packages…</button>
       <button class="btn ghost" onclick="mirrorDlg(${c.id},'${esc(c.name)}')">Mirror backup…</button>
       <button class="btn ghost" onclick="vArchiveProtection(${c.id})">Protection…</button>
+      <button class="btn ghost" onclick="censusDlg(${c.id},'${esc(c.name)}')">Formats…</button>
       <button class="btn ghost" onclick="doReconcile(${c.id},'${esc(c.name)}')">Rescan & compare</button></td></tr>`}
     h+='</table>'}
   h+='</div>';
