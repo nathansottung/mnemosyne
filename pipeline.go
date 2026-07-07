@@ -79,6 +79,14 @@ const fastBuildWarning = "FAST build: stage-vs-source and decrypt round-trip ver
 type App struct {
 	DataDir string
 	Store   *Store
+	// Preflight cache: the tool-version checks shell out to tar/gpg/par2, and a
+	// cold tool (notably gpg spawning its agent on Windows) can take many seconds.
+	// Both the Settings view and the periodic status lamp call Preflight, so a
+	// slow probe used to hang the UI; a short single-flight cache + per-tool
+	// timeout keep it snappy. See Preflight / toolVersionLine.
+	pfMu  sync.Mutex
+	pfAt  time.Time
+	pfVal map[string]any
 }
 
 func (a *App) configPath() string { return filepath.Join(a.DataDir, "config.json") }
@@ -130,7 +138,59 @@ func (a *App) tool(name string) (string, error) {
 	return p, nil
 }
 
+// toolVersionLine runs "<path> --version" but STOPS WAITING after a short
+// timeout, returning the first output line (or "" if it is slow/errored). A cold
+// tool can take many seconds the first time — notably gpg spawning its agent and
+// dirmngr on Windows, whose children inherit the output pipe so even killing the
+// parent (CommandContext) does not return promptly. So we don't rely on killing
+// it: we read the result in a goroutine and give up waiting on a timer, letting
+// the harmless probe finish in the background. The "ok"/"found" status comes from
+// LookPath, so a missing version string is cosmetic and fills in once warm.
+func toolVersionLine(path string) string {
+	ch := make(chan string, 1) // buffered: the goroutine never blocks even if we stop waiting
+	go func() {
+		v, err := exec.Command(path, "--version").CombinedOutput()
+		if err != nil {
+			ch <- ""
+			return
+		}
+		ch <- strings.SplitN(strings.TrimSpace(string(v)), "\n", 2)[0]
+	}()
+	select {
+	case line := <-ch:
+		return line
+	case <-time.After(3 * time.Second):
+		return ""
+	}
+}
+
+// detectLTFSMountsBounded caps LTFS detection so a slow volume probe can never
+// hang Preflight; LTFS presence is informational and never affects readiness.
+func detectLTFSMountsBounded(d time.Duration) []string {
+	ch := make(chan []string, 1)
+	go func() { ch <- detectLTFSMounts() }()
+	select {
+	case m := <-ch:
+		return m
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// Preflight reports tool/keystore/media readiness, cached briefly and computed
+// single-flight so the Settings view and the 20s status lamp never both stall on
+// a slow tool probe.
 func (a *App) Preflight() map[string]any {
+	a.pfMu.Lock()
+	defer a.pfMu.Unlock()
+	if a.pfVal != nil && time.Since(a.pfAt) < 8*time.Second {
+		return a.pfVal
+	}
+	a.pfVal, a.pfAt = a.computePreflight(), time.Now()
+	return a.pfVal
+}
+
+func (a *App) computePreflight() map[string]any {
 	out := map[string]any{}
 	hints := []string{}
 	allOK := true
@@ -142,9 +202,8 @@ func (a *App) Preflight() map[string]any {
 		p, err := a.tool(name)
 		item := map[string]any{"ok": err == nil, "path": p}
 		if err == nil {
-			if v, e := exec.Command(p, "--version").CombinedOutput(); e == nil {
-				lines := strings.SplitN(strings.TrimSpace(string(v)), "\n", 2)
-				item["version"] = lines[0]
+			if line := toolVersionLine(p); line != "" {
+				item["version"] = line
 			}
 		} else {
 			hints = append(hints, name+": "+hint)
@@ -154,9 +213,10 @@ func (a *App) Preflight() map[string]any {
 	}
 	ks := a.KeystoreStatus()
 	out["keystores"] = ks
-	// LTFS tape detection is purely informational — it NEVER affects "ok".
-	// Absence just means "no tape mounted"; HDD and optical need no LTFS.
-	ltfs := detectLTFSMounts()
+	// LTFS tape detection is purely informational — it NEVER affects "ok". Absence
+	// just means "no tape mounted"; HDD and optical need no LTFS. Bounded by a
+	// timeout so a slow volume probe can never hang Preflight.
+	ltfs := detectLTFSMountsBounded(3 * time.Second)
 	out["ltfs"] = map[string]any{"mounted": len(ltfs) > 0, "mounts": ltfs}
 	// smartctl (drive-mortality signals) is OPTIONAL — informational only, never
 	// affects "ok". Present = the Media health card lights up on volumes; absent =

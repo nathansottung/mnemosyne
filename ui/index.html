@@ -222,7 +222,18 @@ const HELP={
   settings:['Settings — one config file','Everything lives in one config.json in the data folder: paths to the external tools, the staging folder, keystore locations, redundancy goal, re-verify window, write throttle, and the optical burn command. Preflight at the top shows whether tar/gpg/par2 (and any LTFS tape) are ready.'],
 };
 function helpBtn(k){return `<button class="help" aria-label="Help: what the ${esc(k)} view is for" title="What is this view for?" onclick="showHelp('${k}')">i</button>`}
-function showHelp(k){const e=HELP[k];if(!e)return;dlg(`<h1>${esc(e[0])}</h1><div style="margin-top:8px;line-height:1.62;color:var(--ink-2)">${esc(e[1])}</div>`,async()=>{})}
+// Each help panel links to the matching plain-language Handbook guide (opens on
+// the project's docs site). Handbook lives in docs/handbook/ in the repo.
+const HANDBOOK='https://github.com/nathansottung/mnemosyne/blob/main/docs/handbook/';
+const HELP_GUIDE={home:['00-what-is-this.md','What is this? & first run'],vault:['03-your-first-backup.md','Your first backup'],
+  protection:['04-the-3-2-1-setup.md','The 3-2-1 setup'],integrity:['04-the-3-2-1-setup.md','Protection & integrity'],
+  packages:['03-your-first-backup.md','Your first backup'],burn:['06-discs-and-drives.md','Discs, mirrors & old drives'],
+  volumes:['06-discs-and-drives.md','Discs, mirrors & old drives'],dock:['06-discs-and-drives.md','Adopting old drives'],
+  keys:['09-the-recovery-kit.md','Keys & the Recovery Kit'],jobs:['07-checking-on-your-archive.md','Checking on your archive'],
+  settings:['02-set-up-safely.md','Set up safely']};
+function showHelp(k){const e=HELP[k];if(!e)return;const g=HELP_GUIDE[k];
+  const link=g?`<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line)"><a href="${HANDBOOK}${g[0]}" target="_blank" rel="noopener" style="color:var(--act);font-weight:600">📖 Handbook: ${esc(g[1])} →</a></div>`:'';
+  dlg(`<h1>${esc(e[0])}</h1><div style="margin-top:8px;line-height:1.62;color:var(--ink-2)">${esc(e[1])}</div>${link}`,async()=>{})}
 function hdr(title,crumb,key){return `<div class="hd"><h1>${title}</h1>${helpBtn(key)}</div><div class="crumb">${esc(crumb)}</div>`}
 function stamp(s){return `<span class="stamp ${esc(s)}">${esc(s)}</span>`}
 function emptyState(msg,actionsHTML){return `<div class="empty">${msg}${actionsHTML?`<div class="row" style="justify-content:center;margin-top:12px">${actionsHTML}</div>`:''}</div>`}
@@ -324,10 +335,11 @@ function verifyCampaignDlg(){dlg(`<h1>Verify a medium</h1>
   async()=>{const d=$('#d1').value.trim();if(!d)return;
     await api('POST','/api/verify-campaign',{dest_dir:d,level:$('#vcl').value});toast('Verify campaign started — see Jobs');loc('jobs')})}
 
-async function lamp(){try{const p=await api('GET','/api/preflight');const l=$('#lamp');
+let _lampBusy=false;
+async function lamp(){if(_lampBusy)return;_lampBusy=true;try{const p=await api('GET','/api/preflight');const l=$('#lamp');
   l.className='lamp '+(p.ok?'ok':'bad');
   l.querySelector('span').textContent=p.ok?'tar · gpg · par2 · keys ready':'setup needed — see Settings';
-}catch(e){}}
+}catch(e){}finally{_lampBusy=false}}
 
 /* ---------------- Protection profiles & the six-status model ----------------
    The real 3-2-1 rule has THREE dimensions: copies, distinct media kinds, and

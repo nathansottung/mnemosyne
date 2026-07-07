@@ -78,6 +78,37 @@ Match the surrounding code — it is intentional, not accidental:
   correctly). Don't commit CRLF into source or docs; if a clone shows spurious
   whole-file diffs, run `git add --renormalize .` once.
 
+## Writing the User Handbook (`docs/handbook/`)
+
+The handbook is the **novice-first, task-based** user guide — written for a
+careful photographer or family archivist, **not** a developer. It is separate
+from these maintainer docs. When you touch a user-facing flow, update the
+matching guide. These rules are **enforced**; a handbook PR that breaks them
+gets sent back:
+
+- **Plain language, ~8th-grade reading level.** Short sentences. No jargon for
+  its own sake. Never assume the reader knows what a *hash*, a *mount*, or a
+  *terminal* is — if you use such a word, define it right there.
+- **Define every technical term at first use** (in parentheses) **and** in
+  `glossary.md`.
+- **Every step states its expected result** — "You should now see…". A step the
+  reader can't confirm is a step they can't trust.
+- **Every guide ends with two sections:** `## How to know it worked` and
+  `## If something went wrong`. (The glossary and troubleshooting pages are
+  exempt.)
+- **Screenshots are referenced as placeholders** `../img/<guide>-<step>.png`
+  (handbook pages live in `docs/handbook/`, images in `docs/img/`), and each
+  guide ends with a `## Screenshots to capture` checklist naming every
+  placeholder. Don't block a guide on missing images — ship the words, list the
+  shots.
+- **Ground every step in a real, current UI label.** Before writing "click X",
+  confirm X exists and is spelled that way in `ui/index.html`. **Where the docs
+  and the UI disagree, flag it in the PR description — do not paper over it** by
+  quietly describing what "should" be there. A `<!-- VERIFY: … -->` comment in
+  the draft is fine for handoff, but it must be resolved before merge.
+- **Reinforce the promise** where relevant: the app never touches your
+  originals, never deletes anything, never phones home.
+
 ## Smoke test (manual, end-to-end)
 
 There is no CI harness yet; the trustworthy check is to **drive a real archive

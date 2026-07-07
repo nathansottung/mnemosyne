@@ -23,6 +23,26 @@ in which house — each verified copy lives on.
 
 ---
 
+## 📖 New here? Start with the Handbook
+
+**Not a developer? [Read the User Handbook →](docs/handbook/00-what-is-this.md)**
+— a plain-language, task-based guide written for a careful novice (a photographer
+or family archivist). It walks you through
+[installing and the first run](docs/handbook/01-install-and-first-run.md),
+[setting up safely](docs/handbook/02-set-up-safely.md),
+[your first backup](docs/handbook/03-your-first-backup.md),
+[the 3-2-1 setup](docs/handbook/04-the-3-2-1-setup.md),
+[tape](docs/handbook/05-tape.md),
+[discs & drives](docs/handbook/06-discs-and-drives.md),
+[checking on your archive](docs/handbook/07-checking-on-your-archive.md),
+[getting files back](docs/handbook/08-getting-files-back.md), and
+[the Recovery Kit](docs/handbook/09-the-recovery-kit.md) — plus a
+[glossary](docs/handbook/glossary.md) and
+[troubleshooting](docs/handbook/troubleshooting.md). The rest of this README is
+the technical/maintainer reference.
+
+---
+
 ## Source safety guarantee
 
 **Mnemosyne never modifies your source data. This is an enforced invariant, not a

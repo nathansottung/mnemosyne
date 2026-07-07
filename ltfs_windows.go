@@ -15,12 +15,19 @@ func detectLTFSMounts() []string {
 	k := syscall.NewLazyDLL("kernel32.dll")
 	getLogicalDrives := k.NewProc("GetLogicalDrives")
 	getVolumeInformation := k.NewProc("GetVolumeInformationW")
+	getDriveType := k.NewProc("GetDriveTypeW")
 	setErrorMode := k.NewProc("SetErrorMode")
 
 	// Suppress the "no disk in drive" popup for not-ready removable drives.
 	const semFailCriticalErrors = 0x0001
 	prev, _, _ := setErrorMode.Call(uintptr(semFailCriticalErrors))
 	defer setErrorMode.Call(prev)
+
+	// Drive-type constants (winbase.h). We only probe local media: LTFS is never a
+	// NETWORK drive, and calling GetVolumeInformationW on a disconnected mapped
+	// network drive can BLOCK for ~20s on the SMB timeout — which used to hang
+	// Preflight (and the Settings page). So skip anything not fixed/removable.
+	const driveRemovable, driveFixed = 2, 3
 
 	mask, _, _ := getLogicalDrives.Call()
 	var out []string
@@ -32,6 +39,9 @@ func detectLTFSMounts() []string {
 		rp, err := syscall.UTF16PtrFromString(root)
 		if err != nil {
 			continue
+		}
+		if dt, _, _ := getDriveType.Call(uintptr(unsafe.Pointer(rp))); dt != driveRemovable && dt != driveFixed {
+			continue // network / optical / unknown — never LTFS, and possibly slow to probe
 		}
 		fsName := make([]uint16, 261) // MAX_PATH + 1
 		r, _, _ := getVolumeInformation.Call(
