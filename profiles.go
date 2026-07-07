@@ -234,18 +234,22 @@ type fileDims struct {
 
 func dimsFromCopies(cps map[string]physCopy, prof *Profile) fileDims {
 	d := fileDims{}
+	// prof may be nil (no profile resolves → UNASSIGNED); then the copy counts
+	// still matter for display but the profile-relative checks are skipped, and
+	// statusFor(nil, …) short-circuits to UNASSIGNED. Guarding here keeps every
+	// caller (Search, Protection) crash-safe for archives with no assignment.
 	kindSet := map[string]bool{}
 	for _, pc := range cps {
 		d.copies++
 		if pc.offsite {
 			d.offsite++
 		}
-		if isVerifyStale(pc.verifiedAt, prof.VerifyDueMonths) {
+		if prof != nil && isVerifyStale(pc.verifiedAt, prof.VerifyDueMonths) {
 			d.stale = true
 		}
 		for k := range pc.kinds {
 			kindSet[k] = true
-			if len(prof.MediaKindsAllowed) > 0 && !containsFold(prof.MediaKindsAllowed, k) {
+			if prof != nil && len(prof.MediaKindsAllowed) > 0 && !containsFold(prof.MediaKindsAllowed, k) {
 				d.disallowed = true
 			}
 		}

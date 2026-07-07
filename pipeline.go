@@ -407,6 +407,9 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 	if err != nil || !info.IsDir() {
 		return 0, fmt.Errorf("not a readable folder: %s", root)
 	}
+	// Batch catalog writes for the duration of the scan (idempotent re-run).
+	a.Store.BeginBatch()
+	defer a.Store.EndBatch()
 	folder := a.Store.AddFolder(collectionID, root)
 
 	var paths []string

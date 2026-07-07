@@ -228,6 +228,10 @@ func (a *App) AdoptMedia(mountPath string, collectionID, volumeID int, deep bool
 	if _, err := os.Stat(mountPath); err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", mountPath, err)
 	}
+	// Batch catalog writes across the adoption (idempotent: already-cataloged
+	// payloads are skipped by hash on a re-run).
+	a.Store.BeginBatch()
+	defer a.Store.EndBatch()
 	if volumeID <= 0 {
 		volumeID = a.Store.EnsureUnregistered().ID
 	}

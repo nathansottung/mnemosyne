@@ -466,16 +466,51 @@ type catalog struct {
 	Audit       []Audit              `json:"audit"`
 }
 
+// compactThreshold is the file count above which the catalog is saved as compact
+// (non-indented) JSON — see save(). Below it, catalogs stay pretty-printed and
+// text-editor-inspectable.
+const compactThreshold = 50_000
+
 type Store struct {
 	mu      sync.Mutex
 	path    string
 	c       catalog
 	lastBak string // YYYYMMDD of the most recent daily backup written
-	jobs    struct {
+	// fileIdx indexes Files by (collection|folder|relpath) so UpsertFile is O(1)
+	// instead of a linear scan — the difference between an O(n) and an O(n²) scan
+	// at a million files. Rebuilt from the catalog on open; kept in sync by
+	// UpsertFile. Nil until first built.
+	fileIdx map[string]*File
+	// Batched persistence: during a long job (scan/adopt/mirror) the App brackets
+	// the work in BeginBatch/EndBatch; while batchDepth>0, save() coalesces writes
+	// (at most one every batchInterval) and marks the catalog dirty, then EndBatch
+	// forces a final write. Crash-safety is preserved because those jobs are
+	// idempotent re-runs (see BeginBatch).
+	batchDepth    int
+	dirty         bool
+	lastSave      time.Time
+	batchInterval time.Duration
+	jobs          struct {
 		mu   sync.Mutex
 		next int
 		rows []*Job
 	}
+}
+
+// fileKey is the UpsertFile index key: a file is unique per (collection, folder,
+// rel path).
+func fileKey(collectionID, folderID int, rel string) string {
+	return strconv.Itoa(collectionID) + "|" + strconv.Itoa(folderID) + "|" + rel
+}
+
+// buildFileIndexLocked (re)builds fileIdx from the catalog. Caller holds no lock
+// during OpenStore (single-threaded); UpsertFile builds it lazily under the lock.
+func (s *Store) buildFileIndexLocked() {
+	idx := make(map[string]*File, len(s.c.Files))
+	for _, f := range s.c.Files {
+		idx[fileKey(f.CollectionID, f.FolderID, f.RelPath)] = f
+	}
+	s.fileIdx = idx
 }
 
 func OpenStore(dataDir string) (*Store, error) {
@@ -577,8 +612,39 @@ func (s *Store) seedBuiltinProfilesLocked() bool {
 	return changed
 }
 
+// save persists the catalog. During a batched job it COALESCES writes: it marks
+// the catalog dirty and skips the write if one happened within batchInterval,
+// so a scan/adoption that mutates thousands of times pays a handful of full-file
+// writes instead of thousands (each of which marshals the whole catalog — O(n)
+// per write, O(n·writes) total). EndBatch forces the final write. Callers hold
+// s.mu. Crash-safety is preserved: see BeginBatch.
 func (s *Store) save() error {
-	b, err := json.MarshalIndent(&s.c, "", " ")
+	if s.batchDepth > 0 {
+		s.dirty = true
+		iv := s.batchInterval
+		if iv <= 0 {
+			iv = 3 * time.Second
+		}
+		if !s.lastSave.IsZero() && time.Since(s.lastSave) < iv {
+			return nil // coalesced — a real write happened recently
+		}
+	}
+	return s.writeCatalog()
+}
+
+func (s *Store) writeCatalog() error {
+	// Pretty-print small catalogs (human-inspectable with any text editor — the
+	// whole point of the JSON store) but switch to COMPACT JSON once the catalog
+	// gets large: at 1M files the indentation alone is ~90 MB of whitespace, and
+	// compact form parses meaningfully faster on load. A big catalog isn't
+	// text-editor-inspectable anyway; `go test`/tools can pretty-print on demand.
+	var b []byte
+	var err error
+	if len(s.c.Files) > compactThreshold {
+		b, err = json.Marshal(&s.c)
+	} else {
+		b, err = json.MarshalIndent(&s.c, "", " ")
+	}
 	if err != nil {
 		return err
 	}
@@ -589,8 +655,41 @@ func (s *Store) save() error {
 	if err := os.Rename(tmp, s.path); err != nil {
 		return err
 	}
+	s.lastSave, s.dirty = time.Now(), false
 	s.dailyBackup(b)
 	return nil
+}
+
+// BeginBatch enters batched-save mode: while active, save() coalesces catalog
+// writes (at most one per batchInterval) instead of writing on every mutation.
+// The App brackets scan / adoption / mirror jobs with BeginBatch/EndBatch.
+//
+// Crash-safety reasoning: these jobs are IDEMPOTENT RE-RUNS. A scan re-hashes the
+// same source tree and UpsertFile replaces entries by (collection, folder, path);
+// an adoption re-hashes the same media and skips payloads whose hash is already
+// cataloged; a mirror re-writes the same files copy-then-verified. So if the
+// process dies mid-job before the final write, re-running the job reproduces the
+// same catalog state — nothing is silently lost, unlike a half-finished build or
+// write (which are NOT batched and still persist immediately). Batching trades a
+// few seconds of not-yet-persisted progress on a crash for avoiding an O(n·m)
+// write storm; the trade is safe precisely because the work is replayable.
+func (s *Store) BeginBatch() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batchDepth++
+}
+
+// EndBatch leaves batched-save mode and forces a final write if anything is
+// pending, so the job's result is durable when it returns.
+func (s *Store) EndBatch() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.batchDepth > 0 {
+		s.batchDepth--
+	}
+	if s.batchDepth == 0 && s.dirty {
+		_ = s.writeCatalog()
+	}
 }
 
 // dailyBackup writes catalog.json.bak-YYYYMMDD once per calendar day (best
@@ -747,15 +846,18 @@ func (s *Store) AssertOutsideSources(path string) error {
 func (s *Store) UpsertFile(f File) *File {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, e := range s.c.Files {
-		if e.CollectionID == f.CollectionID && e.FolderID == f.FolderID && e.RelPath == f.RelPath {
-			e.SizeBytes, e.HashAlg, e.Hash = f.SizeBytes, f.HashAlg, f.Hash
-			return e
-		}
+	if s.fileIdx == nil {
+		s.buildFileIndexLocked()
+	}
+	key := fileKey(f.CollectionID, f.FolderID, f.RelPath)
+	if e := s.fileIdx[key]; e != nil { // O(1) replace of a prior entry
+		e.SizeBytes, e.HashAlg, e.Hash = f.SizeBytes, f.HashAlg, f.Hash
+		return e
 	}
 	nf := f
 	nf.ID = s.next("file")
 	s.c.Files = append(s.c.Files, &nf)
+	s.fileIdx[key] = &nf
 	return &nf
 }
 

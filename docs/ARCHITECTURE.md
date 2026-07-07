@@ -261,6 +261,67 @@ methods (`AddChunk`, `Chunks`, `RecordCopy`, `AppendVerifyEvent`, …), not to t
 JSON — so the storage engine can change without touching pipeline, writer,
 burner, or the API. The `Store` method surface *is* the seam.
 
+### Measured: the catalog at 1M files (the scalability pass)
+
+`catalog_scale_test.go` is a synthetic benchmark — skipped by default; run with
+`MNEMO_SCALE=1 go test -run TestCatalogScale -v -timeout 20m` (override sizes with
+`MNEMO_FILES` / `MNEMO_MIRROR`). It builds **1,000,000 file records + 500,000
+mirror-copy records** (~315 MB catalog) and measures load, save, insert
+throughput, memory, and search. Numbers on a Windows dev box (SSD):
+
+| Metric | Baseline (per-mutation, pretty JSON) | After this pass | Gate (≤ ~3s) |
+|---|---|---|---|
+| SAVE (marshal + atomic write) | 2.65 s | **0.83 s** | ✅ pass |
+| LOAD (`OpenStore`) | 5.11 s | **4.36 s** | ❌ over |
+| Insert 100k via `UpsertFile` | O(n²) — minutes | **0.27 s (~375k/s)** | — |
+| Adoption write cost (1000 mutations) | ~14 min if unbatched | **~2 writes total** | — |
+| Search (path / hash-prefix / ext) | — | **0.2–0.4 s** | — |
+| Heap in use after load | — | ~304 MB | — |
+
+What this pass hardened (all in `store.go` behind the same `Store` surface):
+
+- **`UpsertFile` dedup is O(1)**, via a `(collection\|folder\|relpath) → *File`
+  index (`fileIdx`) rebuilt on open. It was a linear scan → **O(n²) per scan**,
+  the real 1M-file killer (independent of persistence).
+- **Compact JSON above `compactThreshold` (50k files).** At 1M the indentation
+  alone was ~90 MB of whitespace; compact form cut the file 378→315 MB and SAVE
+  2.65→0.83 s. Small catalogs stay pretty-printed and text-editor-inspectable.
+- **Batched, coalesced persistence during jobs.** Scan / adoption / mirror / dock
+  bracket their work in `Store.BeginBatch()`/`EndBatch()`; while batched, `save()`
+  writes at most once per `batchInterval` (default 3 s) and forces a final write
+  at `EndBatch`. This collapses a per-mutation write storm (each `save()` marshals
+  the *whole* catalog — O(n·m)) to a handful of writes. **Crash-safety is
+  preserved because those jobs are idempotent re-runs** — a scan re-hashes the
+  same tree and `UpsertFile` replaces by key; adoption skips payloads already
+  cataloged by hash; a mirror re-copies-then-verifies. A crash mid-job before the
+  final write is recovered by simply re-running it. (Builds and writes are **not**
+  batched — they persist immediately, since a half-finished write is not
+  replayable.)
+
+**Decision gate:** SAVE now passes (0.83 s). **LOAD (4.36 s) still exceeds ~3 s,
+and JSON cannot get under it at 1M** — unmarshaling ~1.5M objects whose 64-char
+SHA-256 hashes are irreducible high-entropy text is inherently multi-second.
+Per the gate, the remedy is the **pure-Go SQLite swap** above. It is *viable*
+(`modernc.org/sqlite` fetches and is CGO-free) but it is intentionally **NOT
+bundled into this pass**: it bumps the Go toolchain to 1.25 and adds ~9
+transitive modules (incl. the large `modernc.org/libc`), and a correct
+implementation reworks the "return an in-memory pointer, mutate it, call
+`UpdateX`" pattern every `Store` method relies on — a large, higher-risk change
+that belongs in its own reviewed PR with:
+
+1. a one-time automatic migration on open (if `catalog.json` exists and the DB
+   does not): load JSON → bulk-insert into SQLite → **back up the JSON, never
+   delete it**;
+2. the JSON retained as a **"portable catalog" export** (hand-inspectable,
+   diffable, engine-independent) — the 30-year-restorable promise stays;
+3. a normalized schema that also removes the mirror-copy duplication (per-volume
+   file lists keyed by file ID) for free.
+
+This pass ships the operationally critical wins — SAVE under the gate, scan
+de-quadratic-ized, the adoption write-storm eliminated, search and memory
+healthy — which make 1M-file ingest *feasible today*; the ~4.4 s one-time
+startup load is the remaining item the SQLite PR closes.
+
 ## Volume identity & labels
 
 A `Volume` is a physical medium the operator can hold. Beyond the human label,

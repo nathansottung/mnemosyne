@@ -146,6 +146,9 @@ func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level s
 	if fi, err := os.Stat(mountPath); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("cannot read docked drive %s", mountPath)
 	}
+	// Batch catalog writes across the ingest (idempotent: matched by content hash).
+	a.Store.BeginBatch()
+	defer a.Store.EndBatch()
 
 	progress(0.02, "identifying drive")
 	// An explicit serial (from the watcher, which already resolved the candidate,

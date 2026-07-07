@@ -139,6 +139,9 @@ func (a *App) MirrorToVolume(collectionID int, folderIDs []int, destDir string, 
 	if throttleMbps <= 0 {
 		throttleMbps = a.LoadConfig().ThrottleMbps
 	}
+	// Batch catalog writes across the mirror job (idempotent copy-then-verify).
+	a.Store.BeginBatch()
+	defer a.Store.EndBatch()
 
 	// Resolve the source files (optionally limited to chosen folders) and the
 	// folder roots they hang off.
