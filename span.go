@@ -184,7 +184,13 @@ func (a *App) SpanWriteNext(id int, destDir string, bufferGB float64, blockMB in
 		segFile := filepath.Join(destChunk, fmt.Sprintf("%s.seg%03d", c.Name, seg.Index))
 		progress(0.05, fmt.Sprintf("writing segment %d/%d (%d bytes)", seg.Index, N, seg.Bytes))
 		streamHash, stats, err := ringCopy(payload, segFile, offset, seg.Bytes, blockMB, bufferGB, throttleMbps,
-			func(p float64) { progress(0.05+p*0.6, "") })
+			func(done, total int64) {
+				frac := 0.0
+				if total > 0 {
+					frac = float64(done) / float64(total)
+				}
+				progress(0.05+frac*0.6, progBytes(done, total, fmt.Sprintf("writing segment %d/%d", seg.Index, N)))
+			})
 		c.RingStats = &stats
 		if err != nil {
 			return fail(err)

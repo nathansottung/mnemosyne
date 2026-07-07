@@ -67,7 +67,7 @@ func TestDockIngest_TwoDrivesSequentialAndReinsert(t *testing.T) {
 	}
 
 	// --- Ingest drive A ---
-	rA, err := app.IngestDrive(ds.ID, driveA, "SERIAL-A", "DRIVE-A", "", func(float64, string) {})
+	rA, err := app.IngestDrive(ds.ID, driveA, "SERIAL-A", "DRIVE-A", "", "", func(float64, string) {})
 	if err != nil {
 		t.Fatalf("ingest A: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestDockIngest_TwoDrivesSequentialAndReinsert(t *testing.T) {
 	// --- Ingest drive B (the missing third file) ---
 	driveB := t.TempDir()
 	writeTree(t, driveB, map[string]string{"archive/c.txt": "charlie, the third file\n"})
-	rB, err := app.IngestDrive(ds.ID, driveB, "SERIAL-B", "DRIVE-B", "", func(float64, string) {})
+	rB, err := app.IngestDrive(ds.ID, driveB, "SERIAL-B", "DRIVE-B", "", "", func(float64, string) {})
 	if err != nil {
 		t.Fatalf("ingest B: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestDockIngest_TwoDrivesSequentialAndReinsert(t *testing.T) {
 		"a.txt":        "alpha content\n",
 		"photos/b.txt": "bravo content in a subfolder\n",
 	})
-	rR, err := app.IngestDrive(ds.ID, driveA2, "SERIAL-A", "DRIVE-A", "", func(float64, string) {})
+	rR, err := app.IngestDrive(ds.ID, driveA2, "SERIAL-A", "DRIVE-A", "", "", func(float64, string) {})
 	if err != nil {
 		t.Fatalf("re-insert A: %v", err)
 	}

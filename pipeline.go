@@ -49,6 +49,9 @@ type Config struct {
 	BurnVerifyMount       string            `json:"burn_verify_mount"`
 	VerifyDueMonths       int               `json:"verify_due_months"`
 	RequiredCopies        int               `json:"required_copies"`                // redundancy goal; fewer verified copies = under-protected
+	FinalizeVerifyDays    int               `json:"finalize_verify_days"`           // finalize: every copy on the volume must have verified within this many days
+	BufferPct             float64           `json:"buffer_pct"`                     // finalize: min % of the drive left free to seal — full drives die young
+	SmartBlockFinalize    bool              `json:"smart_block_finalize"`           // finalize: block when SMART data exists and is failing/advisory
 	BuildVerify           string            `json:"build_verify"`                   // "full" (default): prove contents + decrypt round-trip; "fast": skip both (unproven)
 	BarcodeScheme         string            `json:"barcode_scheme"`                 // prefix for auto-assigned volume barcodes, e.g. "NSP" -> NSP-0001
 	TapeTool              string            `json:"tape_tool"`                      // path to a tape-diagnostics CLI (itdt/tapeinfo/sg_logs/hp_ltt); blank = auto-probe PATH
@@ -60,7 +63,8 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, Par2ExtraArgs: "-t0", BufferGB: 8, BlockMB: 64,
-		VerifyDueMonths: 12, RequiredCopies: 2, BuildVerify: "full", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
+		VerifyDueMonths: 12, RequiredCopies: 2, FinalizeVerifyDays: 30, BufferPct: 5, SmartBlockFinalize: true,
+		BuildVerify: "full", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
 }
 
 // buildVerifyMode normalises the configured build-verification level. Anything

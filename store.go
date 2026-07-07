@@ -47,6 +47,9 @@ func pathRelated(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
+// pathExt returns a file's lowercased extension (".nef"), for the search filter.
+func pathExt(rel string) string { return strings.ToLower(filepath.Ext(rel)) }
+
 type Collection struct {
 	ID        int       `json:"id"`
 	Name      string    `json:"name"`
@@ -70,10 +73,11 @@ type File struct {
 }
 
 type ChunkFileRef struct {
-	FileID    int    `json:"file_id"`
-	RelPath   string `json:"rel_path"`
-	SizeBytes int64  `json:"size_bytes"`
-	Hash      string `json:"hash,omitempty"` // backed-up hash at plan time (for drift/reconcile)
+	FileID     int    `json:"file_id"`
+	RelPath    string `json:"rel_path"`
+	SizeBytes  int64  `json:"size_bytes"`
+	Hash       string `json:"hash,omitempty"`        // full SHA-256 (level-B truth; for drift/reconcile)
+	SampleHash string `json:"sample_hash,omitempty"` // SHA-256 of size + first & last 4 MiB (the level-C baseline)
 }
 
 type Chunk struct {
@@ -162,6 +166,30 @@ type Volume struct {
 	// Drive-mortality (SMART) snapshots, append-only, newest last. A COMPLEMENT to
 	// hash verification — SMART hints at failure risk, it never proves data intact.
 	SmartHistory []SmartSnapshot `json:"smart_history,omitempty"`
+	// Finalize / seal state — the "close the box and label it" ceremony. A SEALED
+	// volume is declared DONE and vault-ready; further writes are refused until an
+	// explicit, audit-logged unseal. Finalizations is the append-only ceremony
+	// history (SEALED / UNSEALED events), newest last.
+	Sealed        bool           `json:"sealed,omitempty"`
+	SealedAt      *time.Time     `json:"sealed_at,omitempty"`
+	Finalizations []Finalization `json:"finalizations,omitempty"`
+}
+
+// Finalization is one entry in a volume's seal ceremony history: who did it,
+// when, what the volume held, and — for a forced seal — which preconditions were
+// overridden and why (audit trail). Action is SEALED or UNSEALED.
+type Finalization struct {
+	At          time.Time `json:"at"`
+	By          string    `json:"by"`
+	Action      string    `json:"action"` // SEALED | UNSEALED
+	Packages    int       `json:"packages,omitempty"`
+	Bytes       int64     `json:"bytes,omitempty"`
+	FreeBytes   int64     `json:"free_bytes,omitempty"`
+	TotalBytes  int64     `json:"total_bytes,omitempty"`
+	Forced      bool      `json:"forced,omitempty"`
+	ForceReason string    `json:"force_reason,omitempty"` // typed confirmation / unseal reason
+	Overrides   []string  `json:"overrides,omitempty"`    // precondition failures overridden by a forced seal
+	Sidecar     string    `json:"sidecar,omitempty"`      // sidecar folder written on the volume
 }
 
 // SmartSnapshot is one read of a drive's SMART self-report (smartctl -j). It is a
@@ -195,11 +223,20 @@ type SmartSnapshot struct {
 // verify trail is not lost, while a fresh Copy takes its place. Superseded copies
 // never count toward redundancy or the "current" per-volume copy.
 type Copy struct {
-	VolumeID       int        `json:"volume_id"`
-	Path           string     `json:"path"`
-	WrittenAt      *time.Time `json:"written_at,omitempty"`
+	VolumeID  int        `json:"volume_id"`
+	Path      string     `json:"path"`
+	WrittenAt *time.Time `json:"written_at,omitempty"`
+	// LastVerifiedAt / VerifyOK reflect only LEVEL B (full-content) verification —
+	// the qualifying bar for protection and the verify-due clock. Level A/C checks
+	// are advisory and are recorded in LastCheck* WITHOUT touching these.
 	LastVerifiedAt *time.Time `json:"last_verified_at,omitempty"`
 	VerifyOK       *bool      `json:"verify_ok,omitempty"`
+	// LastCheck* record the most recent verify at ANY level (A/B/C) for display
+	// ("checked (C, sample) · 2026-07-08"). A/C never satisfy COMPLETE or refresh
+	// verify-due; only B does.
+	LastCheckAt    *time.Time `json:"last_check_at,omitempty"`
+	LastCheckLevel string     `json:"last_check_level,omitempty"`
+	LastCheckOK    *bool      `json:"last_check_ok,omitempty"`
 	Superseded     bool       `json:"superseded,omitempty"`
 }
 
@@ -296,10 +333,14 @@ type TapeHealth struct {
 // recorded enc_hash — logged by write read-back, media verify, burn verify,
 // and verify campaigns. Append-only history; media is never modified.
 type VerifyEvent struct {
-	At   time.Time `json:"at"`
-	OK   bool      `json:"ok"`
-	Path string    `json:"path"`
-	Note string    `json:"note"` // e.g. "write read-back", "media verify", "burn verify", "campaign"
+	At    time.Time `json:"at"`
+	OK    bool      `json:"ok"`
+	Path  string    `json:"path"`
+	Note  string    `json:"note"`            // e.g. "write read-back", "media verify", "burn verify", "campaign"
+	Level string    `json:"level,omitempty"` // "A" census · "B" full · "C" sample; blank legacy events are level B
+	// Advisory marks a level-A/C check: it records intact-so-far evidence but does
+	// NOT satisfy COMPLETE or refresh verify-due — only a level-B pass does.
+	Advisory bool `json:"advisory,omitempty"`
 }
 
 // UnmarshalJSON defaults Encrypted to true when the field is absent, so
@@ -332,6 +373,13 @@ type Job struct {
 	Status    string    `json:"status"` // RUNNING COMPLETED FAILED
 	Progress  float64   `json:"progress"`
 	CreatedAt time.Time `json:"created_at"`
+	// Live telemetry for byte-moving jobs (copy/write/mirror): current throughput
+	// and estimated time remaining, surfaced on the job row instead of a bare %.
+	RateMBps   float64        `json:"rate_mbps,omitempty"`
+	ETASeconds float64        `json:"eta_seconds,omitempty"`
+	BytesDone  int64          `json:"bytes_done,omitempty"`
+	BytesTotal int64          `json:"bytes_total,omitempty"`
+	Result     map[string]any `json:"result,omitempty"` // the finished job's artifact/summary (path, counts, …)
 }
 
 type Audit struct {
@@ -707,11 +755,33 @@ func (s *Store) FileByID(id int) *File {
 	return nil
 }
 
-// Search answers "which chunk / which medium holds this file?"
-func (s *Store) Search(q string, limit int) []map[string]any {
+// SearchQuery bundles the search filters. Empty fields are ignored, so a bare
+// path query behaves exactly as before.
+type SearchQuery struct {
+	Text         string // substring of the file's rel path (case-insensitive)
+	Hash         string // exact or prefix match of the SHA-256 (case-insensitive)
+	Ext          string // file extension filter, e.g. ".nef" (leading dot optional)
+	Status       string // protection status filter (COMPLETE, PARTIAL, …)
+	CollectionID int    // 0 = all archives; else scope to this archive
+	Limit        int
+}
+
+// Search answers "which chunk / which medium holds this file?" and the inverse
+// queries — is THIS hash backed up, show me every unprotected .NEF in an archive.
+func (s *Store) Search(qr SearchQuery) []map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	q = strings.ToLower(q)
+	q := strings.ToLower(strings.TrimSpace(qr.Text))
+	hash := strings.ToLower(strings.TrimSpace(qr.Hash))
+	ext := strings.ToLower(strings.TrimSpace(qr.Ext))
+	if ext != "" && !strings.HasPrefix(ext, ".") {
+		ext = "." + ext
+	}
+	status := strings.ToUpper(strings.TrimSpace(qr.Status))
+	limit := qr.Limit
+	if limit <= 0 {
+		limit = 200
+	}
 	loc := map[int]*Chunk{} // fileID -> chunk
 	for _, ch := range s.c.Chunks {
 		for _, cf := range ch.Files {
@@ -750,11 +820,23 @@ func (s *Store) Search(q string, limit int) []map[string]any {
 	}
 	var out []map[string]any
 	for _, f := range s.c.Files {
+		if qr.CollectionID > 0 && f.CollectionID != qr.CollectionID {
+			continue
+		}
 		if q != "" && !strings.Contains(strings.ToLower(f.RelPath), q) {
 			continue
 		}
-		row := map[string]any{"file_id": f.ID, "rel_path": f.RelPath, "size_bytes": f.SizeBytes, "hash": f.Hash}
+		if hash != "" && !strings.HasPrefix(strings.ToLower(f.Hash), hash) {
+			continue // prefix match — a full 64-char hash reduces to an exact match
+		}
+		if ext != "" && !strings.EqualFold(pathExt(f.RelPath), ext) {
+			continue
+		}
 		pst, pdet, pprof := s.fileProtectionLocked(f, fileCopies, folderPath)
+		if status != "" && pst != status {
+			continue
+		}
+		row := map[string]any{"file_id": f.ID, "rel_path": f.RelPath, "size_bytes": f.SizeBytes, "hash": f.Hash, "ext": pathExt(f.RelPath)}
 		row["protection_status"], row["protection_detail"] = pst, pdet
 		if pprof != nil {
 			row["profile_name"] = pprof.Name
@@ -774,7 +856,8 @@ func (s *Store) Search(q string, limit int) []map[string]any {
 				if cp.Superseded {
 					continue
 				}
-				e := map[string]any{"path": cp.Path, "verify_ok": cp.VerifyOK, "last_verified_at": cp.LastVerifiedAt}
+				e := map[string]any{"path": cp.Path, "verify_ok": cp.VerifyOK, "last_verified_at": cp.LastVerifiedAt,
+					"last_check_level": cp.LastCheckLevel, "last_check_ok": cp.LastCheckOK, "last_check_at": cp.LastCheckAt}
 				if v := vol[cp.VolumeID]; v != nil {
 					e["volume_label"], e["location"], e["kind"], e["barcode"] = v.Label, v.Location, v.Kind, v.Barcode
 				}
@@ -896,6 +979,9 @@ func (s *Store) UpdateChunk(c *Chunk) { s.mu.Lock(); defer s.mu.Unlock(); _ = s.
 func (s *Store) AppendVerifyEvent(c *Chunk, ev VerifyEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if ev.Level == "" {
+		ev.Level = "B" // legacy/always-full checks record as level B
+	}
 	c.VerifyEvents = append(c.VerifyEvents, ev)
 	_ = s.save()
 }
@@ -1157,13 +1243,28 @@ func (s *Store) RecordCopy(c *Chunk, volumeID int, path string, verifiedOK bool)
 	_ = s.save()
 }
 
-// UpdateCopyVerify refreshes the last_verified_at/verify_ok of the current
-// (non-superseded) copy whose Path matches (or the sole current copy) after a
-// verify against that medium.
+// UpdateCopyVerify records a LEVEL-B verify result on the current copy matching
+// path (back-compat: all existing callers are full-content checks).
 func (s *Store) UpdateCopyVerify(c *Chunk, path string, ok bool) {
+	s.UpdateCopyVerifyLevel(c, path, ok, "B")
+}
+
+// UpdateCopyVerifyLevel refreshes a copy's verify state at the given level. Level
+// B updates last_verified_at/verify_ok (the qualifying, verify-due-refreshing
+// bar); levels A and C only update the advisory last_check_* fields, so they can
+// never satisfy COMPLETE or reset the verify-due clock.
+func (s *Store) UpdateCopyVerifyLevel(c *Chunk, path string, ok bool, level string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
+	apply := func(i int) {
+		v := ok
+		lvl := level
+		c.Copies[i].LastCheckAt, c.Copies[i].LastCheckLevel, c.Copies[i].LastCheckOK = &now, lvl, &v
+		if level == "B" {
+			c.Copies[i].LastVerifiedAt, c.Copies[i].VerifyOK = &now, &v
+		}
+	}
 	matched := false
 	current := 0
 	var soleIdx int
@@ -1176,14 +1277,12 @@ func (s *Store) UpdateCopyVerify(c *Chunk, path string, ok bool) {
 		// base-mount vs chunk-subfolder both match (one contains the other),
 		// tolerant of separator/case differences across platforms.
 		if pathRelated(c.Copies[i].Path, path) {
-			v := ok
-			c.Copies[i].LastVerifiedAt, c.Copies[i].VerifyOK = &now, &v
+			apply(i)
 			matched = true
 		}
 	}
 	if !matched && current == 1 {
-		v := ok
-		c.Copies[soleIdx].LastVerifiedAt, c.Copies[soleIdx].VerifyOK = &now, &v
+		apply(soleIdx)
 	}
 	_ = s.save()
 }
@@ -1473,6 +1572,30 @@ func (s *Store) SetJob(id int, progress float64, label, status string) {
 			if status != "" {
 				j.Status = status
 			}
+		}
+	}
+}
+
+// SetJobTelemetry updates a running job's live throughput/ETA (0s clear it).
+func (s *Store) SetJobTelemetry(id int, rateMBps, etaSeconds float64, bytesDone, bytesTotal int64) {
+	s.jobs.mu.Lock()
+	defer s.jobs.mu.Unlock()
+	for _, j := range s.jobs.rows {
+		if j.ID == id {
+			j.RateMBps, j.ETASeconds, j.BytesDone, j.BytesTotal = rateMBps, etaSeconds, bytesDone, bytesTotal
+		}
+	}
+}
+
+// SetJobResult attaches a finished job's artifact/summary so the UI can show it
+// (the "show the artifact" rule) — clearing any live telemetry.
+func (s *Store) SetJobResult(id int, result map[string]any) {
+	s.jobs.mu.Lock()
+	defer s.jobs.mu.Unlock()
+	for _, j := range s.jobs.rows {
+		if j.ID == id {
+			j.Result = result
+			j.RateMBps, j.ETASeconds = 0, 0
 		}
 	}
 }

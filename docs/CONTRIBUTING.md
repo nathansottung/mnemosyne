@@ -47,6 +47,21 @@ Match the surrounding code — it is intentional, not accidental:
   existing comment density and naming.
 - **UI is one vanilla-JS file** (`ui/index.html`), no build step. Keep it that
   way; changes ship by editing the file.
+- **Show the artifact.** Every action that produces an artifact — a printable
+  label, a Recovery Kit, an exported report, a drift table — MUST end by
+  *showing or opening that artifact*, never a bare "job completed" with nothing
+  to click. Open it in a new tab (label/report), surface a result panel with its
+  path + contents (kit), or capture the background job's `Result` and expose it
+  on the Jobs row (`jobArtifact`). A user should never have to go hunting on disk
+  for what an action just made. This was v1's most-reported UX failure — a job
+  would finish and simply show a percentage, leaving the operator unsure what
+  happened or where the output went.
+- **Every path input gets the folder picker.** Any field where the operator
+  types a filesystem path (scan source, staging, write/restore/kit destination,
+  adopt mount, …) must offer the **Browse…** picker (`browseBtn('id')`) next to
+  it. Typing a raw path by hand — v1's only option — is error-prone; the picker
+  (backed by the read-only `GET /api/browse`) is the default, while the field
+  stays editable so a not-yet-existing folder can still be typed.
 - **Protection status is ALWAYS colour + icon + text label together — never
   colour alone.** The six statuses (`UNASSIGNED` ○, `NOT_BACKED_UP` ✕, `PARTIAL`
   ◐, `COMPLETE` ✓, `OVER_COMPLETE` ✓+, `OUT_OF_POLICY` ⚠) each pair a colour with

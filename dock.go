@@ -132,7 +132,7 @@ func (a *App) DockCandidates(sessionID int) ([]DockCandidate, error) {
 // be supplied by the watcher (or a test); a blank serial is resolved from the
 // live device. mode "" auto-selects adopt vs re-verify (a drive already holding
 // mirror data for these archives re-verifies).
-func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode string, progress func(float64, string)) (map[string]any, error) {
+func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level string, progress func(float64, string)) (map[string]any, error) {
 	ds := a.Store.DockSession(sessionID)
 	if ds == nil {
 		return nil, fmt.Errorf("dock session %d not found", sessionID)
@@ -194,7 +194,16 @@ func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode string, 
 		effMode = "reverify"
 	}
 
-	drive, err := a.mirrorAdopt(ds, mountPath, vol, effMode, progress)
+	// A re-verify may run at a cheaper level (A census / C sample) — a path-based
+	// check of the known mirror instead of the full content re-hash. Adoption and
+	// level B always do the full content match.
+	var drive *DockDrive
+	var err error
+	if effMode == "reverify" && normLevel(level) != VerifyB {
+		drive, err = a.dockReverifyAtLevel(ds, mountPath, vol, normLevel(level), progress)
+	} else {
+		drive, err = a.mirrorAdopt(ds, mountPath, vol, effMode, progress)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +348,49 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 		d.Note += "re-verified (drive recognized by serial)"
 	}
 	return d, nil
+}
+
+// dockReverifyAtLevel does a cheap path-based re-verify of the mirror(s) already
+// recorded for this volume at level A or C — checking each cataloged file at
+// mountPath/relpath, skipping the full content re-hash. Advisory only (never
+// satisfies COMPLETE or refreshes verify-due); a level-B re-verify uses the full
+// content-match path (mirrorAdopt) instead.
+func (a *App) dockReverifyAtLevel(ds *DockSession, mountPath string, vol *Volume, level string, progress func(float64, string)) (*DockDrive, error) {
+	progress(0.1, "re-verifying ("+levelName(level)+")")
+	matched, bad := 0, 0
+	for _, aid := range ds.ArchiveIDs {
+		for _, c := range a.Store.Chunks(aid) {
+			if !c.Mirror {
+				continue
+			}
+			on := false
+			for _, cp := range c.Copies {
+				if cp.VolumeID == vol.ID && !cp.Superseded {
+					on = true
+					break
+				}
+			}
+			if !on {
+				continue
+			}
+			ok, checked, b, firstBad := verifyMirrorChunk(c, mountPath, level)
+			matched += checked - b
+			bad += b
+			now := time.Now().UTC()
+			note := fmt.Sprintf("dock re-verify (%s): %d/%d ok", levelTag(level), checked-b, checked)
+			if !ok {
+				note += " · first bad: " + firstBad
+			}
+			a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: ok, Path: mountPath, Note: note, Level: level, Advisory: true})
+			a.Store.UpdateCopyVerifyLevel(c, mountPath, ok, level)
+		}
+	}
+	note := fmt.Sprintf("re-verified at level %s (advisory — only full/B satisfies protection)", level)
+	if bad > 0 {
+		note += fmt.Sprintf(" · %d file(s) failed the %s check", bad, levelName(level))
+	}
+	return &DockDrive{VolumeID: vol.ID, Serial: vol.Serial, Label: vol.Label, Mode: "reverify",
+		Matched: matched, Note: note}, nil
 }
 
 // upsertMirrorChunk creates or refreshes the ADOPTED-VERIFIED mirror package for

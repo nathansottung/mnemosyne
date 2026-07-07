@@ -39,7 +39,7 @@ type RingStats struct {
 // offset/length select a byte range of src; length <= 0 means "from offset to
 // EOF". This lets a spanned chunk stream one segment's range through the same
 // ring buffer as a whole-file write.
-func ringCopy(src, dst string, offset, length int64, blockMB int, bufferGB, throttleMbps float64, progress func(float64)) (string, RingStats, error) {
+func ringCopy(src, dst string, offset, length int64, blockMB int, bufferGB, throttleMbps float64, progress func(done, total int64)) (string, RingStats, error) {
 	block := blockMB << 20
 	depth := int(bufferGB * float64(1<<30) / float64(block))
 	if depth < 2 {
@@ -131,7 +131,7 @@ func ringCopy(src, dst string, offset, length int64, blockMB int, bufferGB, thro
 		}
 		written += int64(len(b))
 		if total > 0 {
-			progress(float64(written) / float64(total))
+			progress(written, total)
 		}
 		// Writer-side pacing only: sleep until cumulative bytes match the target
 		// rate. Self-correcting against wall clock, so the rate stays smooth.
@@ -272,7 +272,13 @@ func (a *App) WriteChunk(id int, destDir string, bufferGB float64, blockMB int, 
 	progress(0.02, "writing payload")
 	destPayload := filepath.Join(dest, payloadBase)
 	streamHash, stats, err := ringCopy(enc, destPayload, 0, 0, blockMB, bufferGB, throttleMbps,
-		func(p float64) { progress(0.02+p*0.66, "") })
+		func(done, total int64) {
+			frac := 0.0
+			if total > 0 {
+				frac = float64(done) / float64(total)
+			}
+			progress(0.02+frac*0.66, progBytes(done, total, "writing payload"))
+		})
 	c.RingStats = &stats // telemetry: proof the buffer decoupled read from a throttled write
 	if err != nil {
 		return mediumFail(err)
@@ -401,10 +407,11 @@ func (a *App) VerifyChunk(id int, destDir string) (map[string]any, error) {
 // cataloged chunks and re-verifies each against its enc_hash — "insert the
 // tape/disc, verify everything on it in one click". Strictly read-only with
 // respect to media; only the catalog's verify history/status is updated.
-func (a *App) VerifyCampaign(destDir string, progress func(float64, string)) (map[string]any, error) {
+func (a *App) VerifyCampaign(destDir, level string, progress func(float64, string)) (map[string]any, error) {
 	if strings.TrimSpace(destDir) == "" {
 		return nil, fmt.Errorf("dest_dir required")
 	}
+	level = normLevel(level)
 	byName := map[string]*Chunk{}
 	for _, c := range a.Store.Chunks(0) {
 		byName[c.Name] = c
@@ -441,13 +448,27 @@ func (a *App) VerifyCampaign(destDir string, progress func(float64, string)) (ma
 			cands = append(cands, cand{c, filepath.Join(destDir, name)})
 		}
 	}
-	if len(cands) == 0 {
-		return nil, fmt.Errorf("no cataloged packages found on %s (looked for NAME/<payload> or NAME.tar[.gpg])", destDir)
+	// Native mirror packages whose files live under this medium (level applies).
+	var mirrorTargets []*Chunk
+	for _, c := range a.Store.Chunks(0) {
+		if !c.Mirror {
+			continue
+		}
+		for _, cp := range c.Copies {
+			if !cp.Superseded && pathRelated(cp.Path, destDir) {
+				mirrorTargets = append(mirrorTargets, c)
+				break
+			}
+		}
+	}
+	if len(cands) == 0 && len(mirrorTargets) == 0 {
+		return nil, fmt.Errorf("no cataloged packages or mirrors found on %s (looked for NAME/<payload>, NAME.tar[.gpg], or a mirror rooted here)", destDir)
 	}
 	var okCount int
 	results := make([]map[string]any, 0, len(cands))
 	for i, cd := range cands {
-		progress(float64(i)/float64(len(cands)), "verify "+cd.c.Name)
+		progress(float64(i)/float64(len(cands)+len(mirrorTargets)), "verify "+cd.c.Name)
+		// Package payloads are ALWAYS level B — full content hash, no option.
 		h, herr := hashFileHex(cd.path)
 		ok := herr == nil && h == cd.c.EncHash
 		note := "campaign"
@@ -463,16 +484,46 @@ func (a *App) VerifyCampaign(destDir string, progress func(float64, string)) (ma
 		}
 		// Copy-level result; package status derives from all copies (a bad medium
 		// on this campaign does not fail a package with other verified copies).
-		a.Store.AppendVerifyEvent(cd.c, VerifyEvent{At: now, OK: ok, Path: cd.path, Note: note})
+		a.Store.AppendVerifyEvent(cd.c, VerifyEvent{At: now, OK: ok, Path: cd.path, Note: note, Level: VerifyB})
 		a.Store.UpdateCopyVerify(cd.c, destDir, ok)
 		a.refreshChunkStatus(cd.c)
 		a.Store.UpdateChunk(cd.c)
-		results = append(results, map[string]any{"chunk": cd.c.Name, "ok": ok, "path": cd.path,
+		results = append(results, map[string]any{"chunk": cd.c.Name, "ok": ok, "path": cd.path, "level": VerifyB,
 			"status": cd.c.Status, "verified_copies": cd.c.VerifiedCopyCount()})
 	}
-	progress(1.0, fmt.Sprintf("verified %d/%d ok", okCount, len(cands)))
-	a.Store.Log("verify-campaign", fmt.Sprintf("%s: %d/%d ok", destDir, okCount, len(cands)))
-	return map[string]any{"dest_dir": destDir, "checked": len(cands), "ok": okCount, "results": results}, nil
+	// Mirrors: verified at the chosen level (A/C advisory, B satisfies COMPLETE).
+	mirrorResults := make([]map[string]any, 0, len(mirrorTargets))
+	for j, c := range mirrorTargets {
+		progress(float64(len(cands)+j)/float64(len(cands)+len(mirrorTargets)), "verify mirror "+c.Name)
+		ok, checked, bad, firstBad := verifyMirrorChunk(c, destDir, level)
+		now := time.Now().UTC()
+		note := fmt.Sprintf("campaign mirror (%s): %d/%d ok", levelTag(level), checked-bad, checked)
+		if !ok {
+			note += " · first bad: " + firstBad
+		}
+		a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: ok, Path: destDir, Note: note, Level: level, Advisory: !levelSatisfiesComplete(level)})
+		a.Store.UpdateCopyVerifyLevel(c, destDir, ok, level)
+		if level == VerifyB {
+			if ok {
+				c.VerifiedAt = &now
+			}
+			a.refreshChunkStatus(c)
+			a.Store.UpdateChunk(c)
+		}
+		if ok {
+			okCount++
+		}
+		mirrorResults = append(mirrorResults, map[string]any{"chunk": c.Name, "ok": ok, "level": level,
+			"checked": checked, "bad": bad, "advisory": !levelSatisfiesComplete(level)})
+	}
+	if level == VerifyB && len(mirrorTargets) > 0 {
+		a.Store.RecomputeProtection(nil)
+	}
+	total := len(cands) + len(mirrorTargets)
+	progress(1.0, fmt.Sprintf("verified %d/%d ok", okCount, total))
+	a.Store.Log("verify-campaign", fmt.Sprintf("%s: %d/%d ok (mirror level %s)", destDir, okCount, total, level))
+	return map[string]any{"dest_dir": destDir, "checked": total, "ok": okCount, "level": level,
+		"results": results, "mirror_results": mirrorResults}, nil
 }
 
 func (a *App) RestoreChunk(id int, sourceDir, outputDir string, members []string, progress func(float64, string)) (map[string]any, error) {

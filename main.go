@@ -211,6 +211,19 @@ func pathID(r *http.Request) int {
 	return id
 }
 
+// sealGuard refuses a write targeting a SEALED (finalized, vault-ready) volume.
+// A newly-registered inline volume (id 0 here, created by resolveVolume) is never
+// sealed, so only an explicit existing volume_id can trip this.
+func sealGuard(app *App, volumeID int) error {
+	if volumeID <= 0 {
+		return nil
+	}
+	if v := app.Store.Volume(volumeID); v != nil && v.Sealed {
+		return fmt.Errorf("volume %q is SEALED (vault-ready) — unseal it first to write; unseal is audit-logged", v.Label)
+	}
+	return nil
+}
+
 // resolveVolume returns the volume id for a write/burn/span request: an
 // existing volume_id, or a freshly registered volume from an inline new_volume
 // object, or 0 (which the write path maps to "(unregistered)").
@@ -241,22 +254,66 @@ func pathFree(p string) (int64, error) {
 	}
 }
 
-// runJob executes fn in a goroutine bound to a Job row the UI can poll.
-func runJob(app *App, kind, label string, fn func(progress func(float64, string)) error) map[string]any {
+// progBytes formats a progress message that also carries byte counters for live
+// telemetry: runJob parses the "\x1f<done>\x1f<total>\x1f<human>" prefix into
+// MB/s + ETA and displays only the human tail. Byte-moving jobs (write/mirror/
+// span) emit this so the job row shows throughput, not just a percent.
+func progBytes(done, total int64, human string) string {
+	return fmt.Sprintf("\x1f%d\x1f%d\x1f%s", done, total, human)
+}
+
+// runJob executes fn in a goroutine bound to a Job row the UI can poll. fn's
+// returned map is captured as the job's Result so the UI can show the artifact.
+func runJob(app *App, kind, label string, fn func(progress func(float64, string)) (map[string]any, error)) map[string]any {
 	j := app.Store.NewJob(kind, label)
 	go func() {
+		start := time.Now()
+		var lastDone int64
+		var lastT time.Time
+		var lastRate float64
 		prog := func(p float64, msg string) {
+			done, total, human := int64(0), int64(0), msg
+			if strings.HasPrefix(msg, "\x1f") {
+				if parts := strings.SplitN(msg, "\x1f", 4); len(parts) == 4 {
+					done, _ = strconv.ParseInt(parts[1], 10, 64)
+					total, _ = strconv.ParseInt(parts[2], 10, 64)
+					human = parts[3]
+				}
+			}
 			l := label
-			if msg != "" {
-				l = label + " — " + msg
+			if human != "" {
+				l = label + " — " + human
 			}
 			app.Store.SetJob(j.ID, p, l, "")
+			// Telemetry: a recent-window MB/s from byte deltas, ETA from what's left.
+			var rate, eta float64
+			now := time.Now()
+			if total > 0 {
+				if lastT.IsZero() {
+					lastDone, lastT = done, now
+				} else if dt := now.Sub(lastT).Seconds(); dt >= 0.5 {
+					if r := float64(done-lastDone) / 1e6 / dt; r >= 0 {
+						lastRate = round1(r)
+					}
+					lastDone, lastT = done, now
+				}
+				rate = lastRate
+				if rate > 0 && total > done {
+					eta = float64(total-done) / (rate * 1e6)
+				}
+			} else if p > 0.01 && p < 1 {
+				eta = time.Since(start).Seconds() * (1 - p) / p
+			}
+			app.Store.SetJobTelemetry(j.ID, rate, eta, done, total)
 		}
-		if err := fn(prog); err != nil {
+		res, err := fn(prog)
+		if err != nil {
 			app.Store.SetJob(j.ID, -1, label+" — ERROR: "+err.Error(), "FAILED")
+			app.Store.SetJobTelemetry(j.ID, 0, 0, 0, 0)
 			return
 		}
 		app.Store.SetJob(j.ID, 1, "", "COMPLETED")
+		app.Store.SetJobResult(j.ID, res)
 	}()
 	return map[string]any{"job_id": j.ID, "status": "RUNNING", "label": label}
 }
@@ -295,6 +352,16 @@ func api(mux *http.ServeMux, app *App) {
 			out["error"] = err.Error()
 		}
 		jsonOut(w, out)
+	})
+
+	// Read-only folder browser for the path picker (lists subdirectories only).
+	mux.HandleFunc("GET /api/browse", func(w http.ResponseWriter, r *http.Request) {
+		res, err := app.Browse(r.URL.Query().Get("path"))
+		if err != nil {
+			jsonErr(w, 400, fmt.Errorf("cannot read folder: %w", err))
+			return
+		}
+		jsonOut(w, res)
 	})
 
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
@@ -362,9 +429,9 @@ func api(mux *http.ServeMux, app *App) {
 			jsonErr(w, 400, fmt.Errorf("path required"))
 			return
 		}
-		jsonOut(w, runJob(app, "scan", "Scan "+root, func(p func(float64, string)) error {
-			_, err := app.ScanFolder(id, root, p)
-			return err
+		jsonOut(w, runJob(app, "scan", "Scan "+root, func(p func(float64, string)) (map[string]any, error) {
+			n, err := app.ScanFolder(id, root, p)
+			return map[string]any{"files": n}, err
 		}))
 	})
 	register(mux, "POST /api/collections/{id}/reconcile", func(w http.ResponseWriter, r *http.Request) {
@@ -374,9 +441,13 @@ func api(mux *http.ServeMux, app *App) {
 			jsonErr(w, 404, fmt.Errorf("archive not found"))
 			return
 		}
-		jsonOut(w, runJob(app, "reconcile", "Rescan & compare "+c.Name, func(p func(float64, string)) error {
-			_, err := app.ReconcileCollection(id, p)
-			return err
+		jsonOut(w, runJob(app, "reconcile", "Rescan & compare "+c.Name, func(p func(float64, string)) (map[string]any, error) {
+			d, err := app.ReconcileCollection(id, p)
+			var res map[string]any
+			if d != nil {
+				res = map[string]any{"collection_id": id, "changes": d.Changes()}
+			}
+			return res, err
 		}))
 	})
 	register(mux, "GET /api/collections/{id}/drift", func(w http.ResponseWriter, r *http.Request) {
@@ -438,11 +509,19 @@ func api(mux *http.ServeMux, app *App) {
 				jsonErr(w, 400, fmt.Errorf("each target needs a volume_id or new_volume"))
 				return
 			}
+			if err := sealGuard(app, vol); err != nil {
+				jsonErr(w, 409, err)
+				return
+			}
 			label := fmt.Sprintf("Mirror %s → %s", coll.Name, dest)
 			// One job per volume — they run concurrently (v1's multi-volume copy).
-			resp := runJob(app, "mirror", label, func(p func(float64, string)) error {
-				_, err := app.MirrorToVolume(cid, folderIDs, dest, vol, throttle, p)
-				return err
+			resp := runJob(app, "mirror", label, func(p func(float64, string)) (map[string]any, error) {
+				mr, err := app.MirrorToVolume(cid, folderIDs, dest, vol, throttle, p)
+				var res map[string]any
+				if mr != nil {
+					res = map[string]any{"mirrored": mr.Mirrored, "bytes": mr.Bytes, "sidecar": mr.Sidecar, "failed": mr.Failed}
+				}
+				return res, err
 			})
 			resp["volume_id"] = vol
 			resp["dest_dir"] = dest
@@ -451,7 +530,12 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, map[string]any{"jobs": jobs})
 	})
 	mux.HandleFunc("GET /api/search", func(w http.ResponseWriter, r *http.Request) {
-		jsonOut(w, app.Store.Search(r.URL.Query().Get("q"), 200))
+		q := r.URL.Query()
+		cid, _ := strconv.Atoi(q.Get("collection_id"))
+		jsonOut(w, app.Store.Search(SearchQuery{
+			Text: q.Get("q"), Hash: q.Get("hash"), Ext: q.Get("ext"),
+			Status: q.Get("status"), CollectionID: cid, Limit: 200,
+		}))
 	})
 
 	// planning + chunks
@@ -487,8 +571,8 @@ func api(mux *http.ServeMux, app *App) {
 			jsonErr(w, 404, fmt.Errorf("package not found"))
 			return
 		}
-		jsonOut(w, runJob(app, "build", "Build "+c.Name, func(p func(float64, string)) error {
-			return app.BuildChunk(id, p)
+		jsonOut(w, runJob(app, "build", "Build "+c.Name, func(p func(float64, string)) (map[string]any, error) {
+			return nil, app.BuildChunk(id, p)
 		}))
 	})
 	register(mux, "POST /api/chunks/{id}/write", func(w http.ResponseWriter, r *http.Request) {
@@ -505,9 +589,12 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		vol := resolveVolume(app, b)
-		jsonOut(w, runJob(app, "write", "Write "+c.Name+" → "+dest, func(p func(float64, string)) error {
-			_, err := app.WriteChunk(id, dest, f(b, "buffer_gb"), int(f(b, "block_mb")), f(b, "throttle_mbps"), vol, p)
-			return err
+		if err := sealGuard(app, vol); err != nil {
+			jsonErr(w, 409, err)
+			return
+		}
+		jsonOut(w, runJob(app, "write", "Write "+c.Name+" → "+dest, func(p func(float64, string)) (map[string]any, error) {
+			return app.WriteChunk(id, dest, f(b, "buffer_gb"), int(f(b, "block_mb")), f(b, "throttle_mbps"), vol, p)
 		}))
 	})
 	register(mux, "POST /api/chunks/{id}/rewrite-copy", func(w http.ResponseWriter, r *http.Request) {
@@ -523,9 +610,12 @@ func api(mux *http.ServeMux, app *App) {
 			jsonErr(w, 400, fmt.Errorf("volume_id required (the volume whose copy to re-write)"))
 			return
 		}
-		jsonOut(w, runJob(app, "write", "Re-write "+c.Name+" copy", func(p func(float64, string)) error {
-			_, err := app.RewriteCopy(id, vol, f(b, "buffer_gb"), int(f(b, "block_mb")), f(b, "throttle_mbps"), p)
-			return err
+		if err := sealGuard(app, vol); err != nil {
+			jsonErr(w, 409, err)
+			return
+		}
+		jsonOut(w, runJob(app, "write", "Re-write "+c.Name+" copy", func(p func(float64, string)) (map[string]any, error) {
+			return app.RewriteCopy(id, vol, f(b, "buffer_gb"), int(f(b, "block_mb")), f(b, "throttle_mbps"), p)
 		}))
 	})
 	register(mux, "POST /api/chunks/{id}/span-write", func(w http.ResponseWriter, r *http.Request) {
@@ -542,9 +632,12 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		vol := resolveVolume(app, b)
-		jsonOut(w, runJob(app, "write", "Span-write next segment of "+c.Name+" → "+dest, func(p func(float64, string)) error {
-			_, err := app.SpanWriteNext(id, dest, f(b, "buffer_gb"), int(f(b, "block_mb")), f(b, "throttle_mbps"), vol, p)
-			return err
+		if err := sealGuard(app, vol); err != nil {
+			jsonErr(w, 409, err)
+			return
+		}
+		jsonOut(w, runJob(app, "write", "Span-write next segment of "+c.Name+" → "+dest, func(p func(float64, string)) (map[string]any, error) {
+			return app.SpanWriteNext(id, dest, f(b, "buffer_gb"), int(f(b, "block_mb")), f(b, "throttle_mbps"), vol, p)
 		}))
 	})
 	register(mux, "POST /api/chunks/{id}/verify", func(w http.ResponseWriter, r *http.Request) {
@@ -563,15 +656,19 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, m)
 	})
+	mux.HandleFunc("GET /api/verify-levels", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, verifyLevelsMeta())
+	})
 	mux.HandleFunc("POST /api/verify-campaign", func(w http.ResponseWriter, r *http.Request) {
-		dest := s(body(r), "dest_dir")
+		b := body(r)
+		dest := s(b, "dest_dir")
 		if dest == "" {
 			jsonErr(w, 400, fmt.Errorf("dest_dir required (mounted tape/disc or archive folder)"))
 			return
 		}
-		jsonOut(w, runJob(app, "verify", "Verify campaign — "+dest, func(p func(float64, string)) error {
-			_, err := app.VerifyCampaign(dest, p)
-			return err
+		level := s(b, "level")
+		jsonOut(w, runJob(app, "verify", "Verify campaign — "+dest, func(p func(float64, string)) (map[string]any, error) {
+			return app.VerifyCampaign(dest, level, p)
 		}))
 	})
 	mux.HandleFunc("POST /api/adopt", func(w http.ResponseWriter, r *http.Request) {
@@ -587,12 +684,15 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		vol := resolveVolume(app, b)
+		if err := sealGuard(app, vol); err != nil {
+			jsonErr(w, 409, err)
+			return
+		}
 		deep, _ := b["deep"].(bool)
 		// Adoption result (adopted / skipped-duplicate / unreadable) is surfaced via
 		// the job's final label and the refreshed Packages/Volumes views.
-		jsonOut(w, runJob(app, "adopt", "Adopt media — "+mount, func(p func(float64, string)) error {
-			_, err := app.AdoptMedia(mount, cid, vol, deep, p)
-			return err
+		jsonOut(w, runJob(app, "adopt", "Adopt media — "+mount, func(p func(float64, string)) (map[string]any, error) {
+			return app.AdoptMedia(mount, cid, vol, deep, p)
 		}))
 	})
 	register(mux, "POST /api/chunks/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
@@ -616,9 +716,8 @@ func api(mux *http.ServeMux, app *App) {
 				}
 			}
 		}
-		jsonOut(w, runJob(app, "restore", "Restore "+c.Name, func(p func(float64, string)) error {
-			_, err := app.RestoreChunk(id, s(b, "source_dir"), out, members, p)
-			return err
+		jsonOut(w, runJob(app, "restore", "Restore "+c.Name, func(p func(float64, string)) (map[string]any, error) {
+			return app.RestoreChunk(id, s(b, "source_dir"), out, members, p)
 		}))
 	})
 
@@ -678,9 +777,8 @@ func api(mux *http.ServeMux, app *App) {
 			jsonErr(w, 404, fmt.Errorf("burn queue not found"))
 			return
 		}
-		jsonOut(w, runJob(app, "burn", "Burn next disc in "+q.Name, func(p func(float64, string)) error {
-			_, err := app.BurnNext(id, p)
-			return err
+		jsonOut(w, runJob(app, "burn", "Burn next disc in "+q.Name, func(p func(float64, string)) (map[string]any, error) {
+			return app.BurnNext(id, p)
 		}))
 	})
 	mux.HandleFunc("POST /api/burnqueues/{id}/reset", func(w http.ResponseWriter, r *http.Request) {
@@ -699,9 +797,8 @@ func api(mux *http.ServeMux, app *App) {
 			jsonErr(w, 400, fmt.Errorf("output_dir required"))
 			return
 		}
-		resp := runJob(app, "recoverykit", "Recovery Kit → "+out, func(p func(float64, string)) error {
-			_, err := app.BuildRecoveryKit(out, p)
-			return err
+		resp := runJob(app, "recoverykit", "Recovery Kit → "+out, func(p func(float64, string)) (map[string]any, error) {
+			return app.BuildRecoveryKit(out, p)
 		})
 		resp["warning"] = recoveryKitWarning
 		jsonOut(w, resp)
@@ -848,11 +945,12 @@ func api(mux *http.ServeMux, app *App) {
 		for _, c := range app.Store.Chunks(0) {
 			on := false
 			row := map[string]any{"id": c.ID, "name": c.Name, "status": c.Status, "bytes": c.EncBytes,
-				"spanned": c.Spanned, "file_count": c.FileCount, "encrypted": c.Encrypted, "private_manifest": c.PrivateManifest}
+				"spanned": c.Spanned, "file_count": c.FileCount, "encrypted": c.Encrypted, "private_manifest": c.PrivateManifest, "mirror": c.Mirror}
 			for _, cp := range c.Copies {
 				if cp.VolumeID == v.ID && !cp.Superseded {
 					on = true
 					row["path"], row["last_verified_at"], row["verify_ok"] = cp.Path, cp.LastVerifiedAt, cp.VerifyOK
+					row["last_check_level"], row["last_check_ok"], row["last_check_at"] = cp.LastCheckLevel, cp.LastCheckOK, cp.LastCheckAt
 				}
 			}
 			for _, sg := range c.Segments {
@@ -905,6 +1003,62 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		jsonOut(w, map[string]any{"available": true, "snapshot": snap, "history": v.SmartHistory})
+	})
+
+	// mirror re-verify — re-check the mirror(s) on a volume at a chosen level
+	// (A census · B full · C sample). Only B satisfies protection / refreshes
+	// verify-due; A and C are advisory.
+	mux.HandleFunc("POST /api/volumes/{id}/verify-mirror", func(w http.ResponseWriter, r *http.Request) {
+		v := app.Store.Volume(pathID(r))
+		if v == nil {
+			jsonErr(w, 404, fmt.Errorf("volume not found"))
+			return
+		}
+		b := body(r)
+		mount, level := s(b, "mount"), s(b, "level")
+		jsonOut(w, runJob(app, "verify", fmt.Sprintf("Mirror re-verify (%s) — %s", levelTag(level), v.Label), func(p func(float64, string)) (map[string]any, error) {
+			return app.VerifyMirrorVolume(v.ID, mount, level, p)
+		}))
+	})
+
+	// finalize — the "close the box and label it" ceremony. Preview reads the
+	// preconditions live for the dialog; finalize enforces them (a forced override
+	// needs a typed reason and is audit-logged) and seals the volume.
+	mux.HandleFunc("GET /api/volumes/{id}/finalize-preview", func(w http.ResponseWriter, r *http.Request) {
+		v := app.Store.Volume(pathID(r))
+		if v == nil {
+			jsonErr(w, 404, fmt.Errorf("volume not found"))
+			return
+		}
+		as := app.AssessFinalize(v, r.URL.Query().Get("mount_path"), app.LoadConfig())
+		jsonOut(w, map[string]any{"assessment": as, "sealed": v.Sealed})
+	})
+	mux.HandleFunc("POST /api/volumes/{id}/finalize", func(w http.ResponseWriter, r *http.Request) {
+		v := app.Store.Volume(pathID(r))
+		if v == nil {
+			jsonErr(w, 404, fmt.Errorf("volume not found"))
+			return
+		}
+		b := body(r)
+		res, err := app.FinalizeVolume(v, s(b, "mount_path"), s(b, "by"), bl(b, "force"), s(b, "force_reason"))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, res)
+	})
+	mux.HandleFunc("POST /api/volumes/{id}/unseal", func(w http.ResponseWriter, r *http.Request) {
+		v := app.Store.Volume(pathID(r))
+		if v == nil {
+			jsonErr(w, 404, fmt.Errorf("volume not found"))
+			return
+		}
+		b := body(r)
+		if err := app.UnsealVolume(v, s(b, "by"), s(b, "reason")); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"volume": v})
 	})
 
 	// tape diagnostics — OPTIONAL, strictly outside the write path, read-only
@@ -979,10 +1133,9 @@ func api(mux *http.ServeMux, app *App) {
 			jsonErr(w, 400, fmt.Errorf("mount_path (the docked drive) required"))
 			return
 		}
-		serial, label, mode := s(b, "serial"), s(b, "label"), s(b, "mode")
-		jsonOut(w, runJob(app, "dock", "Ingest "+mount, func(p func(float64, string)) error {
-			_, err := app.IngestDrive(id, mount, serial, label, mode, p)
-			return err
+		serial, label, mode, level := s(b, "serial"), s(b, "label"), s(b, "mode"), s(b, "level")
+		jsonOut(w, runJob(app, "dock", "Ingest "+mount, func(p func(float64, string)) (map[string]any, error) {
+			return app.IngestDrive(id, mount, serial, label, mode, level, p)
 		}))
 	})
 	mux.HandleFunc("POST /api/dock/session/{id}/close", func(w http.ResponseWriter, r *http.Request) {

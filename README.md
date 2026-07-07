@@ -318,6 +318,32 @@ source → [contents-verified] tar → [roundtrip-verified] ciphertext
   verified copies as *under-protected* — *because two copies in two locations
   is the actual goal, and gaps should be visible at a glance.*
 
+### 🎚 Tiered verification — levels A / B / C
+
+Re-hashing a 100 TB mirror set in full, on a schedule, is often impractical — so
+verification has three levels, letting you trade cost against assurance **without
+ever weakening what "verified" means**:
+
+| Level | Name | What it checks | Cost | May satisfy COMPLETE? |
+|---|---|---|---|---|
+| A | Census | file exists + size matches catalog | seconds/TB | NO — advisory only |
+| B | Full | complete content hash equals catalog hash | full read | YES — the only level that does |
+| C | Sample | exists + size + hash of first and last 4 MiB | fast | NO — advisory only |
+
+**Only Level B satisfies protection requirements.** Levels A and C are advisory:
+they record intact-so-far evidence and are shown in the amber/advisory style, but
+they never flip a file to `COMPLETE` and never refresh the `verify_due` clock —
+only a Level-B pass does. A level selector (defaulting to **B**) appears on the
+operations where cost is the concern — **mirror re-verify, verify campaigns, and
+dock-session re-verification** — each with a one-line cost/assurance note. Package
+payload verification and write read-back are **always Level B**, no option.
+
+Every verify event records its level, and every place a verify result appears
+names it — *"verified (B, full) · 2026-07-08"* versus *"checked (C, sample)"* — so
+a cheap check can never be mistaken for a full one. (Level C hashes only the first
+and last 4 MiB, so a mid-file corruption is invisible to it by design; that is
+exactly why C can't satisfy `COMPLETE`.)
+
 ### 🛡 Protection profiles & the six-status model
 
 3-2-1 is not one number — it has **three dimensions**: **three copies**, on
@@ -388,6 +414,45 @@ match — the two built-ins that anchor the range are illustrative:
 To make your own, **duplicate** the closest built-in and adjust the three
 dimensions (and, if you care, restrict the allowed media kinds so a copy landing
 on the wrong medium reads as `OUT_OF_POLICY`).
+
+### 🔒 Finalize — close the box and label it
+
+There's a moment in every archival workflow that software usually skips: the
+*ceremony* of declaring a volume **done**. You've written the copies, verified
+them, and now the tape or drive is going into the vault. Finalize is that
+moment made explicit — the digital equivalent of taping the box shut, signing
+the lid, and shelving it.
+
+It is deliberately **gated**. Finalizing enforces three preconditions, and each
+is there because skipping it is how archives rot:
+
+- **Every copy on the volume verified within N days** (`finalize_verify_days`,
+  default 30) — you don't seal a box you haven't recently confirmed is intact.
+- **Free-space buffer respected** (`buffer_pct`, default 5%) — *full drives die
+  young*, so a nearly-full volume isn't vault-ready.
+- **SMART not failing** — when drive-health data exists and `smart_block_finalize`
+  is on, a drive reporting failure/advisory won't seal.
+
+You *can* override a failing precondition, but it takes a deliberate act: you
+type the volume's label to confirm and give a reason, and the forced seal — with
+exactly which checks it overrode — is written into the audit log and the seal
+record. No silent force.
+
+On success the ceremony:
+
+1. writes a **finalization record** (who, when, package count, bytes) to the
+   catalog **and** to a `MNEMOSYNE_SEAL/` sidecar on the volume itself;
+2. regenerates the volume's **inventory + catalog snapshot** onto that sidecar,
+   so the medium self-documents for whoever finds it decades later;
+3. marks the volume **SEALED** — the catalog now refuses every write to it
+   (write, re-write copy, span, mirror, adopt) until an explicit, audit-logged
+   **unseal**;
+4. opens the **printable label** as the last step — close the box, print the
+   label, shelve it.
+
+The Volumes view shows sealed volumes distinctly (a blue 🔒 SEALED tag), and the
+volume page carries the full seal/unseal history. Unsealing is one click, needs a
+reason, and is logged — because re-opening a sealed box should leave a mark.
 
 ### 🔎 Find & track
 - **Adopt existing media** — catalog archives written *before* Mnemosyne (or by

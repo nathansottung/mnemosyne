@@ -190,11 +190,12 @@ func (a *App) MirrorToVolume(collectionID int, folderIDs []int, destDir string, 
 		if totalBytes > 0 {
 			frac = float64(doneBytes) / float64(totalBytes)
 		}
-		progress(0.02+frac*0.92, msg)
+		progress(0.02+frac*0.92, progBytes(doneBytes, totalBytes, msg))
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 	refs := make([]ChunkFileRef, 0, len(files))
+	lastTick := time.Now() // paces mid-file progress so live MB/s updates on big files too
 	for i, f := range files {
 		srcPath := filepath.Join(folderPath[f.FolderID], filepath.FromSlash(f.RelPath))
 		mrel := f.RelPath
@@ -210,7 +211,13 @@ func (a *App) MirrorToVolume(collectionID int, folderIDs []int, destDir string, 
 		if i%25 == 0 || len(files) < 50 {
 			report(fmt.Sprintf("mirroring %d/%d — %s", i+1, len(files), f.RelPath))
 		}
-		streamHash, n, err := mirrorCopyFile(srcPath, tmp, th, func(d int64) { doneBytes += d })
+		streamHash, n, err := mirrorCopyFile(srcPath, tmp, th, func(d int64) {
+			doneBytes += d
+			if time.Since(lastTick) > 700*time.Millisecond {
+				lastTick = time.Now()
+				report(fmt.Sprintf("mirroring %d/%d — %s", i+1, len(files), f.RelPath))
+			}
+		})
 		if err != nil {
 			_ = os.Remove(tmp)
 			res.Skipped++ // source unreadable / mid-copy IO error
@@ -232,7 +239,10 @@ func (a *App) MirrorToVolume(collectionID int, folderIDs []int, destDir string, 
 		if streamHash != f.Hash {
 			res.Changed++ // faithful copy of the CURRENT source, which drifted from the catalog
 		}
-		refs = append(refs, ChunkFileRef{FileID: f.ID, RelPath: f.RelPath, SizeBytes: n, Hash: streamHash})
+		// Record the level-C sample baseline (size + first/last 4 MiB) so a cheap
+		// sample re-verify has something to compare against later.
+		sample, _ := sampleHashHex(destPath)
+		refs = append(refs, ChunkFileRef{FileID: f.ID, RelPath: f.RelPath, SizeBytes: n, Hash: streamHash, SampleHash: sample})
 		res.Mirrored++
 		res.Bytes += n
 	}

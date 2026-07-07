@@ -8,9 +8,11 @@ package main
 //   media kinds  — across how many DISTINCT kinds of medium (the "2")
 //   offsite      — how many of those copies live somewhere else (the "1")
 //
-// Only Level-B-verified copies count toward requirements — Mnemosyne has no
-// verification-levels feature today, so "verified copy" (VerifyOK==true) is the
-// qualifying bar. Offsite is a property of the Volume, not the Profile, because
+// Only Level-B-verified copies count toward requirements. With tiered
+// verification (see verify_levels.go), a copy's VerifyOK/LastVerifiedAt are set
+// only by a full-content (level-B) pass — advisory A/C checks never touch them —
+// so keying qualification on VerifyOK==true is exactly "Level-B-verified".
+// Offsite is a property of the Volume, not the Profile, because
 // "is this copy in another building?" is a fact about the physical medium.
 
 import (

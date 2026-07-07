@@ -209,11 +209,11 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 /* ---- inline help: one shared panel, content in one object (easy to edit) ---- */
 const HELP={
   home:['Home — archive health at a glance','This board shows the state of everything you keep. The strip across the top (Catalog → Package → Write → Verify) shows live totals for each stage of the pipeline and doubles as navigation — click a stage to go there. The table below breaks every archive down by package status, protection (verified copies vs. your goal), unresolved drift, and packages due for re-verification. Every number links straight to the relevant view.'],
-  vault:['Vault — archives & file search','An Archive is a body of work you keep together (e.g. "Personal", "Photography Business"). Scan folders into it — every file is SHA-256 hashed at the source. Plan groups files into media-sized packages; Rescan & compare detects what changed since you backed up. The search box answers the real question: which package and which physical volume holds a given file.'],
+  vault:['Vault — archives & file search','An Archive is a body of work you keep together (e.g. "Personal", "Photography Business"). Scan folders into it — every file is SHA-256 hashed at the source. Plan groups files into media-sized packages; Rescan & compare detects what changed since you backed up. The search box answers the real questions: which package and which physical volume holds a given file — searchable by path, by SHA-256 (exact or prefix, to ask "is THIS file backed up?"), by extension, and by protection status, scoped to one archive (e.g. "show me every unprotected .NEF").'],
   protection:['Protection — the 3-2-1 model, made explicit','The real 3-2-1 rule has THREE dimensions: how many copies, across how many distinct kinds of media, and how many offsite. A Profile expresses all three; you assign one to an Archive and, optionally, override it on any folder path (nearest-ancestor-wins). Every file then gets exactly one of six statuses — Unassigned, Not backed up, Partial, Complete, Over-complete, Out-of-policy — always shown as colour + icon + text. Only verified copies count toward requirements. Built-in profiles are immutable; duplicate one to start a custom policy.'],
   packages:['Packages — the archival units','A Package is one self-contained, media-sized unit: a tar of files + par2 parity + manifest + RESTORE.txt (an OAIS AIP in plain English). The lifecycle rail reads PLANNED → BUILDING → STAGED → WRITING → WRITTEN → VERIFIED; red means FAILED. Build a package, then Write it to a volume with read-back verification. Packages too big for one medium are spanned across several, one tape at a time.'],
   burn:['Burn — the optical disc queue','Optical media can\'t stream continuously, so discs are fed one at a time. A burn queue holds one disc per package and survives reboots (a disc caught mid-burn resets to pending — it may be a coaster). Click "Burn next disc", wait, then write the package name on the physical disc. Square colours: green = done, red = failed, amber = in progress, grey = pending.'],
-  volumes:['Volumes — where the bytes physically live','A Volume is a physical medium you can hold: a tape, drive, or disc, with a barcode, kind, and free-text location ("office safe"). Each Copy records which package sits on which volume and when it last verified. Scan a barcode into the lookup box to jump straight to a medium\'s contents — no mounting needed.'],
+  volumes:['Volumes — where the bytes physically live','A Volume is a physical medium you can hold: a tape, drive, or disc, with a barcode, kind, an Onsite/Offsite flag (the "1" in 3-2-1), and free-text location ("office safe"). Each Copy records which package sits on which volume and when it last verified. Scan a barcode into the lookup box to jump straight to a medium\'s contents — no mounting needed. When a volume is done, Finalize seals it: it enforces preconditions (recent verify, free-space buffer, SMART), writes a seal record + inventory onto the medium, marks it SEALED (further writes need an audit-logged unseal), and opens the printable label — the "close the box and label it" moment.'],
   dock:['Dock — ingest a stack of legacy drives, one at a time','Pick the Archive(s) to reconcile against, then dock drives one by one. Mnemosyne watches for each newly-inserted drive, and on one click does everything hands-off: identifies the drive by serial, hashes every file and matches it by CONTENT against your archives, records the matches as verified copies, and writes an inventory sidecar onto the drive itself. It is strictly read-only toward your sources — NAS folders are only ever hashed. A re-inserted drive is recognized by serial and re-verified, not re-adopted. The session survives closing the app; resume it days later.'],
   keys:['Keys — encryption secrets','Encrypted packages use per-package random ~288-bit passphrases that live ONLY in keystore files — the catalog stores fingerprints, never the secret. Encrypted builds refuse to run until ≥2 keystores on different devices are registered and in sync. Print a QR card per key, and export a Recovery Kit for the fireproof box.'],
   jobs:['Jobs — background work','Long operations (scan, build, write, verify, reconcile, recovery kit) run in the background so the UI stays responsive. It is safe to navigate away; this list refreshes automatically while anything is still running.'],
@@ -276,18 +276,50 @@ function verifySummary(c){const ev=c.verify_events||[];if(!ev.length)return '';
 async function verifyHistory(id){const c=await api('GET','/api/chunks/'+id);const ev=c.verify_events||[];
   let h=`<h1>Verify history — ${esc(c.name)}</h1>`;
   if(!ev.length)h+='<div class="empty">No verification events recorded yet.</div>';
-  else{h+='<table><tr><th>When (UTC)</th><th>Result</th><th>Note</th><th>Path</th></tr>';
-    for(const e of [...ev].reverse())h+=`<tr><td class="mono" style="font-size:11px">${esc((e.at||'').replace('T',' ').slice(0,19))}</td>
+  else{h+='<table><tr><th>When (UTC)</th><th>Level</th><th>Result</th><th>Note</th><th>Path</th></tr>';
+    for(const e of [...ev].reverse()){const lv=e.level||'B';const ln=(VLEVELS[lv]||{}).name||lv;
+      h+=`<tr><td class="mono" style="font-size:11px">${esc((e.at||'').replace('T',' ').slice(0,19))}</td>
+      <td><span class="etag" style="border:1px solid ${e.advisory?'var(--warn)':'var(--ok)'};color:${e.advisory?'var(--warn)':'var(--ok)'}">${lv}, ${esc(ln.toLowerCase())}</span></td>
       <td>${e.ok?'<span class="stamp VERIFIED">OK</span>':'<span class="stamp FAILED">FAIL</span>'}</td>
-      <td>${esc(e.note||'')}</td><td class="mono dim" style="font-size:10.5px">${esc(e.path||'')}</td></tr>`;
+      <td>${esc(e.note||'')}</td><td class="mono dim" style="font-size:10.5px">${esc(e.path||'')}</td></tr>`}
     h+='</table>'}
   dlg(h,async()=>{})}
+/* ---- tiered verification levels (A census · B full · C sample) ----
+   Only Level B satisfies protection requirements; A/C are advisory. Package
+   payloads and write read-back are ALWAYS B — no selector there. */
+const VLEVELS={
+  A:{name:'Census',checks:'file exists + size matches catalog',cost:'seconds/TB',complete:false},
+  B:{name:'Full',checks:'complete content hash equals catalog hash',cost:'full read',complete:true},
+  C:{name:'Sample',checks:'exists + size + hash of first and last 4 MiB',cost:'fast',complete:false},
+};
+function levelBlurbText(l){const v=VLEVELS[l]||VLEVELS.B;
+  return `${v.name}: ${v.checks} · cost: ${esc(v.cost)} · ${v.complete?'<b>satisfies protection (COMPLETE)</b>':'advisory only — cannot mark COMPLETE or refresh verify-due'}`}
+function levelBlurb(id){const el=document.getElementById(id),b=document.getElementById(id+'_blurb');if(el&&b)b.innerHTML=levelBlurbText(el.value)}
+function levelSelectorHTML(id){return `<label>Verification level (only B satisfies protection)</label>
+  <select id="${id}" class="full" onchange="levelBlurb('${id}')">
+    <option value="B" selected>B — Full (content hash) · satisfies protection</option>
+    <option value="C">C — Sample (first &amp; last 4 MiB) · advisory</option>
+    <option value="A">A — Census (exists + size) · advisory</option>
+  </select>
+  <div id="${id}_blurb" class="dim" style="font-size:11px;margin-top:3px">${levelBlurbText('B')}</div>`}
+// Name a copy's verify state, always with its level — "verified (B, full)" (green)
+// vs "checked (C, sample)" (amber, advisory).
+function copyVerifyLabel(cp){const lvl=cp.last_check_level||'B';const ln=(VLEVELS[lvl]||{}).name||lvl;
+  const laterAdvisory=lvl!=='B'&&cp.last_check_at&&(!cp.last_verified_at||cp.last_check_at>cp.last_verified_at);
+  if(cp.verify_ok===true){let s=`<span style="color:var(--ok)">✓ verified (B, full)${cp.last_verified_at?' · '+cp.last_verified_at.slice(0,10):''}</span>`;
+    if(laterAdvisory)s+=` <span style="color:var(--warn)">· checked (${lvl}, ${esc(ln.toLowerCase())}) ${cp.last_check_at.slice(0,10)}</span>`;
+    return s}
+  if(cp.verify_ok===false)return `<span style="color:var(--bad)">✗ FAILED (B, full)${cp.last_verified_at?' · '+cp.last_verified_at.slice(0,10):''}</span>`;
+  if(cp.last_check_ok===true)return `<span style="color:var(--warn)">◐ checked (${lvl}, ${esc(ln.toLowerCase())})${cp.last_check_at?' · '+cp.last_check_at.slice(0,10):''} — advisory, not COMPLETE</span>`;
+  if(cp.last_check_ok===false)return `<span style="color:var(--bad)">✗ ${lvl} check failed${cp.last_check_at?' · '+cp.last_check_at.slice(0,10):''}</span>`;
+  return '<span class="dim">not verified</span>'}
 function verifyCampaignDlg(){dlg(`<h1>Verify a medium</h1>
-  <div class="dim" style="margin-bottom:8px">Insert the tape/disc (or point at an archive folder); every cataloged package found on it is re-checked against its recorded hash. Read-only — nothing is written to the medium.</div>
-  <label>Mounted medium / folder to scan</label><input id="d1" class="full" placeholder="T:\\  or  E:\\  or  /mnt/ltfs">
+  <div class="dim" style="margin-bottom:8px">Insert the tape/disc (or point at an archive folder); every cataloged package found on it is re-checked against its recorded hash. Package payloads are ALWAYS full (B); the level below governs any <b>mirror</b> files on the medium. Read-only — nothing is written.</div>
+  <label>Mounted medium / folder to scan</label><input id="d1" class="full" placeholder="T:\\  or  E:\\  or  /mnt/ltfs">${browseBtn('d1')}
+  ${levelSelectorHTML('vcl')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Verify everything found</button></div>`,
   async()=>{const d=$('#d1').value.trim();if(!d)return;
-    await api('POST','/api/verify-campaign',{dest_dir:d});toast('Verify campaign started — see Jobs');loc('jobs')})}
+    await api('POST','/api/verify-campaign',{dest_dir:d,level:$('#vcl').value});toast('Verify campaign started — see Jobs');loc('jobs')})}
 
 async function lamp(){try{const p=await api('GET','/api/preflight');const l=$('#lamp');
   l.className='lamp '+(p.ok?'ok':'bad');
@@ -311,7 +343,7 @@ const PROT_ORDER=['COMPLETE','OVER_COMPLETE','PARTIAL','NOT_BACKED_UP','OUT_OF_P
 function protBadge(st,detail){const p=PROT[st]||PROT.UNASSIGNED;
   return `<span class="protbadge" style="border-color:${p.c};color:${p.c}"><b aria-hidden="true">${p.i}</b> ${p.t}${detail?` · <span style="opacity:.85">${esc(detail)}</span>`:''}</span>`}
 function reqStr(p){return `${p.required_copies} cop${p.required_copies===1?'y':'ies'} · ${p.required_distinct_media_kinds} media kind${p.required_distinct_media_kinds===1?'':'s'} · ${p.required_offsite_copies} offsite`}
-const COUNTS_NOTE='<div class="dim" style="font-size:11.5px;margin-bottom:12px">Only <b>verified</b> copies count toward requirements — a written-but-unverified copy does not close a gap.</div>';
+const COUNTS_NOTE='<div class="dim" style="font-size:11.5px;margin-bottom:12px">Only <b>Level-B (full-content) verified</b> copies count toward requirements — a written-but-unverified copy, or one checked only at the advisory A/C levels, does not close a gap.</div>';
 /* Surface recompute deltas from any profile/assignment/offsite change — never silent. */
 function recomputeToast(r){if(!r)return;const d=(r.recompute&&r.recompute.deltas)||r.deltas||{};const parts=[];
   if(d.PARTIAL)parts.push(`${d.PARTIAL} newly Partial`);
@@ -545,8 +577,17 @@ async function vVault(){
     <input id="newname" placeholder="New archive name (e.g. Photography Business)" style="flex:1;min-width:220px">
     <button class="btn" onclick="addColl()">Create archive</button>
   </div></div>
-  <div class="panel"><h2>Find a file → which package, which medium</h2>
-    <div class="row"><input id="q" class="full" placeholder="Search cataloged file paths…" oninput="doSearch(this.value)"></div>
+  <div class="panel"><h2>Find a file — path, hash, extension, protection status</h2>
+    <div class="row">
+      <input id="q" placeholder="path contains…" oninput="doSearch()" style="flex:2;min-width:180px">
+      <input id="qhash" placeholder="hash (exact or prefix) — is THIS file backed up?" oninput="doSearch()" style="flex:2;min-width:170px;font:12px var(--mono)">
+      <input id="qext" placeholder=".nef" oninput="doSearch()" style="flex:1;min-width:72px;font:12px var(--mono)">
+    </div>
+    <div class="row" style="margin-top:6px">
+      <select id="qstatus" onchange="doSearch()"><option value="">any protection status</option>${PROT_ORDER.map(sx=>`<option value="${sx}">${PROT[sx].i} ${PROT[sx].t}</option>`).join('')}</select>
+      <select id="qarch" onchange="doSearch()"><option value="">all archives</option>${cs.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <span class="dim" style="font-size:11.5px">e.g. status <b>Not backed up</b> + ext <b>.nef</b> → every unprotected raw</span>
+    </div>
     <div id="sres"></div></div>`;
   const drifted=(cs||[]).filter(c=>c.drift&&c.drift.changes>0);
   if(drifted.length)h=h.replace('<div class="panel"><h2>Find a file',
@@ -649,14 +690,18 @@ async function addColl(){const n=$('#newname').value.trim();if(!n)return;
   try{await api('POST','/api/collections',{name:n});toast('Archive created');vVault()}catch(e){toast(e.message,1)}}
 function searchCopies(r){const cps=r.copies||[];
   if(!cps.length)return r.chunk?'<span class="dim">no copies recorded</span>':'<span class="dim">—</span>';
-  const parts=cps.map(cp=>{const mark=cp.verify_ok===true?'✓':cp.verify_ok===false?'✗':'?';
-    const when=cp.last_verified_at?' '+cp.last_verified_at.slice(0,7):'';
-    return `${esc(cp.volume_label||'vol#'+cp.volume_id)}${cp.location?' ('+esc(cp.location)+')':''} ${mark}${when}`});
-  return `<span class="dim" style="font-size:11.5px">${r.verified_copies}/${cps.length} verified · ${parts.join(' · ')}</span>`}
-let sT;function doSearch(q){clearTimeout(sT);sT=setTimeout(async()=>{
-  if(!q){$('#sres').innerHTML='';return}
-  const rs=await api('GET','/api/search?q='+encodeURIComponent(q));
-  let h='<table><tr><th>File</th><th class="num">Size</th><th>Protection</th><th>Package</th><th>Copies / volumes</th></tr>';
+  const parts=cps.map(cp=>`${esc(cp.volume_label||'vol#'+cp.volume_id)}${cp.location?' ('+esc(cp.location)+')':''} — ${copyVerifyLabel(cp)}`);
+  return `<span style="font-size:11.5px">${r.verified_copies}/${cps.length} B-verified · ${parts.join(' · ')}</span>`}
+let sT;function doSearch(){clearTimeout(sT);sT=setTimeout(async()=>{
+  const g=id=>(($('#'+id)||{}).value||'').trim();
+  const q=g('q'),hash=g('qhash'),ext=g('qext'),status=g('qstatus'),arch=g('qarch');
+  if(!q&&!hash&&!ext&&!status&&!arch){$('#sres').innerHTML='';return}
+  const p=new URLSearchParams();
+  if(q)p.set('q',q);if(hash)p.set('hash',hash);if(ext)p.set('ext',ext);
+  if(status)p.set('status',status);if(arch)p.set('collection_id',arch);
+  const rs=await api('GET','/api/search?'+p.toString());
+  let h=`<div class="dim" style="font-size:11.5px;margin:6px 0">${(rs||[]).length} match${(rs||[]).length===1?'':'es'}${(rs||[]).length>=200?' (showing first 200)':''}</div>`;
+  h+='<table><tr><th>File</th><th class="num">Size</th><th>Protection</th><th>Package</th><th>Copies / volumes</th></tr>';
   for(const r of rs||[]) h+=`<tr><td class="mono">${esc(r.rel_path)}</td><td class="num">${GB(r.size_bytes)} GB</td>
     <td>${protBadge(r.protection_status,r.protection_detail)}${r.profile_name?`<div class="dim" style="font-size:10px">${esc(r.profile_name)}</div>`:''}</td>
     <td>${r.chunk?'<span class="chip">'+esc(r.chunk)+'</span>':'<span class="dim">not packaged</span>'}</td>
@@ -665,7 +710,7 @@ let sT;function doSearch(q){clearTimeout(sT);sT=setTimeout(async()=>{
 },250)}
 function scanDlg(id,name){dlg(`<h1>Scan into “${esc(name)}”</h1>
   <label>Folder to catalog (walked recursively; every file SHA-256 hashed)</label>
-  <input id="d1" class="full" placeholder="Y:\\nsottung\\Photos\\TARs or /mnt/pool/photos">
+  <input id="d1" class="full" placeholder="Y:\\nsottung\\Photos\\TARs or /mnt/pool/photos">${browseBtn('d1')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Start scan</button></div>`,
   async()=>{const p=$('#d1').value.trim();if(!p)return;
     await api('POST',`/api/collections/${id}/scan`,{path:p});toast('Scan started — see Jobs');loc('jobs')});}
@@ -781,7 +826,7 @@ async function writeDlg(id,name,payload){
   const [vols,tape]=await Promise.all([api('GET','/api/volumes'),api('GET','/api/tape/status').catch(()=>({}))]);
   dlg(`<h1>Write ${esc(name)}</h1>
   <label>Destination (LTFS tape mount, archive drive, burn folder)</label>
-  <input id="d1" class="full" placeholder="T:\\  or  /mnt/ltfs  or  E:\\archive" oninput="checkDest(${id})">
+  <input id="d1" class="full" placeholder="T:\\  or  /mnt/ltfs  or  E:\\archive" oninput="checkDest(${id})">${browseBtn('d1')}
   <div id="dwarn"></div>
   <div id="tapenudge">${tapeNudge(tape)}</div>
   ${volPicker(vols)}
@@ -807,7 +852,7 @@ async function doVerify(id){try{const r=await api('POST',`/api/chunks/${id}/veri
   toast(r.verify_ok?'Medium verified ✓':'VERIFY FAILED — medium does not match catalog',!r.verify_ok);vChunks()}catch(e){toast(e.message,1)}}
 function restoreDlg(id,name){dlg(`<h1>Restore ${esc(name)}</h1>
   <label>Source (package folder on the medium; blank = recorded location)</label><input id="d1" class="full">
-  <label>Restore into</label><input id="d2" class="full" placeholder="D:\\restore">
+  <label>Restore into</label><input id="d2" class="full" placeholder="D:\\restore">${browseBtn('d2')}
   <label>Only these paths (optional, one per line)</label><textarea id="d3" class="full" rows="3" style="font:12px var(--mono)"></textarea>
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">par2 → decrypt → extract</button></div>`,
   async()=>{const out=$('#d2').value.trim();if(!out)return;
@@ -898,7 +943,7 @@ function copyTag(c,required){const total=currentCopies(c).length;if(!total)retur
 function copiesLine(c,volmap){const cur=currentCopies(c);const sup=(c.copies||[]).filter(x=>x.superseded);
   if(!cur.length&&!sup.length)return '';
   const parts=cur.map(cp=>{const v=volmap[cp.volume_id]||{};const lbl=esc(v.label||'vol#'+cp.volume_id)+(v.location?' ('+esc(v.location)+')':'');
-    let s=`${lbl} ${copyMark(cp.verify_ok)}`;
+    let s=`${lbl} — ${copyVerifyLabel(cp)}`;
     if(cp.verify_ok===false&&!c.spanned)
       s+=` <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="doRewriteCopy(${c.id},${cp.volume_id},'${esc(v.label||('vol#'+cp.volume_id))}')">Re-write this copy</button>`;
     return s});
@@ -941,7 +986,7 @@ async function vVolumes(){
   if(!vols.length)h+='<div class="empty">No volumes yet — a volume is a physical tape/drive/disc with a barcode and location.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="newVolumeDlg()">Register volume…</button></div></div>';
   else{h+='<table><tr><th>Label</th><th>Barcode</th><th>Kind</th><th>Location</th><th class="num">Packages</th><th class="num">Bytes</th><th>Last verified</th></tr>';
     for(const r of vols){const v=r.volume;
-      h+=`<tr style="cursor:pointer" tabindex="0" role="button" aria-label="Open volume ${esc(v.label)}" onclick="volDetail(${v.id})" onkeydown="if(event.key==='Enter')volDetail(${v.id})"><td><b>${esc(v.label)}</b>${(v.model||v.serial)?`<div class="dim" style="font-size:10.5px">🖴 ${esc([v.model,v.serial].filter(Boolean).join(' · '))}</div>`:''}</td><td class="mono">${esc(v.barcode||'—')}</td>
+      h+=`<tr style="cursor:pointer" tabindex="0" role="button" aria-label="Open volume ${esc(v.label)}" onclick="volDetail(${v.id})" onkeydown="if(event.key==='Enter')volDetail(${v.id})"><td><b>${esc(v.label)}</b>${v.sealed?' <span class="etag" style="border-color:var(--blue);color:var(--blue)" title="finalized &amp; vault-ready">🔒 SEALED</span>':''}${(v.model||v.serial)?`<div class="dim" style="font-size:10.5px">🖴 ${esc([v.model,v.serial].filter(Boolean).join(' · '))}</div>`:''}</td><td class="mono">${esc(v.barcode||'—')}</td>
         <td>${esc(v.kind)}</td><td>${esc(v.location||'—')} ${v.offsite?'<span class="etag enc" title="counts as an offsite copy">offsite</span>':'<span class="etag" style="color:var(--ink-3)">onsite</span>'}</td><td class="num">${r.chunk_count}</td>
         <td class="num">${GB(r.total_bytes)} GB</td><td class="dim" style="font-size:11.5px">${esc(ageStr(r.last_verified_at))}</td></tr>`}
     h+='</table>'}
@@ -1011,21 +1056,24 @@ async function checkTape(dev){
 }
 async function volLookup(){const bc=$('#bclookup').value.trim();if(!bc)return;
   try{const v=await api('GET','/api/volumes/by-barcode?barcode='+encodeURIComponent(bc));volDetail(v.id)}catch(e){toast(e.message,1)}}
-async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v=d.volume;const cs=d.chunks||[];
-  let h=`<h1>${esc(v.label)}</h1><div class="crumb">${esc(v.kind)} · ${esc(v.location||'no location on file')} · ${v.offsite?'OFFSITE':'ONSITE'} · barcode ${esc(v.barcode||'—')}</div>
+async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v=d.volume;const cs=d.chunks||[];const hasMirror=cs.some(c=>c.mirror);
+  let h=`<h1>${esc(v.label)}${v.sealed?' <span class="etag" style="border-color:var(--blue);color:var(--blue)">🔒 SEALED</span>':''}</h1><div class="crumb">${esc(v.kind)} · ${esc(v.location||'no location on file')} · ${v.offsite?'OFFSITE':'ONSITE'} · barcode ${esc(v.barcode||'—')}</div>
   ${deviceIdStr(v)}
+  ${sealBanner(v)}
   <div class="row" style="margin-bottom:10px"><button class="btn ghost" onclick="loc('volumes')">← all volumes</button>
     <button class="btn ghost" onclick="printLabel(${v.id},'${esc(v.barcode||'')}')">🖨 Print label</button>
     <button class="btn ghost" onclick="identifyDlg(${v.id})">Detect drive identity…</button>
+    ${hasMirror?`<button class="btn ghost" onclick="verifyMirrorDlg(${v.id},'${esc(v.label)}')">Re-verify mirror…</button>`:''}
     <button class="btn ghost" onclick="toggleOffsite(${v.id},${v.offsite?true:false})">${v.offsite?'Mark onsite':'Mark offsite'}</button>
+    ${v.sealed?`<button class="btn danger" onclick="unsealDlg(${v.id},'${esc(v.label)}')">Unseal…</button>`:`<button class="btn" onclick="finalizeDlg(${v.id},'${esc(v.label)}')">Finalize (seal)…</button>`}
     ${v.barcode?'':`<button class="btn ghost" onclick="assignBarcode(${v.id})">Assign barcode</button>`}</div>
   ${mediaHealthCard(d)}
   <div class="panel"><h2>Contents (${cs.length} package${cs.length===1?'':'s'}) — click a package to see its files (from the catalog)</h2>`;
   if(!cs.length)h+='<div class="empty">Nothing recorded on this volume yet.</div>';
   else cs.forEach((c,i)=>{
     h+=`<div style="margin:6px 0;padding-bottom:8px;border-bottom:1px solid var(--line)">
-      <div class="mono" style="cursor:pointer" tabindex="0" role="button" onkeydown="if(event.key==='Enter')this.click()" onclick="const e=document.getElementById('vf${i}');e.style.display=e.style.display==='none'?'block':'none'">▸ ${esc(c.name)} ${c.verify_ok===true?'<span class="stamp VERIFIED">verified</span>':c.verify_ok===false?'<span class="stamp FAILED">unverified</span>':''}${c.spanned?' <span class="etag due">spanned'+(c.holds_segment?' seg'+c.holds_segment:'')+'</span>':''}${c.private_manifest?' <span class="etag enc">private manifest</span>':''}</div>
-      <div class="dim" style="font-size:11.5px">${GB(c.bytes)} GB · ${c.file_count} files · ${c.last_verified_at?'verified '+esc(ageStr(c.last_verified_at)):'not yet verified'}</div>
+      <div class="mono" style="cursor:pointer" tabindex="0" role="button" onkeydown="if(event.key==='Enter')this.click()" onclick="const e=document.getElementById('vf${i}');e.style.display=e.style.display==='none'?'block':'none'">▸ ${esc(c.name)}${c.mirror?' <span class="etag">mirror</span>':''}${c.spanned?' <span class="etag due">spanned'+(c.holds_segment?' seg'+c.holds_segment:'')+'</span>':''}${c.private_manifest?' <span class="etag enc">private manifest</span>':''}</div>
+      <div style="font-size:11.5px;margin-top:2px">${copyVerifyLabel(c)} <span class="dim">· ${GB(c.bytes)} GB · ${c.file_count} files</span></div>
       <div id="vf${i}" style="display:none;margin-top:4px">
         <div class="dim mono" style="font-size:11px;max-height:200px;overflow:auto">${(c.files||[]).slice(0,500).map(esc).join('<br>')||'—'}</div>
         <button class="btn ghost" style="margin-top:6px" onclick="readMediumDlg(${c.id},'${esc(c.name)}')">Read manifest from mounted medium…</button></div>
@@ -1052,6 +1100,74 @@ async function printLabel(id,barcode){
 async function toggleOffsite(id,cur){
   try{const r=await api('POST',`/api/volumes/${id}/offsite`,{offsite:!cur});
     recomputeToast(r);volDetail(id)}catch(e){toast(e.message,1)}}
+function verifyMirrorDlg(id,label){dlg(`<h1>Re-verify mirror — ${esc(label)}</h1>
+  <div class="dim" style="margin-bottom:8px">Re-checks this volume's mirror file(s) against the catalog at the chosen level. Read-only toward the medium.</div>
+  <label>Mounted path (blank = the recorded copy location)</label><input id="d1" class="full" placeholder="E:\\ or /mnt/disk">
+  ${levelSelectorHTML('mvl')}
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Re-verify at this level</button></div>`,
+  async()=>{await api('POST',`/api/volumes/${id}/verify-mirror`,{mount:$('#d1').value.trim(),level:$('#mvl').value});
+    toast('Mirror re-verify started — see Jobs');loc('jobs')})}
+
+/* ---- finalize: the "close the box and label it" ceremony ---- */
+function sealBanner(v){
+  const seals=(v.finalizations||[]);
+  if(!v.sealed){const last=seals.filter(f=>f.action==='UNSEALED').slice(-1)[0];
+    return last?`<div class="panel" style="border-left:3px solid var(--warn)"><b>Unsealed</b> <span class="dim">· ${esc((last.at||'').slice(0,10))} by ${esc(last.by||'?')} — ${esc(last.force_reason||'')}. Writes are enabled; finalize again when the box is closed.</span></div>`:'';}
+  const f=seals.filter(x=>x.action==='SEALED').slice(-1)[0]||{};
+  return `<div class="panel" style="border-left:3px solid var(--blue)">
+    <div style="font-size:15px;font-weight:600;color:var(--blue)">🔒 SEALED — vault-ready</div>
+    <div class="dim" style="margin-top:3px">Sealed ${esc((v.sealed_at||f.at||'').slice(0,16).replace('T',' '))} by ${esc(f.by||'?')} · ${f.packages||0} package(s) · ${GB(f.bytes)} GB${f.forced?` · <span style="color:var(--bad)">⚠ FORCED: ${esc(f.force_reason||'')}</span>`:''}. Further writes are refused until an explicit, audit-logged unseal.</div></div>`;
+}
+let _fzLabel='';
+function finalizeDlg(id,label){_fzLabel=label;
+  dlg(`<h1>Finalize “${esc(label)}” — seal &amp; label</h1>
+    <div class="dim" style="margin-bottom:8px">Finalizing declares this volume <b>DONE</b> and vault-ready: it writes a seal record + inventory + catalog snapshot onto the medium, marks it <b>SEALED</b> (further writes need an explicit, audit-logged unseal), and opens the printable label as the last step. Preconditions are enforced.</div>
+    <label>Mounted path (where this volume is now — the seal sidecar is written here)</label>
+    <input id="fz_mount" class="full" placeholder="E:\\ or /mnt/disk" oninput="fzPreview(${id})">
+    <label>Sealed by (your name/initials — recorded in the seal record)</label><input id="fz_by" class="full" placeholder="e.g. NS">
+    <div id="fz_checks" class="dim" style="margin-top:10px">Enter the mounted path to check readiness…</div>
+    <div id="fz_force"></div>
+    <div class="row" style="margin-top:16px"><button class="btn" id="fz_go" onclick="doFinalize(${id},false)" disabled>Seal &amp; open label</button></div>`,
+  async()=>{});
+}
+function fzChecksHTML(as){let h='<div style="margin-top:4px">';
+  for(const c of as.checks||[]){const ok=c.ok;
+    h+=`<div class="row" style="gap:8px;align-items:baseline;margin:3px 0"><span style="color:${ok?'var(--ok)':'var(--bad)'};font-weight:700">${ok?'✓':'✕'}</span><div><b>${esc(c.label)}</b> <span class="dim">${esc(c.detail)}</span></div></div>`}
+  return h+`<div class="dim" style="font-size:11px;margin-top:6px">${as.packages||0} package(s) · ${GB(as.bytes)} GB on medium</div></div>`}
+let fzT;function fzPreview(id){clearTimeout(fzT);fzT=setTimeout(async()=>{
+  const el=$('#fz_checks');if(!el)return;const mp=($('#fz_mount').value||'').trim();
+  if(!mp){el.innerHTML='Enter the mounted path to check readiness…';$('#fz_go').disabled=true;$('#fz_force').innerHTML='';return}
+  try{const r=await api('GET',`/api/volumes/${id}/finalize-preview?mount_path=${encodeURIComponent(mp)}`);
+    const as=r.assessment||{};el.innerHTML=fzChecksHTML(as);const go=$('#fz_go');
+    if(as.ok){go.disabled=false;$('#fz_force').innerHTML='';}
+    else{go.disabled=true;
+      $('#fz_force').innerHTML=`<div class="panel" style="border-left:3px solid var(--bad);margin-top:10px">
+        <b>Preconditions not met.</b> You may override — the override is <b>audit-logged</b>.
+        <label>Type the volume label “${esc(_fzLabel)}” to confirm a FORCED seal</label>
+        <input id="fz_confirm" class="full" oninput="fzForceToggle()">
+        <label>Reason for the override (recorded in the seal record)</label><input id="fz_reason" class="full" oninput="fzForceToggle()">
+        <div class="row" style="margin-top:10px"><button class="btn danger" id="fz_force_go" onclick="doFinalize(${id},true)" disabled>Force seal &amp; open label</button></div></div>`;}
+  }catch(e){el.innerHTML='<span class="err">'+esc(e.message)+'</span>';$('#fz_go').disabled=true}
+},300)}
+function fzForceToggle(){const c=($('#fz_confirm')||{}).value||'';const rs=(($('#fz_reason')||{}).value||'').trim();
+  const b=$('#fz_force_go');if(b)b.disabled=!(c===_fzLabel&&rs)}
+async function doFinalize(id,force){
+  const mp=$('#fz_mount').value.trim();if(!mp){toast('Mounted path required',1);return}
+  const body={mount_path:mp,by:$('#fz_by').value.trim()};
+  if(force){body.force=true;body.force_reason=$('#fz_reason').value.trim()}
+  try{const r=await api('POST',`/api/volumes/${id}/finalize`,body);
+    if(r.blocked){toast('Preconditions not met — see the checks',1);return}
+    const d=$('#dlg');if(d)d.close();
+    toast(force?'Volume force-sealed (audit-logged) — opening label':'Volume sealed ✓ — opening label');
+    if(r.label_url)window.open(mediaURL(r.label_url),'_blank');
+    volDetail(id);
+  }catch(e){toast(e.message,1)}}
+function unsealDlg(id,label){dlg(`<h1>Unseal “${esc(label)}”</h1>
+  <div class="dim" style="margin-bottom:8px">Unsealing re-enables writes to this SEALED volume. It is <b>audit-logged</b>. Finalize again when you are done.</div>
+  <label>Reason (recorded)</label><input id="d1" class="full" placeholder="e.g. adding a third copy after a profile change">
+  <div class="row" style="margin-top:16px"><button class="btn danger" onclick="go()">Unseal (audit-logged)</button></div>`,
+  async()=>{const reason=$('#d1').value.trim();if(!reason){toast('A reason is required',1);return}
+    await api('POST',`/api/volumes/${id}/unseal`,{reason});toast('Volume unsealed — writes re-enabled');volDetail(id)})}
 async function assignBarcode(id){try{const r=await api('POST',`/api/volumes/${id}/assign-barcode`,{});
   toast(r.assigned?('Assigned '+r.barcode):('Already has '+r.barcode));volDetail(id)}catch(e){toast(e.message,1)}}
 /* Media health — SMART drive-mortality signals. A COMPLEMENT to hash
@@ -1124,7 +1240,7 @@ async function adoptDlg(){
   dlg(`<h1>Adopt existing media</h1>
     <div class="dim" style="margin-bottom:8px">Point at a mounted medium (or folder). Every payload found — <span class="mono">*.tar</span> / <span class="mono">*.tar.gpg</span>, flat or one folder deep — is hashed and cataloged as an <b>ADOPTED-VERIFIED</b> package with a copy on the chosen volume. Nothing is rewritten; already-cataloged payloads are skipped by hash.</div>
     <label>Archive to adopt into</label><select id="d0" class="full">${collOpts}</select>
-    <label>Mounted medium / folder to scan</label><input id="d1" class="full" placeholder="T:\\ or E:\\ or /mnt/old-hdd">
+    <label>Mounted medium / folder to scan</label><input id="d1" class="full" placeholder="T:\\ or E:\\ or /mnt/old-hdd">${browseBtn('d1')}
     ${volPicker(vols)}
     <label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="ddeep" style="width:auto"> Deep adopt — list contents via <span class="mono">tar -tvf</span> (plaintext tars, or encrypted with a known key). Slower; reads each payload once.</label>
     <div class="dim" style="font-size:11px">Without a manifest and without deep adopt, contents stay "listing unknown" until a restore.</div>
@@ -1179,27 +1295,53 @@ async function vKeys(){
 function recoveryKitDlg(){dlg(`<h1>Export Recovery Kit</h1>
   <div class="err" style="margin-bottom:10px">⚠ The kit includes one QR code per key — each encodes a passphrase in the clear. Store the folder as securely as your keystores.</div>
   <label>Output folder (a “mnemosyne-recovery-kit” subfolder is created here)</label>
-  <input id="d1" class="full" placeholder="E:\\safe or /mnt/vault/recovery">
+  <input id="d1" class="full" placeholder="E:\\safe or /mnt/vault/recovery">${browseBtn('d1')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Generate</button></div>`,
   async()=>{const d=$('#d1').value.trim();if(!d)return;
     const r=await api('POST','/api/recoverykit',{output_dir:d});
-    toast('Recovery Kit generating — see Jobs. '+(r.warning||''),1);loc('jobs')});}
+    toast('Recovery Kit generating — see Jobs. '+(r.warning||''),1);loc('jobs');
+    // Show-the-artifact rule: when the job finishes, surface the kit itself.
+    // Fire-and-forget so this dialog closes now instead of hanging on the job.
+    waitJob(r.job_id).then(job=>{if(job&&job.result)showKitResult(job.result)}).catch(()=>{})});}
 
 /* ---------------- Jobs ---------------- */
 let jobsTimer;
+function fmtETA(s){s=Math.round(s||0);if(s<=0)return '';if(s<60)return s+'s';
+  const m=Math.floor(s/60),ss=s%60;if(m<60)return m+'m'+(ss?' '+ss+'s':'');
+  const hh=Math.floor(m/60);return hh+'h '+(m%60)+'m'}
+// Live telemetry for byte-moving jobs — MB/s + ETA, not just a bar.
+function jobTelemetry(j){if(j.status!=='RUNNING')return '';const bits=[];
+  if(j.rate_mbps)bits.push(`<b>${j.rate_mbps} MB/s</b>`);
+  if(j.eta_seconds)bits.push('ETA '+fmtETA(j.eta_seconds));
+  if(j.bytes_total)bits.push(`${GB(j.bytes_done)}/${GB(j.bytes_total)} GB`);
+  return bits.length?`<div class="dim mono" style="font-size:10.5px;margin-top:2px">⚡ ${bits.join(' · ')}</div>`:''}
+// Show-the-artifact backstop on the Jobs row: a finished job that produced an
+// artifact offers to show/open it (kit summary, mirror sidecar, drift, …).
+function jobArtifact(j){if(j.status!=='COMPLETED'||!j.result)return '';const r=j.result;
+  if(j.kind==='recoverykit'&&r.output_dir)return ` <button class="btn ghost" style="font-size:11px;padding:1px 8px" onclick='showKitResult(${JSON.stringify(r)})'>Show kit</button>`;
+  if(j.kind==='mirror'&&r.sidecar!=null)return ` <span class="dim" style="font-size:10.5px">${r.mirrored||0} files${r.failed?' · '+r.failed+' failed':''}${r.sidecar?' · sidecar written':''}</span>`;
+  if(j.kind==='reconcile'&&r.collection_id)return ` <button class="btn ghost" style="font-size:11px;padding:1px 8px" onclick="vDrift(${r.collection_id},'')">View drift (${r.changes||0})</button>`;
+  if(j.kind==='scan'&&r.files!=null)return ` <span class="dim" style="font-size:10.5px">${r.files} file(s) cataloged</span>`;
+  return ''}
 async function vJobs(){
   const js=await api('GET','/api/jobs')||[];
   let h=`${hdr('Jobs','long operations run in the background — safe to navigate away','jobs')}<div class="panel">`;
   if(!js.length)h+='<div class="empty">No jobs yet — scans, builds, writes and verifies report their progress here.</div>';
-  else{h+='<table><tr><th style="width:56%">Job</th><th>Progress</th><th>State</th></tr>';
-    for(const j of js)h+=`<tr><td>${esc(j.label)}</td>
-      <td><div class="bar"><div style="width:${Math.round((j.progress||0)*100)}%"></div></div></td>
+  else{h+='<table><tr><th style="width:52%">Job</th><th>Progress</th><th>State</th></tr>';
+    for(const j of js)h+=`<tr><td>${esc(j.label)}${jobArtifact(j)}</td>
+      <td><div class="bar"><div style="width:${Math.round((j.progress||0)*100)}%"></div></div>${jobTelemetry(j)}</td>
       <td><span class="stamp ${j.status==='COMPLETED'?'VERIFIED':j.status==='FAILED'?'FAILED':'BUILDING'}">${esc(j.status)}</span></td></tr>`;
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
   clearTimeout(jobsTimer);
-  if(js.some(j=>j.status==='RUNNING'))jobsTimer=setTimeout(()=>{if(location.hash==='#jobs')vJobs()},1200);
+  if(js.some(j=>j.status==='RUNNING'))jobsTimer=setTimeout(()=>{if(location.hash==='#jobs')vJobs()},1000);
 }
+function showKitResult(r){dlg(`<h1>Recovery Kit ready</h1>
+  <div class="panel"><div style="font-size:15px;font-weight:600">📦 ${esc(r.output_dir||'')}</div>
+    <div class="dim" style="margin-top:4px">${r.chunks||0} package(s) · ${r.keys||0} key(s) · ${r.qr_cards||0} QR card(s)</div>
+    ${(r.warnings||[]).length?`<div class="err" style="margin-top:8px">${r.warnings.map(esc).join('<br>')}</div>`:''}
+    <div class="dim" style="font-size:11.5px;margin-top:8px">Open this folder in your file manager to print the QR cards and store the kit. It holds MEDIA_INVENTORY.md, README_RECOVERY.md, RESTORE_RUNBOOK.md, and a keys/ folder.</div></div>`,
+  async()=>{})}
 
 /* ---------------- Dock — guided legacy-drive ingest ---------------- */
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -1259,6 +1401,7 @@ function renderDock(d){
     <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
       <label>…or ingest a specific mounted path / folder</label>
       <div class="row"><input id="dockmanual" class="full" placeholder="E:\\  or  /mnt/olddrive" style="flex:1">
+        <button type="button" class="btn ghost" onclick="pickFolder(($('#dockmanual').value||'').trim(),p=>{const el=$('#dockmanual');if(el)el.value=p})">📁 Browse…</button>
         <button class="btn" onclick="const p=$('#dockmanual').value.trim();if(p)dockIngest(${ds.id},p,'')">Ingest path</button></div></div></div>`;
 
   // Per-drive history
@@ -1280,16 +1423,22 @@ async function refreshCandidates(sid){
     const id=c.serial||c.model||''; const bits=[c.label,c.size_bytes?GB(c.size_bytes)+' GB':'',c.model,c.serial?'S/N '+c.serial:''].filter(Boolean).map(esc).join(' · ');
     const reverify=c.already_processed;
     const btn=reverify
-      ? `<button class="btn ghost" onclick="dockIngest(${sid},'${esc(c.path)}','reverify')">Re-verify</button>`
+      ? `<button class="btn ghost" onclick="dockReverifyDlg(${sid},'${esc(c.path)}')">Re-verify…</button>`
       : `<button class="btn" onclick="dockIngest(${sid},'${esc(c.path)}','')">Ingest this drive</button>`;
     return `<div class="row" style="align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">
       <div style="flex:1"><span class="mono">${esc(c.path)}</span> ${reverify?'<span class="etag due">seen before</span>':''}${c.processed_in_session?'<span class="etag">this session</span>':''}<div class="dim" style="font-size:11.5px">${bits||'identity not resolved (external bridge?)'}</div></div>${btn}</div>`;
   }).join('');
 }
-async function dockIngest(sid,path,mode){
+function dockReverifyDlg(sid,path){dlg(`<h1>Re-verify drive</h1>
+  <div class="dim mono" style="font-size:11.5px;margin-bottom:8px">${esc(path)}</div>
+  <div class="dim" style="margin-bottom:8px">Level B re-hashes the drive's full contents (content match). A/C are cheaper, path-based, and <b>advisory</b> — they cannot satisfy protection.</div>
+  ${levelSelectorHTML('drl')}
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Re-verify at this level</button></div>`,
+  async()=>{const lvl=$('#drl').value;const d=$('#dlg');if(d)d.close();dockIngest(sid,path,'reverify',lvl)})}
+async function dockIngest(sid,path,mode,level){
   try{
     toast('Ingesting '+path+' — hashing & matching…');
-    const r=await api('POST',`/api/dock/session/${sid}/ingest`,{mount_path:path,mode:mode||''});
+    const r=await api('POST',`/api/dock/session/${sid}/ingest`,{mount_path:path,mode:mode||'',level:level||''});
     await waitJob(r.job_id);
     // Pull the just-finished result off the refreshed session for the banner.
     const d=await api('GET',`/api/dock/session/${sid}`);
@@ -1321,7 +1470,7 @@ async function vSettings(){
     ${(p.hints||[]).map(x=>`<div class="err" style="margin-top:8px">${esc(x)}</div>`).join('')}</div>
   <div class="panel"><h2>Pipeline</h2>
     <label>Staging folder (big + fast; the NAS itself is ideal)</label>
-    <input id="st" class="full" value="${esc(cfg.staging_dir||'')}" placeholder="Y:\\nsottung\\_staging">
+    <input id="st" class="full" value="${esc(cfg.staging_dir||'')}" placeholder="Y:\\nsottung\\_staging">${browseBtn('st')}
     <label>Keystore paths — one per line, minimum 2, different physical devices</label>
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
     <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Private media — encrypt the file listing (manifest) written to media, so a lost tape reveals no filenames (encrypted packages only; staging &amp; catalog stay plaintext)</label>
@@ -1342,6 +1491,12 @@ async function vSettings(){
       <input id="vd" class="full" type="number" min="1" value="${cfg.verify_due_months||12}"></div>
       <div style="flex:1"><label>Required copies (redundancy goal)</label>
       <input id="rc" class="full" type="number" min="1" value="${cfg.required_copies||2}"></div></div>
+    <label style="margin-top:10px">Finalize (“close the box &amp; label it”) — preconditions for sealing a volume vault-ready</label>
+    <div class="row"><div style="flex:1"><label>Every copy verified within (days)</label>
+      <input id="fvd" class="full" type="number" min="1" value="${cfg.finalize_verify_days||30}"></div>
+      <div style="flex:1"><label>Free-space buffer (%) — full drives die young</label>
+      <input id="bpc" class="full" type="number" min="0" step="0.5" value="${cfg.buffer_pct!=null?cfg.buffer_pct:5}"></div></div>
+    <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="sbf" type="checkbox" ${cfg.smart_block_finalize?'checked':''}> Block finalize when SMART data exists and reports failing/advisory</label>
     <label>Volume barcode scheme (prefix) — auto-assigned as <span class="mono dim">PREFIX-0001</span>, PREFIX-0002 … at label time for volumes with no barcode</label>
     <input id="bs" class="full" style="font:12px var(--mono)" value="${esc(cfg.barcode_scheme||'NSP')}" placeholder="NSP">
     <div class="row"><div style="flex:2"><label>Tape diagnostics tool (optional; blank = auto-probe PATH for itdt/tapeinfo/sg_logs/hp_ltt)</label>
@@ -1369,11 +1524,40 @@ async function saveCfg(){
     throttle_mbps:parseFloat($('#tm').value)||0,
     par2_redundancy:parseInt($('#pr').value)||10,par2_extra_args:$('#pe').value.trim(),
     verify_due_months:parseInt($('#vd').value)||12,required_copies:parseInt($('#rc').value)||2,
+    finalize_verify_days:parseInt($('#fvd').value)||30,
+    buffer_pct:(isNaN(parseFloat($('#bpc').value))?5:parseFloat($('#bpc').value)),
+    smart_block_finalize:$('#sbf').checked,
     barcode_scheme:$('#bs').value.trim()||'NSP',
     tape_tool:$('#tt').value.trim(),tape_device:$('#td').value.trim(),
     drift_informational_extensions:$('#di').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),
     burn_command:$('#bc').value.trim(),burn_verify_mount:$('#bv').value.trim()});
     toast('Settings saved');lamp();vSettings()}catch(e){toast(e.message,1)}}
+
+/* ---- folder picker: a read-only server-side browser on every path field ----
+   A separate #pick dialog stacks over the current #dlg so any path input can
+   open it; the top text field stays editable so you can still type a path that
+   doesn't exist yet (new staging/burn/restore folders). */
+let _pickCb=null,_pickPath='';
+function browseBtn(id){return `<button type="button" class="btn ghost" style="padding:4px 10px;font-size:12px;margin-top:4px" onclick="pickFolder((($('#${id}')||{}).value||'').trim(),p=>{const el=$('#${id}');if(el)el.value=p})">📁 Browse…</button>`}
+async function pickFolder(start,cb){_pickCb=cb;let d=$('#pick');if(!d){d=document.createElement('dialog');d.id='pick';document.body.append(d)}
+  await pickRender(start||'');d.showModal()}
+async function pickRender(path){let data;
+  try{data=await api('GET','/api/browse'+(path?('?path='+encodeURIComponent(path)):''))}catch(e){toast(e.message,1);return}
+  _pickPath=data.path||'';window._pickDirs=data.dirs||[];window._pickParent=data.roots?'':(data.parent||'');
+  let h=`<h1>Choose a folder</h1>
+    <div class="row" style="gap:6px;margin-bottom:8px">
+      ${data.roots?'<span class="dim mono" style="font-size:11px">drives &amp; common roots</span>':`<button class="btn ghost" style="padding:6px 10px" onclick="pickRender(window._pickParent)">⬆ up</button>`}
+      <input id="pickpath" class="full" style="flex:1;font:12px var(--mono)" value="${esc(_pickPath)}" placeholder="type a path (may not exist yet) or navigate">
+    </div>
+    <div style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:6px">`;
+  const dirs=window._pickDirs;
+  if(!dirs.length)h+='<div class="dim" style="padding:12px">No subfolders here.</div>';
+  for(let i=0;i<dirs.length;i++)h+=`<div class="row" style="padding:6px 10px;border-bottom:1px solid var(--line-2);cursor:pointer;gap:8px" onclick="pickRender(window._pickDirs[${i}].path)"><span style="flex:1">📁 ${esc(dirs[i].name)}</span></div>`;
+  h+=`</div><div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn ghost" onclick="document.querySelector('#pick').close()">Cancel</button>
+      <button class="btn" onclick="pickUse()">Use this folder</button></div>`;
+  $('#pick').innerHTML=h}
+function pickUse(){const p=(($('#pickpath')||{}).value||'').trim()||_pickPath;const d=$('#pick');if(d)d.close();if(_pickCb)_pickCb(p)}
 
 /* ---------------- shell ---------------- */
 let dlgGo=null;

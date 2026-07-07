@@ -62,6 +62,19 @@ tape.go        TapeCheck: optional tape-drive diagnostics (TapeAlert + LOG SENSE
 label.go       volumeLabelHTML: a self-contained printable volume label —
                Code128 of the barcode + QR of the volume ID + human identity.
 recoverykit.go Recovery Kit export (README + inventory + QR cards + runbook).
+browse.go      Read-only server-side folder browser (GET /api/browse) powering
+               the path picker: lists a directory's immediate subfolders only,
+               never file contents, and only where the operator navigates.
+verify_levels.go Tiered verification (A census · B full · C sample): level
+               helpers, the first/last-4-MiB sample fingerprint, per-file checks,
+               and mirror re-verify. Only level B satisfies protection or refreshes
+               verify-due; A/C are advisory. Package payloads + write read-back are
+               always B (in writer.go); campaigns/dock thread the level through.
+finalize.go    The "close the box and label it" ceremony: enforced finalize
+               preconditions (recent verify, free-space buffer, SMART), forced
+               override with typed confirmation + audit, seal sidecar (record +
+               inventory + catalog snapshot) onto the medium, SEALED/unseal state
+               and the write-refusal guard.
 profiles.go    Protection Profiles + the six-status 3-2-1 model. Built-in
                profiles, nearest-ancestor assignment resolution, per-file status
                derivation across copies × distinct media kinds × offsite, folder
