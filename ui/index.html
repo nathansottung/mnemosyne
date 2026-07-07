@@ -424,7 +424,10 @@ async function vArchiveProtection(id){
   const ap=res.archive_profile;
   window._profs=profs||[];
   let h=`<h1>Protection — ${esc(name)}</h1><div class="crumb">3-2-1 model · nearest-ancestor-wins assignment</div>
-  <div class="row" style="margin-bottom:12px"><button class="btn ghost" onclick="loc('protection')">← Protection</button>
+  <div class="wbtabs row" style="margin-bottom:12px;gap:6px"><button class="btn" onclick="vArchiveProtection(${id})">Protection</button>
+    <button class="btn ghost" onclick="tmOpen(${id})">Treemap</button>
+    <span style="flex:1"></span>
+    <button class="btn ghost" onclick="loc('protection')">← Protection</button>
     <button class="btn ghost" onclick="doRecompute2(${id})">Recompute</button></div>
   ${COUNTS_NOTE}
   <div class="panel"><h2>Archive-level profile</h2>
@@ -474,6 +477,132 @@ function assignDlgArchive(id,cur){window._profs=window._profs||[];
     const r=await api('POST','/api/collections/'+id+'/assign',{path:'',profile_id:pid});
     recomputeToast(r);vArchiveProtection(id)})}
 async function doRecompute2(id){try{const r=await api('POST','/api/protection/recompute');recomputeToast({recompute:r});vArchiveProtection(id)}catch(e){toast(e.message,1)}}
+
+/* ---------------- Treemap — "where is my risk" (WizTree colored by risk) ------
+   A squarified treemap on a canvas: area = bytes, fill = the six protection
+   colors (or drift state). Computed from the catalog only — never the disk. One
+   zoom level per request; click a folder to zoom in, breadcrumb to zoom out. */
+const PROT_HEX={COMPLETE:'#2e5e4e',OVER_COMPLETE:'#1e3d8f',PARTIAL:'#9a6b1f',NOT_BACKED_UP:'#a03123',OUT_OF_POLICY:'#6b2d86',UNASSIGNED:'#8a938c'};
+const DRIFT={UNCHANGED:{c:'#2e5e4e',i:'✓',t:'Unchanged'},MOVED:{c:'#1e3d8f',i:'⇄',t:'Moved'},NEW:{c:'#8a938c',i:'○',t:'Unarchived'},MODIFIED:{c:'#9a6b1f',i:'◐',t:'Modified'},MISSING:{c:'#a03123',i:'✕',t:'Missing'}};
+const DRIFT_ORDER=['UNCHANGED','MOVED','NEW','MODIFIED','MISSING'];
+/* HARD UI RULE: status is ALWAYS color + icon + text together — never color alone. */
+function tmStyle(mode,st){
+  if(mode==='drift'){const d=DRIFT[st]||DRIFT.UNCHANGED;return {c:d.c,i:d.i,t:d.t};}
+  const p=PROT[st]||PROT.UNASSIGNED;return {c:PROT_HEX[st]||PROT_HEX.UNASSIGNED,i:p.i,t:p.t};
+}
+function tmOrder(mode){return mode==='drift'?DRIFT_ORDER:PROT_ORDER;}
+function tmBytes(n){if(!n)return '0 B';const u=['B','KB','MB','GB','TB','PB'];let f=n,i=0;while(f>=1000&&i<u.length-1){f/=1000;i++}return (i?f.toFixed(1):f)+' '+u[i];}
+let _tm={cid:0,path:'',color:'protection',name:'',res:null,rects:[]};
+/* Entry point: open the treemap fresh at the archive root. */
+function tmOpen(id){_tm.path='';_tm.color='protection';vArchiveTreemap(id);}
+async function vArchiveTreemap(id,color){
+  if(id!==_tm.cid)_tm.path=''; // switched archives → back to root
+  _tm.cid=id; _tm.color=color||_tm.color||'protection';
+  let res;
+  try{res=await api('GET',`/api/collections/${id}/treemap?path=${encodeURIComponent(_tm.path||'')}&color=${_tm.color}`);}
+  catch(e){toast(e.message,1);return;}
+  _tm.res=res; _tm.path=res.path||''; _tm.name=res.name||('Archive #'+id);
+  if(_tm.color==='drift'&&!res.drift_available)_tm.color='protection';
+  const mode=res.color_by||'protection';
+  const crumbs=(res.crumbs||[]).map((c,i,arr)=>i===arr.length-1
+    ? `<b>${esc(c.name)}</b>`
+    : `<a href="#" onclick="tmZoom('${esc(c.path)}');return false" style="color:var(--act)">${esc(c.name)}</a>`).join(' <span class="dim">/</span> ');
+  const drift=res.drift_available;
+  const toggle=`<div class="row" style="gap:6px;align-items:center">
+    <span class="dim" style="font-size:11.5px">Color by</span>
+    <button class="btn ${mode==='protection'?'':'ghost'}" style="font-size:11px;padding:2px 10px" onclick="tmSetColor('protection')">Protection</button>
+    <button class="btn ${mode==='drift'?'':'ghost'}" style="font-size:11px;padding:2px 10px" ${drift?'':'disabled title="run Rescan &amp; compare to enable"'} onclick="tmSetColor('drift')">Drift${drift?'':' (no report)'}</button></div>`;
+  let h=`<h1>Treemap — ${esc(_tm.name)}</h1><div class="crumb">where is my space becomes where is my risk · area = bytes · computed from the catalog, never the disk</div>
+    <div class="wbtabs row" style="margin-bottom:12px;gap:6px"><button class="btn ghost" onclick="vArchiveProtection(${id})">Protection</button>
+      <button class="btn" onclick="tmOpen(${id})">Treemap</button>
+      <span style="flex:1"></span>
+      <button class="btn ghost" onclick="loc('vault')">← Archives</button></div>
+    <div class="row" style="margin-bottom:10px;justify-content:flex-end;align-items:center">${toggle}</div>
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:baseline;flex-wrap:wrap">
+      <div style="font-size:12.5px">${crumbs}</div>
+      <div class="dim" style="font-size:11.5px">${tmBytes(res.size)} · ${res.files.toLocaleString()} files${res.folded?` · ${res.folded} tiny folders folded into “other”`:''}</div></div>
+      <div style="position:relative;margin-top:10px">
+        <canvas id="tmcanvas" style="width:100%;height:520px;display:block;border:1px solid var(--line);border-radius:6px;cursor:pointer"></canvas>
+        <div id="tmtip" style="position:absolute;pointer-events:none;display:none;background:var(--ink);color:#eef2ee;padding:7px 10px;border-radius:5px;font-size:12px;max-width:340px;z-index:5;box-shadow:0 2px 10px rgba(0,0,0,.3)"></div>
+      </div>
+      ${tmLegend(res,mode)}
+      <div class="dim" style="font-size:11px;margin-top:8px">Click a folder to zoom in · use the breadcrumb to zoom out · hover for name, size &amp; status.</div>
+    </div>`;
+  $('#view').innerHTML=h;
+  requestAnimationFrame(()=>tmDraw());
+}
+function tmLegend(res,mode){
+  const sb=res.status_bytes||{}; const total=res.size||1;
+  const rows=tmOrder(mode).filter(st=>sb[st]).map(st=>{const s=tmStyle(mode,st);
+    const pct=(sb[st]/total*100);
+    return `<span class="row" style="gap:6px;align-items:center;font-size:11.5px;margin-right:14px">
+      <span style="width:11px;height:11px;border-radius:2px;background:${s.c};display:inline-block"></span>
+      <b aria-hidden="true">${s.i}</b> ${s.t} <span class="dim">${tmBytes(sb[st])} · ${pct<0.1?'<0.1':pct.toFixed(pct<10?1:0)}%</span></span>`;}).join('');
+  return `<div class="row" style="flex-wrap:wrap;margin-top:10px;row-gap:6px">${rows||'<span class="dim">no files at this level</span>'}</div>`;
+}
+function tmSetColor(color){_tm.color=color;vArchiveTreemap(_tm.cid,color);}
+function tmZoom(path){_tm.path=path;vArchiveTreemap(_tm.cid,_tm.color);}
+/* squarified treemap layout (Bruls, Huizing & van Wijk) */
+function tmSquarify(data,X,Y,W,H){
+  const res=[]; const items=data.filter(d=>d.size>0).slice().sort((a,b)=>b.size-a.size);
+  const total=items.reduce((s,i)=>s+i.size,0);
+  if(total<=0||W<=0||H<=0)return res;
+  const scale=W*H/total; const arr=items.map(d=>({node:d.node,a:d.size*scale}));
+  let x=X,y=Y,w=W,h=H;
+  const worst=(rmax,rmin,s,len)=>Math.max(len*len*rmax/(s*s),s*s/(len*len*rmin));
+  function placeRow(row){const s=row.reduce((a,b)=>a+b.a,0);if(s<=0)return;
+    if(w>=h){const thick=s/h;let oy=y;for(const c of row){const ih=c.a/thick;res.push({node:c.node,x,y:oy,w:thick,h:ih});oy+=ih;}x+=thick;w-=thick;}
+    else{const thick=s/w;let ox=x;for(const c of row){const iw=c.a/thick;res.push({node:c.node,x:ox,y,w:iw,h:thick});ox+=iw;}y+=thick;h-=thick;}}
+  let i=0,row=[],rowSum=0,rmax=0,rmin=Infinity;
+  while(i<arr.length){const c=arr[i],len=Math.min(w,h);
+    const nrmax=Math.max(rmax,c.a),nrmin=Math.min(rmin,c.a);
+    if(row.length===0||worst(nrmax,nrmin,rowSum+c.a,len)<=worst(rmax,rmin,rowSum,len)){row.push(c);rowSum+=c.a;rmax=nrmax;rmin=nrmin;i++;}
+    else{placeRow(row);row=[];rowSum=0;rmax=0;rmin=Infinity;}}
+  placeRow(row);return res;
+}
+function tmLum(hex){const n=parseInt(hex.slice(1),16);const r=(n>>16)&255,g=(n>>8)&255,b=n&255;return (0.299*r+0.587*g+0.114*b)/255;}
+function tmDraw(){
+  const cv=$('#tmcanvas');if(!cv||!_tm.res)return;
+  const dpr=window.devicePixelRatio||1; const cssW=cv.clientWidth,cssH=cv.clientHeight;
+  cv.width=Math.max(1,Math.round(cssW*dpr));cv.height=Math.max(1,Math.round(cssH*dpr));
+  const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,cssW,cssH);
+  const mode=_tm.res.color_by||'protection';
+  const data=(_tm.res.children||[]).map(n=>({node:n,size:n.size}));
+  const rects=tmSquarify(data,1,1,cssW-2,cssH-2);
+  _tm.rects=rects;
+  ctx.font='12px system-ui,sans-serif';ctx.textBaseline='top';
+  for(const r of rects){const n=r.node;const s=tmStyle(mode,n.status);
+    ctx.fillStyle=s.c;ctx.fillRect(r.x,r.y,r.w,r.h);
+    ctx.strokeStyle='rgba(255,255,255,.55)';ctx.lineWidth=1;ctx.strokeRect(r.x+.5,r.y+.5,r.w-1,r.h-1);
+    if(r.w>52&&r.h>22){const light=tmLum(s.c)>0.6;ctx.fillStyle=light?'#1c241f':'#f4f6f4';
+      const label=`${s.i} ${n.name}`;
+      ctx.save();ctx.beginPath();ctx.rect(r.x+4,r.y+3,r.w-8,r.h-6);ctx.clip();
+      ctx.fillText(label,r.x+5,r.y+4);
+      if(r.h>38){ctx.globalAlpha=.85;ctx.fillText(tmBytes(n.size),r.x+5,r.y+19);ctx.globalAlpha=1;}
+      ctx.restore();}}
+  // interactions
+  cv.onmousemove=e=>{const b=cv.getBoundingClientRect();const mx=e.clientX-b.left,my=e.clientY-b.top;
+    const hit=_tm.rects.find(r=>mx>=r.x&&mx<=r.x+r.w&&my>=r.y&&my<=r.y+r.h);
+    const tip=$('#tmtip');if(!tip)return;
+    if(!hit){tip.style.display='none';cv.style.cursor='default';return;}
+    const n=hit.node,s=tmStyle(mode,n.status);
+    cv.style.cursor=(n.is_dir&&n.has_children)?'zoom-in':'default';
+    tip.innerHTML=`<div style="font-weight:600;margin-bottom:2px">${n.other?'other (folded tiny folders)':esc(n.name)}</div>
+      <div>${tmBytes(n.size)}${n.is_dir?` · ${n.files.toLocaleString()} files`:''}</div>
+      <div class="row" style="gap:6px;align-items:center;margin-top:3px">
+        <span style="width:10px;height:10px;border-radius:2px;background:${s.c};display:inline-block"></span>
+        <b aria-hidden="true">${s.i}</b> ${s.t}${n.is_dir?' <span style="opacity:.7">(worst in folder)</span>':''}</div>`;
+    tip.style.display='block';
+    let tx=mx+14,ty=my+14;const tw=tip.offsetWidth,th=tip.offsetHeight;
+    if(tx+tw>cssW)tx=mx-tw-14;if(ty+th>cssH)ty=my-th-14;
+    tip.style.left=Math.max(0,tx)+'px';tip.style.top=Math.max(0,ty)+'px';};
+  cv.onmouseleave=()=>{const t=$('#tmtip');if(t)t.style.display='none';};
+  cv.onclick=e=>{const b=cv.getBoundingClientRect();const mx=e.clientX-b.left,my=e.clientY-b.top;
+    const hit=_tm.rects.find(r=>mx>=r.x&&mx<=r.x+r.w&&my>=r.y&&my<=r.y+r.h);
+    if(hit&&hit.node.is_dir&&hit.node.has_children)tmZoom(hit.node.path);};
+}
+let _tmResizeBound=false;
+if(!_tmResizeBound){window.addEventListener('resize',()=>{if($('#tmcanvas'))tmDraw();});_tmResizeBound=true;}
 
 /* ---- profile create / edit / duplicate / delete ---- */
 function profileDlg(){profileForm(null)}
@@ -759,7 +888,9 @@ async function vVault(){
       <button class="btn ghost" onclick="planDlg(${c.id},'${esc(c.name)}')">Plan packages…</button>
       <button class="btn ghost" onclick="mirrorDlg(${c.id},'${esc(c.name)}')">Mirror backup…</button>
       <button class="btn ghost" onclick="vArchiveProtection(${c.id})">Protection…</button>
+      <button class="btn ghost" onclick="tmOpen(${c.id})">Treemap…</button>
       <button class="btn ghost" onclick="censusDlg(${c.id},'${esc(c.name)}')">Formats…</button>
+      <button class="btn ghost" onclick="bagExportDlg(${c.id},'${esc(c.name)}')">Export bag…</button>
       <button class="btn ghost" onclick="doReconcile(${c.id},'${esc(c.name)}')">Rescan & compare</button></td></tr>`}
     h+='</table>'}
   h+='</div>';
@@ -839,7 +970,12 @@ async function vDrift(id,name){
 }
 function extRow(e,muted){return `<tr${muted?' class="dim"':''}><td class="mono">${esc(e.ext||'(no ext)')}</td><td class="num">${e.missing||0}</td><td class="num">${e.modified||0}</td><td class="num">${e.new||0}</td><td class="num">${e.moved||0}</td></tr>`}
 function itemList(list){let h='<table>';for(const it of list){
-  h+=`<tr><td class="mono" style="font-size:11.5px">${esc(it.path)}${it.moved_from?' <span class="dim">← '+esc(it.moved_from)+'</span>':''}</td>
+  // For a MODIFIED file the backed-up bytes are now a RETAINED prior version —
+  // show it inline as the restore source (and link to the full history).
+  const prior=it.prior_version
+    ? `<div class="dim" style="font-size:11px">prior version — restore source: ${esc(it.prior_version)}${it.file_id?` · <a href="#" onclick="showFileVersions(${it.file_id});return false" style="color:var(--act)">all versions</a>`:''}</div>`
+    : '';
+  h+=`<tr><td class="mono" style="font-size:11.5px">${esc(it.path)}${it.moved_from?' <span class="dim">← '+esc(it.moved_from)+'</span>':''}${prior}</td>
     <td>${it.needs_backup?'<span class="etag due">needs backup</span>':''}</td>
     <td class="dim" style="font-size:11px">${it.chunk?'restore from '+esc(it.chunk):''}${(it.volumes||[]).length?': '+it.volumes.map(esc).join(', '):''}</td></tr>`}
   return h+'</table>'}
@@ -859,12 +995,51 @@ let sT;function doSearch(){clearTimeout(sT);sT=setTimeout(async()=>{
   const rs=await api('GET','/api/search?'+p.toString());
   let h=`<div class="dim" style="font-size:11.5px;margin:6px 0">${(rs||[]).length} match${(rs||[]).length===1?'':'es'}${(rs||[]).length>=200?' (showing first 200)':''}</div>`;
   h+='<table><tr><th>File</th><th class="num">Size</th><th>Protection</th><th>Package</th><th>Copies / volumes</th></tr>';
-  for(const r of rs||[]) h+=`<tr><td class="mono">${esc(r.rel_path)}</td><td class="num">${GB(r.size_bytes)} GB</td>
+  for(const r of rs||[]) h+=`<tr><td class="mono"><a href="#" onclick="showFileVersions(${r.file_id});return false" style="color:var(--act)">${esc(r.rel_path)}</a>${r.version_count>1?` <span class="chip" style="font-size:10px" title="retained content versions">📑 ${r.version_count} versions</span>`:''}</td><td class="num">${GB(r.size_bytes)} GB</td>
     <td>${protBadge(r.protection_status,r.protection_detail)}${r.profile_name?`<div class="dim" style="font-size:10px">${esc(r.profile_name)}</div>`:''}</td>
     <td>${r.chunk?'<span class="chip">'+esc(r.chunk)+'</span>':'<span class="dim">not packaged</span>'}</td>
     <td>${searchCopies(r)}</td></tr>`;
   $('#sres').innerHTML=(rs&&rs.length)?h+'</table>':'<div class="empty">No matches.</div>';
 },250)}
+/* ---- file version history: every retained content version + where it lives ---- */
+async function showFileVersions(fileId){
+  let data;try{data=await api('GET','/api/files/'+fileId)}catch(e){toast(e.message,1);return}
+  const f=data.file||{},vs=data.versions||[];
+  const dt=t=>t?new Date(t).toISOString().slice(0,10):'—';
+  const rows=vs.map(v=>{
+    const locs=(v.packages||[]).map(p=>{
+      const vols=(p.volumes||[]).map(x=>`${esc(x.kind||'').toLowerCase()||'vol'} <b>${esc(x.label)}</b>${x.verified?' ✓':''}`).join(', ');
+      return `<span class="chip">${esc(p.chunk)}</span>${vols?' · '+vols:' <span class="dim">(not on a volume yet)</span>'}`;
+    }).join('<br>')||'<span class="err">not locatable in the catalog</span>';
+    return `<tr>
+      <td><b>${esc(v.version)}</b>${v.current?' <span class="stamp VERIFIED">current</span>':''}</td>
+      <td class="dim">${dt(v.first_seen)}${v.superseded_at?' → '+dt(v.superseded_at):''}</td>
+      <td class="num">${GB(v.size_bytes)} GB</td>
+      <td class="mono" style="font-size:10.5px">${esc((v.hash||'').slice(0,16))}…</td>
+      <td style="font-size:11.5px">${locs}</td>
+      <td>${v.packages&&v.packages.length?`<button class="btn ghost" style="font-size:11px;padding:1px 8px" onclick='restoreFileVersion(${fileId},${v.index},"${esc(v.version)}")'>Restore ${esc(v.version)}…</button>`:''}</td>
+    </tr>`;
+  }).join('');
+  dlg(`<h1>Versions — ${esc(f.rel_path||'')}</h1>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">${vs.length} retained content version(s). Mnemosyne never deleted old bytes — each version below is still sealed in the package(s) shown and can be restored independently. Newest is “current”.</div>
+    <div style="max-height:60vh;overflow:auto"><table>
+      <tr><th>Version</th><th>Seen</th><th class="num">Size</th><th>Hash</th><th>Where it lives</th><th></th></tr>
+      ${rows}</table></div>`,async()=>{});
+}
+async function restoreFileVersion(fileId,index,label){
+  const out=prompt('Restore '+label+' to which folder? (must be OUTSIDE any source root)');
+  if(!out)return;
+  const src=prompt('Package medium mounted at? (blank = use the recorded written destination)','')||'';
+  try{await api('POST','/api/files/'+fileId+'/restore',{output_dir:out,source_dir:src,version:index});
+    toast('Restoring '+label+' — see Jobs',1);loc('jobs');}
+  catch(e){toast(e.message,1)}}
+function bagExportDlg(id,name){dlg(`<h1>Export a BagIt bag — “${esc(name)}”</h1>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Writes a <b>conformant BagIt bag</b> (RFC 8493) for institutional handoff: a <span class="mono">data/</span> payload with each package's artifacts, <span class="mono">manifest-sha256.txt</span>, <span class="mono">bag-info.txt</span>, a tagmanifest, and <span class="mono">COMPARISON.md</span>. Your storage format is unchanged — the bag just <i>describes</i> it, and any <span class="mono">data/…/&lt;pkg&gt;.tar</span> still extracts your original tree with plain tar. Packages must be <b>staged locally</b> to be bagged (others are listed as skipped).</div>
+  <label>Output folder (must be OUTSIDE any source root)</label>
+  <input id="d1" class="full" placeholder="Y:\\exports or /mnt/handoff">${browseBtn('d1')}
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Export bag</button></div>`,
+  async()=>{const p=$('#d1').value.trim();if(!p)return;
+    await api('POST',`/api/collections/${id}/bagit-export`,{output_dir:p});toast('BagIt export started — see Jobs');loc('jobs')});}
 function scanDlg(id,name){dlg(`<h1>Scan into “${esc(name)}”</h1>
   <label>Folder to catalog (walked recursively; every file SHA-256 hashed)</label>
   <input id="d1" class="full" placeholder="Y:\\nsottung\\Photos\\TARs or /mnt/pool/photos">${browseBtn('d1')}
@@ -1222,8 +1397,10 @@ async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v
     <button class="btn ghost" onclick="identifyDlg(${v.id})">Detect drive identity…</button>
     ${hasMirror?`<button class="btn ghost" onclick="verifyMirrorDlg(${v.id},'${esc(v.label)}')">Re-verify mirror…</button>`:''}
     <button class="btn ghost" onclick="toggleOffsite(${v.id},${v.offsite?true:false})">${v.offsite?'Mark onsite':'Mark offsite'}</button>
+    <button class="btn ghost" onclick="driveEncDlg(${v.id},${v.drive_encrypted?true:false},'${esc(v.drive_enc_note||'')}')">${v.drive_encrypted?'Drive encryption ⚠🔒':'Drive encryption…'}</button>
     ${v.sealed?`<button class="btn danger" onclick="unsealDlg(${v.id},'${esc(v.label)}')">Unseal…</button>`:`<button class="btn" onclick="finalizeDlg(${v.id},'${esc(v.label)}')">Finalize (seal)…</button>`}
     ${v.barcode?'':`<button class="btn ghost" onclick="assignBarcode(${v.id})">Assign barcode</button>`}</div>
+  ${v.drive_encrypted?`<div class="err" style="margin-bottom:10px"><b>🔒 DRIVE-ENCRYPTED (stenc/LTO hardware AES).</b> Outside the par2→gpg→tar restore story: without the <b>drive key</b>, this medium is unreadable by <i>any</i> tool — gpg included. ${v.drive_enc_note?'Drive key: '+esc(v.drive_enc_note):'<b>Drive key location NOT recorded.</b>'}</div>`:''}
   ${mediaHealthCard(d)}
   <div class="panel"><h2>Contents (${cs.length} package${cs.length===1?'':'s'}) — click a package to see its files (from the catalog)</h2>`;
   if(!cs.length)h+='<div class="empty">Nothing recorded on this volume yet.</div>';
@@ -1237,6 +1414,16 @@ async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v
     </div>`});
   $('#view').innerHTML=h+'</div>';
 }
+/* Drive-level (hardware) tape AES — awareness + loud warning. Mnemosyne never
+   sets it; this only records that the operator did, so kits/inventories warn. */
+function driveEncDlg(id,on,note){dlg(`<h1>Drive-level encryption (stenc / LTO hardware)</h1>
+  <div class="err" style="font-size:12px;margin-bottom:10px">This is <b>NOT</b> Mnemosyne/gpg encryption. Drive-level AES writes hardware ciphertext to the tape: without the <b>drive key</b> loaded into a compatible drive, <b>nothing</b> can read it — not gpg, not tar, and par2 can't repair what it can't read. A lost drive key means the tape is scrap. Mnemosyne does not manage this key; record where it lives.</div>
+  <label class="row" style="gap:8px;align-items:center"><input id="dech" type="checkbox" ${on?'checked':''}> This medium was written with drive-level AES (stenc/LTO hardware)</label>
+  <label style="margin-top:10px">Where the <b>drive key</b> is stored (kept SEPARATELY from Mnemosyne keystores)</label>
+  <input id="decn" class="full" value="${esc(note||'')}" placeholder="e.g. IBM SKLM server 'vault-01', or offline HSM in the safe">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Save</button></div>`,
+  async()=>{await api('POST','/api/volumes/'+id+'/drive-encryption',{drive_encrypted:$('#dech').checked,drive_enc_note:$('#decn').value.trim()});
+    toast($('#dech').checked?'Flagged drive-encrypted — kits & inventories will warn':'Drive-encryption flag cleared',$('#dech').checked);volDetail(id)});}
 /* Physical device identity — the drive behind the volume. */
 function deviceIdStr(v){const bits=[];
   if(v.model)bits.push('model '+esc(v.model));
@@ -1439,6 +1626,7 @@ async function vKeys(){
   h+=`</table><div class="row" style="margin-top:10px">
     <button class="btn ghost" onclick="api('POST','/api/keys/sync').then(r=>{toast('Synced '+r.key_count+' key(s)');vKeys()}).catch(e=>toast(e.message,1))">Sync keystores</button>
     <button class="btn danger" onclick="recoveryKitDlg()">Export Recovery Kit…</button>
+    <button class="btn ghost" onclick="keySheetDlg()">Enter key from sheet…</button>
     <span class="dim">Register paths in Settings.</span></div></div>`;
   h+='<div class="panel"><h2>Key registry (fingerprints only)</h2>';
   if(!(k.keys||[]).length)h+='<div class="empty">Keys are generated automatically per package at build time.</div>';
@@ -1448,6 +1636,29 @@ async function vKeys(){
       <td><a class="btn ghost" style="text-decoration:none" href="${esc(mediaURL('/api/keys/'+m.key_ref+'/qr.png'))}" target="_blank">Print QR card</a></td></tr>`;
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
+}
+/* Retype a paper key sheet and prove it's right — each line self-checks (SHA-256),
+   and the whole passphrase's fingerprint confirms the key. The secret is never
+   shown or returned; only pass/fail comes back. */
+function keySheetDlg(){dlg(`<h1>Enter a key from its sheet</h1>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Paste the <span class="mono">L01/L02/…</span> PAYLOAD lines from a <span class="mono">&lt;key_ref&gt;.sheet.txt</span>. Each line's <span class="mono">[xx]</span> code (first two hex of its SHA-256) is checked, so a single mistyped character is pinpointed. The secret is never displayed.</div>
+  <label>key_ref (optional — confirms the sheet reconstructs this exact key)</label>
+  <input id="ksref" class="full mono" placeholder="e.g. K-ab12cd">
+  <label style="margin-top:8px">Paste the sheet's PAYLOAD lines</label>
+  <textarea id="kstext" class="full" rows="8" style="font:12px var(--mono)" placeholder="  L01  A7f2 9KpQ mZ3x k4Rt 8wLp  [c9]&#10;  L02  ..."></textarea>
+  <div id="ksout" style="margin-top:8px"></div>
+  <div class="row" style="margin-top:12px"><button class="btn" onclick="keySheetCheck()">Check</button></div>`,
+  async()=>{});}
+async function keySheetCheck(){
+  const out=$('#ksout');out.innerHTML='<span class="dim">checking…</span>';
+  try{const r=await api('POST','/api/keysheet/verify',{sheet:$('#kstext').value,key_ref:$('#ksref').value.trim()});
+    let msg;
+    if(r.lines===0){msg='<span class="err">No PAYLOAD lines found — paste the L01/L02/… lines.</span>';}
+    else if((r.bad_lines||[]).length){msg=`<span class="err">✕ ${r.bad_lines.length} line(s) failed their checksum — fix a typo on line(s): <b>${r.bad_lines.join(', ')}</b>.</span>`;}
+    else if(r.key_ref!==undefined&&!r.fingerprint_matches){msg=`<span class="err">✕ All ${r.lines} lines pass, but the reconstructed fingerprint does NOT match key <b>${esc(r.key_ref)}</b> — wrong sheet, or a typo that still checksums. Fingerprint: <span class="mono">${esc((r.fingerprint||'').slice(0,24))}…</span></span>`;}
+    else{msg=`<span style="color:var(--ok)">✓ All ${r.lines} lines verified${r.key_ref!==undefined?' and the fingerprint matches key <b>'+esc(r.key_ref)+'</b>':''}. You typed it right.</span> <span class="dim">Length ${r.length} · SHA-256 ${esc((r.fingerprint||'').slice(0,16))}…</span>`;}
+    out.innerHTML=`<div style="font-size:12px">${msg}</div>`;
+  }catch(e){out.innerHTML=`<span class="err">${esc(e.message)}</span>`;}
 }
 function recoveryKitDlg(){dlg(`<h1>Export Recovery Kit</h1>
   <div class="err" style="margin-bottom:10px">⚠ The kit includes one QR code per key — each encodes a passphrase in the clear. Store the folder as securely as your keystores.</div>
@@ -1493,11 +1704,22 @@ async function vJobs(){
   clearTimeout(jobsTimer);
   if(js.some(j=>j.status==='RUNNING'))jobsTimer=setTimeout(()=>{if(location.hash==='#jobs')vJobs()},1000);
 }
+/* Escrow-bundle blurb for the kit result — built with plain concatenation to keep
+   the dlg template from nesting three levels deep (which trips some JS parsers). */
+function escrowKitLine(r){
+  const e=r.escrow;if(!e||e.skipped)return '';
+  let s='📦 Escrow bundle: '+(e.components||0)+' component(s)';
+  if(e.bytes)s+=' · '+(e.bytes/1e6).toFixed(1)+' MB';
+  if(e.missing_count)s+=' · <span style="color:var(--warn,#c90)">'+e.missing_count+' not cached</span> — Settings ▸ Fetch escrow cache, then regenerate';
+  s+=' — Mnemosyne’s own reader travels with the archive (see escrow-bundle/ESCROW_README.md).';
+  return '<div class="dim" style="font-size:11.5px;margin-top:8px">'+s+'</div>';
+}
 function showKitResult(r){dlg(`<h1>Recovery Kit ready</h1>
   <div class="panel"><div style="font-size:15px;font-weight:600">📦 ${esc(r.output_dir||'')}</div>
     <div class="dim" style="margin-top:4px">${r.chunks||0} package(s) · ${r.keys||0} key(s) · ${r.qr_cards||0} QR card(s)</div>
     ${(r.warnings||[]).length?`<div class="err" style="margin-top:8px">${r.warnings.map(esc).join('<br>')}</div>`:''}
-    <div class="dim" style="font-size:11.5px;margin-top:8px">Open this folder in your file manager to print the QR cards and store the kit. It holds MEDIA_INVENTORY.md, README_RECOVERY.md, RESTORE_RUNBOOK.md, and a keys/ folder.</div></div>`,
+    ${escrowKitLine(r)}
+    <div class="dim" style="font-size:11.5px;margin-top:8px">Open this folder in your file manager to print the QR cards and store the kit. It holds MEDIA_INVENTORY.md, README_RECOVERY.md, RESTORE_RUNBOOK.md, an escrow-bundle/ folder, and a keys/ folder.</div></div>`,
   async()=>{})}
 
 /* ---------------- Dock — guided legacy-drive ingest ---------------- */
@@ -1665,15 +1887,46 @@ async function vSettings(){
     <div class="dim" style="font-size:11px">Tape diagnostics read drive health only — TapeAlert flags, cleaning status, hours, bytes. Mnemosyne never issues movement or write commands.</div>
     <label>Drift informational extensions (comma-separated — muted in reconcile, excluded from alarm totals)</label>
     <input id="di" class="full" style="font:12px var(--mono)" value="${esc((cfg.drift_informational_extensions||[]).join(', '))}" placeholder=".xmp, .thm">
+    <label style="margin-top:10px">File-version retention — how many past content versions of each file the catalog remembers (0 = unlimited, the default). Old bytes are never deleted from media regardless; this only caps the catalog's index of where they live.</label>
+    <input id="vr" class="full" type="number" min="0" step="1" value="${cfg.versions_retained||0}" placeholder="0 = unlimited">
+    <label style="margin-top:10px">Escrow bundle on media — "the archive preserves its own reader": Mnemosyne's binaries/source + the restore-tool source, written onto each finalized volume (the Recovery Kit always gets the full bundle). Skipped gracefully on space-constrained media.</label>
+    <select id="eom" class="full">
+      <option value="binaries-only" ${(!cfg.escrow_on_media||cfg.escrow_on_media==='binaries-only')?'selected':''}>Binaries-only — runnable static binaries + checksums (smallest; the practical escrow)</option>
+      <option value="full" ${cfg.escrow_on_media==='full'?'selected':''}>Full — binaries + Mnemosyne source + restore-toolchain source (the recompile/audit path)</option>
+      <option value="off" ${cfg.escrow_on_media==='off'?'selected':''}>Off — no bundle on media (still in the Recovery Kit)</option>
+    </select>
+    <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="eir" type="checkbox" ${cfg.escrow_include_readers?'checked':''}> Include format-reader source (e.g. LibRaw) for the formats this archive's census references (full mode only; adds size)</label>
+    <div id="escrowStat" class="dim" style="font-size:11.5px;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:6px">Loading escrow cache status…</div>
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>
   <div class="panel"><h2>Optical burning</h2>
     <label>Burn command — <span class="mono dim">{SRC}</span> = package staged folder, <span class="mono dim">{LABEL}</span> = package name. Exit code 0 = success.</label>
-    <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='ImgBurn: "C:\\Program Files (x86)\\ImgBurn\\ImgBurn.exe" /MODE BUILD /BUILDMODE DISC /SRC "{SRC}" /VOLUMELABEL "{LABEL}" /START /CLOSESUCCESS /NOIMAGEDETAILS'>
+    <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject'>
+    <div class="dim" style="font-size:11.5px;margin-top:4px"><b>xorriso</b> is the recommended default burner — free, maintained, cross-platform, scriptable (<span class="mono">apt/brew install xorriso</span>). <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="document.getElementById('bc').value='xorriso -outdev /dev/sr0 -volid \\'{LABEL}\\' -blank as_needed -map \\'{SRC}\\' / -commit -eject'">Use xorriso default</button></div>
+    <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="oecc" type="checkbox" ${cfg.optical_ecc?'checked':''}> Note dvdisaster ECC layer on optical packages — sector-geometry Reed–Solomon over the whole disc, healing scratches beyond what par2 sees. Optional &amp; complementary; <b>par2 repair works regardless</b>. The RESTORE.txt on each disc explains it.</label>
     <label>Verify mount (optional) — after burning, hash the package's payload <span class="mono dim">&lt;mount&gt;/&lt;name&gt;.tar</span> (plaintext) or <span class="mono dim">.tar.gpg</span> (encrypted) and compare to its enc_hash. Blank = skip.</label>
     <input id="bv" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_verify_mount||'')}" placeholder="E:\\ or /mnt/optical">
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>`;
   $('#view').innerHTML=h;
+  escrowStatus();
 }
+async function escrowStatus(){
+  const el=$('#escrowStat');if(!el)return;
+  try{const e=await api('GET','/api/escrow');
+    const hb=n=>{if(!n)return'—';const u=['B','KB','MB','GB'];let f=n,i=0;while(f>=1000&&i<u.length-1){f/=1000;i++}return (i?f.toFixed(1):f)+' '+u[i]};
+    const miss=(e.full&&e.full.missing)||[];
+    let s=`Version <b>${esc(e.version||'')}</b> · cache <span class="mono">${esc(e.cache_dir||'')}</span><br>`;
+    s+=`Estimated bundle size — full: <b>${hb(e.full.estimated_bytes)}</b> · binaries-only: <b>${hb(e.binaries_only.estimated_bytes)}</b>. `;
+    if(miss.length){s+=`<span style="color:var(--warn,#c90)">${miss.length} component(s) not cached</span> (${miss.map(esc).join(', ')}).`;}
+    else{s+=`All components cached ✓`;}
+    if(e.fetchable){s+=`<div class="row" style="margin-top:8px"><button class="btn ghost" style="font-size:11px;padding:2px 10px" onclick="escrowFetch()">Fetch / refresh escrow cache…</button></div>`;}
+    else{s+=`<div class="dim" style="margin-top:6px">This is a dev build (version is not a <span class="mono">vX.Y.Z</span> release tag) — release binaries can't be downloaded. The bundle ships whatever is cached; the Mnemosyne source is regenerated from the working tree.</div>`;}
+    el.innerHTML=s;
+  }catch(err){el.textContent='Escrow status unavailable: '+err.message;}
+}
+async function escrowFetch(){
+  if(!confirm('Download Mnemosyne release binaries + restore-toolchain source into the escrow cache? This reaches out to GitHub and the tool projects, and may transfer tens of MB.'))return;
+  try{await api('POST','/api/escrow/fetch',{});toast('Escrow cache fetch started — see Jobs',1);loc('jobs');}
+  catch(e){toast(e.message,1)}}
 async function saveCfg(){
   try{await api('PUT','/api/config',{staging_dir:$('#st').value.trim(),
     keystore_paths:$('#ks').value.split('\n').map(s=>s.trim()).filter(Boolean),
@@ -1689,7 +1942,10 @@ async function saveCfg(){
     barcode_scheme:$('#bs').value.trim()||'NSP',
     tape_tool:$('#tt').value.trim(),tape_device:$('#td').value.trim(),
     drift_informational_extensions:$('#di').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),
-    burn_command:$('#bc').value.trim(),burn_verify_mount:$('#bv').value.trim()});
+    versions_retained:parseInt($('#vr').value)||0,
+    escrow_on_media:$('#eom').value,escrow_include_readers:$('#eir').checked,
+    burn_command:$('#bc').value.trim(),burn_verify_mount:$('#bv').value.trim(),
+    optical_ecc:$('#oecc').checked});
     toast('Settings saved');lamp();vSettings()}catch(e){toast(e.message,1)}}
 
 /* ---- folder picker: a read-only server-side browser on every path field ----

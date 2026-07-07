@@ -237,14 +237,21 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 		return nil, err
 	}
 
-	// Content indexes from the selected archives.
-	currentByHash := map[string][]*File{} // current source file(s) by content hash
-	archiveOfFile := map[int]int{}        // fileID -> archiveID
-	histHashes := map[string]bool{}       // previously-packaged versions no longer current
+	// Content indexes from the selected archives. The dock first-pass matches by
+	// BLAKE3 (the fast hot-loop hash) when the catalog has it, falling back to
+	// SHA-256 for files scanned before BLAKE3 was recorded. Both keys point at the
+	// same File, so a drive file need only match on one.
+	currentByHash := map[string][]*File{}   // current source file(s) by SHA-256
+	currentByBlake3 := map[string][]*File{} // ...and by BLAKE3 (fast path)
+	archiveOfFile := map[int]int{}          // fileID -> archiveID
+	histHashes := map[string]bool{}         // previously-packaged versions no longer current
 	for _, aid := range ds.ArchiveIDs {
 		for _, f := range a.Store.FilesOf(aid) {
 			if f.Hash != "" {
 				currentByHash[f.Hash] = append(currentByHash[f.Hash], f)
+			}
+			if f.Blake3 != "" {
+				currentByBlake3[f.Blake3] = append(currentByBlake3[f.Blake3], f)
 			}
 			archiveOfFile[f.ID] = aid
 		}
@@ -294,11 +301,16 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 		func(done int) {
 			progress(0.06+float64(done)/float64(total)*0.74, fmt.Sprintf("hashed %d/%d", done, len(paths)))
 		},
-		func(p, h string, size int64) {
+		func(p, sha, b3 string, size int64, _ time.Time) {
 			atomic.AddInt64(&hashed, 1)
 			mu.Lock()
 			defer mu.Unlock()
-			if fs, ok := currentByHash[h]; ok {
+			// BLAKE3 first (fast path), then SHA-256 for legacy catalog entries.
+			fs, ok := currentByBlake3[b3]
+			if !ok {
+				fs, ok = currentByHash[sha]
+			}
+			if ok {
 				for _, f := range fs {
 					aid := archiveOfFile[f.ID]
 					if matchedByArchive[aid] == nil {
@@ -309,7 +321,7 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 						matchedBytes += f.SizeBytes
 					}
 				}
-			} else if histHashes[h] {
+			} else if histHashes[sha] {
 				hist++
 			} else {
 				other++

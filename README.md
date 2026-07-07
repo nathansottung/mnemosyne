@@ -634,6 +634,27 @@ extension, yours winning).
   MOVED, per file-type — *because you need to know a `.NEF` went missing, and
   not be drowned in expected `.xmp` churn.*
 
+### 🗺 Treemap — where is my *risk*
+
+A disk-usage treemap you already know from tools like WizTree — rectangles sized
+by bytes — but **colored by protection risk instead of by folder.** Open it from
+any Archive card (or the **Treemap** tab in the Archive workbench): every folder
+and file is a rectangle whose area is its bytes and whose fill is its
+protection status (the same six colors used everywhere else —
+🟥 not backed up, 🟧 partial, 🟩 complete, 🟦 over-complete, 🟪 out-of-policy,
+⬜ unassigned), a folder taking the worst status of anything inside it. Hover for
+name + size + status (color **and** icon **and** text — never color alone); click
+a folder to zoom in, breadcrumb to zoom back out; the legend tallies bytes per
+status for the level you're looking at. It is computed **entirely from the
+catalog's recorded sizes — it never re-walks the disk** — and a million-file
+archive stays instant because the server aggregates one level at a time and folds
+thousands of tiny folders into a single "other" block. A toggle re-tints the map
+by **drift state** (unchanged / modified / missing / moved / unarchived) wherever
+a Rescan & compare report exists, turning *"where is my space?"* into *"where is
+my risk?"* at a glance.
+
+<!-- SCREENSHOT: docs/img/treemap.png — Archive treemap, one large red (NOT_BACKED_UP) block dominating a field of green, drift toggle top-right -->
+
 ### 🧲 Dock — ingest a stack of legacy drives
 - **Guided, resumable, hands-off.** Pick the Archive(s) to reconcile against,
   then dock old backup drives one at a time. Mnemosyne **watches** for each
@@ -670,6 +691,39 @@ extension, yours winning).
 - **Recovery Kit** exports a single folder — plain-language instructions,
   media inventory, per-key QR cards, the runbook — *because your future self
   may have the tapes and the keystores but no memory of how any of this worked.*
+
+---
+
+### 🕰 Version retention
+
+Mnemosyne **never had the power to delete an old version of a file.** Once bytes
+are sealed into a package on a tape or disc, they are there for good — that is the
+whole promise of write-once archival media. Yet until now a rescan would quietly
+*overwrite* a file's hash in the catalog: the medium still held the old bytes, but
+the catalog had forgotten they existed. Version retention makes the catalog stop
+pretending otherwise.
+
+- **A rescan retains, it does not overwrite.** When a file's content changes, the
+  previous `{hash, size, mtime, first_seen}` is moved into an append-only
+  per-file **version history** (stamped with when it was superseded) instead of
+  being discarded. The current content stays on the file; the prior versions line
+  up behind it as `v1, v2, …`.
+- **Every retained version stays locatable.** Package and mirror membership is
+  *content-addressed*, so the catalog can still point at exactly which sealed
+  package — and which tape or disc — holds each old version: *"v1 · 2024-03-12 ·
+  in NSP-C0003 on tape LTO-0007."* A file's detail view (click any filename in
+  **Find**) lists them all.
+- **Restore any version.** Restore defaults to the newest, but takes a selector:
+  a specific version, or **"as of &lt;date&gt;"** to get whatever was current
+  then. The restored bytes are hash-checked against that version's recorded hash —
+  the round-trip proof that "restore v1" really reproduced v1.
+- **Drift shows the prior version inline.** A `MODIFIED` file names its retained
+  prior version as the restore source, so recovering the pre-change copy is one
+  click, not a hunt.
+- **Capped only if you ask.** `versions_retained` (Settings) defaults to
+  *unlimited*. Setting a cap forgets only the catalog's *pointer* to the oldest
+  versions — it never deletes anything from media, because Mnemosyne can't and
+  never could.
 
 ---
 
@@ -761,9 +815,26 @@ optical need no LTFS.
 
 ### Optical burning *(optional)*
 Discs can't stream through the RAM buffer, so the **Burn** tab drives your
-existing burner via a command template (`{SRC}` = staged folder, `{LABEL}` =
-package name). Examples: **ImgBurn** (Windows), **growisofs** / **xorriso**
-(Linux). See [Optical burn queue](#optical-burn-queue).
+burner via a command template (`{SRC}` = staged folder, `{LABEL}` = package
+name). The **documented default is [xorriso](https://www.gnu.org/software/xorriso/)**
+— free, maintained, cross-platform, scriptable, and it leaves an auditable
+command line rather than clicks in a GUI:
+
+```
+xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject
+```
+
+(ImgBurn on Windows and growisofs on Linux still work; the Settings page has a
+one-click "Use xorriso default".) See [Optical burn queue](#optical-burn-queue).
+
+**Optional second layer — [dvdisaster](https://dvdisaster.jcea.es/):** turn on
+*"Note dvdisaster ECC"* in Settings to add sector-geometry Reed–Solomon ECC over
+the whole disc image (build the ISO with `xorriso -as mkisofs`, augment it with
+`dvdisaster -mRS02 -c`, then burn). It heals scratches that wipe out runs of
+physical sectors — a layer **par2 can't provide** because par2 protects the
+payload *file*, not the disc geometry. It is strictly complementary and never
+required: **par2 repair of the payload works regardless**, and every disc's
+`RESTORE.txt` says so in plain words. The three-tool restore never depends on it.
 
 ---
 

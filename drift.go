@@ -64,6 +64,7 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 	if len(folders) == 0 {
 		return nil, fmt.Errorf("archive %q has no scanned folders — scan one first", coll.Name)
 	}
+	a.Store.SetVersionsRetained(cfg.VersionsRetained) // cap file-version history per config
 	infoExt := map[string]bool{}
 	for _, e := range cfg.DriftInformational {
 		infoExt[strings.ToLower(strings.TrimSpace(e))] = true
@@ -89,6 +90,7 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 	type backed struct {
 		abs, rel, hash, chunk string
 		vols                  []string
+		fileID                int
 	}
 	backedByPath := map[string]*backed{}
 	backedByHash := map[string][]*backed{}
@@ -115,7 +117,7 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 				rel = fileRel[cf.FileID]
 			}
 			abs := filepath.Join(folder, filepath.FromSlash(rel))
-			b := &backed{abs: abs, rel: rel, hash: h, chunk: c.Name, vols: vols}
+			b := &backed{abs: abs, rel: rel, hash: h, chunk: c.Name, vols: vols, fileID: cf.FileID}
 			backedByPath[abs] = b
 			if h != "" {
 				backedByHash[h] = append(backedByHash[h], b)
@@ -153,14 +155,14 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 		if total > 0 {
 			progress(0.05+0.7*float64(dd)/float64(total), fmt.Sprintf("hashed %d/%d", dd, total))
 		}
-	}, func(p, h string, size int64) {
+	}, func(p, sha, b3 string, size int64, mtime time.Time) {
 		mu.Lock()
-		curByAbs[p] = &cur{hash: h, size: size}
+		curByAbs[p] = &cur{hash: sha, size: size}
 		mu.Unlock()
 		fol := perFolder[p]
 		if rel, e := filepath.Rel(folderPath[fol], p); e == nil {
 			a.Store.UpsertFile(File{CollectionID: collectionID, FolderID: fol,
-				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: h})
+				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: sha, Blake3: b3, ModTime: mtime})
 		}
 	})
 	a.Store.Flush()
@@ -218,7 +220,9 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 			if b.hash == c.hash {
 				counts["unchanged"]++
 			} else {
-				add(DriftItem{State: "MODIFIED", Path: b.rel, Hash: c.hash, Chunk: b.chunk, Volumes: b.vols})
+				it := DriftItem{State: "MODIFIED", Path: b.rel, Hash: c.hash, Chunk: b.chunk, Volumes: b.vols, FileID: b.fileID, PriorHash: b.hash}
+				it.PriorVersion = a.priorVersionLocator(b.fileID, b.hash)
+				add(it)
 			}
 			continue
 		}

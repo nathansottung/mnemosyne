@@ -26,6 +26,11 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           echo "Building Mnemosyne ${TAG}"
           mkdir -p dist
+          # Software escrow: embed this exact tagged source so every built binary
+          # can emit its own source tarball into an Escrow Bundle (escrow.go). This
+          # OVERWRITES the committed dev placeholder before the build compiles it in.
+          git archive --format=tar.gz --prefix="mnemosyne-${TAG}/" -o escrow/mnemosyne-src.tar.gz HEAD
+          cp "escrow/mnemosyne-src.tar.gz" "dist/mnemosyne-src-${TAG}.tar.gz"
           # Pure-Go, static (CGO disabled) binaries for every supported target.
           for target in windows/amd64 linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do
             goos="${target%/*}"; goarch="${target#*/}"
@@ -40,8 +45,8 @@ jobs:
             cp README.md LICENSE docs/RESTORE_RUNBOOK.md "$stage/"
             ( cd "$stage" && zip -q -r "../../dist/mnemosyne-${goos}-${goarch}.zip" . )
           done
-          # One checksum file over all release artifacts.
-          ( cd dist && sha256sum *.zip > SHA-256SUMS.txt )
+          # One checksum file over all release artifacts (zips + the source tarball).
+          ( cd dist && sha256sum *.zip *.tar.gz > SHA-256SUMS.txt )
           echo "Artifacts:"; ls -la dist
 
       - name: Create GitHub Release
@@ -49,6 +54,7 @@ jobs:
         with:
           files: |
             dist/*.zip
+            dist/*.tar.gz
             dist/SHA-256SUMS.txt
           fail_on_unmatched_files: true
           generate_release_notes: true

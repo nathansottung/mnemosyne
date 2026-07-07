@@ -199,7 +199,7 @@ func (a *App) FinalizeVolume(v *Volume, mountPath, by string, force bool, forceR
 		fin.ForceReason, fin.Overrides = forceReason, overrides
 	}
 
-	sidecar, err := a.writeFinalizeSidecar(mountPath, v, as, fin)
+	sidecar, err := a.writeFinalizeSidecar(mountPath, v, as, fin, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("writing seal sidecar: %w", err)
 	}
@@ -242,7 +242,7 @@ func (a *App) UnsealVolume(v *Volume, by, reason string) error {
 // writeFinalizeSidecar makes the medium self-documenting: FINALIZATION.json (the
 // seal record + checks), catalog_snapshot.json (machine-readable contents), and
 // INVENTORY.md (the human trail). Guarded against writing into a source.
-func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAssessment, fin Finalization) (string, error) {
+func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAssessment, fin Finalization, cfg Config) (string, error) {
 	if err := a.Store.AssertOutsideSources(mountPath); err != nil {
 		return "", err
 	}
@@ -281,6 +281,11 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 	}
 	census := a.censusFromTally(tally)
 
+	// Escrow Bundle onto the medium itself, per policy — budgeted HONESTLY against
+	// the medium's free space so a nearly-full DVD-R is skipped gracefully with a
+	// note rather than failing the seal.
+	escrowNote := a.writeSidecarEscrow(dir, census, as.FreeBytes, cfg)
+
 	frec := map[string]any{"mnemosyne_finalization": 1, "generated_utc": now.Format(time.RFC3339),
 		"volume": v, "finalization": fin, "checks": as.Checks}
 	if b, err := json.MarshalIndent(frec, "", "  "); err == nil {
@@ -309,6 +314,15 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 	if fin.Forced {
 		b.WriteString(fmt.Sprintf("- **⚠ FORCED seal:** %s — overriding: %s\n", fin.ForceReason, strings.Join(fin.Overrides, "; ")))
 	}
+	if v.DriveEncrypted {
+		b.WriteString("\n> ### 🔒 DRIVE-ENCRYPTED\n>\n> " + driveEncWarning + "\n")
+		if v.DriveEncNote != "" {
+			b.WriteString(">\n> Drive key: " + v.DriveEncNote + "\n")
+		} else {
+			b.WriteString(">\n> **Drive key location NOT recorded.**\n")
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString("\nThis medium is SEALED: the catalog refuses further writes to it until an explicit, audit-logged unseal.\n\n")
 	for _, p := range pkgs {
 		b.WriteString(fmt.Sprintf("## %s — %s%s\n\n", p.Name, humanBytes(p.Bytes), map[bool]string{true: " · encrypted", false: ""}[p.Encrypted]))
@@ -324,10 +338,50 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 	b.WriteString("---\n\n")
 	b.WriteString(fmt.Sprintf("**Formats:** %.0f%% of these bytes are in OPEN or DOCUMENTED formats.\n\n", census.SafePct))
 	b.WriteString("```\n" + readersReference(census) + "```\n")
+	b.WriteString("\n---\n\n## Escrow bundle\n\n" + escrowNote + "\n")
 	if err := os.WriteFile(filepath.Join(dir, "INVENTORY.md"), []byte(b.String()), 0o644); err != nil {
 		return dir, err
 	}
 	return dir, nil
+}
+
+// escrowMediaSafetyBytes is a small headroom kept free beyond the estimated
+// bundle size, so writing the escrow never itself trips the free-space buffer.
+const escrowMediaSafetyBytes = 16 * 1000 * 1000 // 16 MB
+
+// writeSidecarEscrow writes the Escrow Bundle into the seal sidecar per
+// escrow_on_media, budgeting against the medium's free space. It returns a
+// human note for INVENTORY.md and NEVER fails the seal: on any error or a
+// space shortfall it records the skip instead of writing.
+func (a *App) writeSidecarEscrow(sidecarDir string, census Census, freeBytes int64, cfg Config) string {
+	mode := normEscrowMode(cfg.EscrowOnMedia)
+	if mode == EscrowOff {
+		return "Not written (`escrow_on_media` = off). The full Escrow Bundle lives in the Recovery Kit."
+	}
+	plan := a.planEscrow(mode, cfg.EscrowIncludeReaders, census)
+	est := plan.estimatedBundleBytes()
+
+	// Budget honestly BEFORE writing. Unknown free space (0) is treated as "cannot
+	// confirm room" — skip rather than risk filling a small medium.
+	if freeBytes <= 0 {
+		return fmt.Sprintf("Skipped: free space could not be read; the `%s` bundle (~%s) was not written to avoid overfilling the medium. It remains in the Recovery Kit.", mode, humanBytes(est))
+	}
+	if est+escrowMediaSafetyBytes > freeBytes {
+		a.Store.Log("escrow", fmt.Sprintf("skipped on-media bundle: est %s + margin > %s free", humanBytes(est), humanBytes(freeBytes)))
+		return fmt.Sprintf("Skipped on this space-constrained medium: the `%s` bundle needs ~%s but only %s is free. This is expected on small media (e.g. DVD-R) — the full Escrow Bundle lives in the Recovery Kit.", mode, humanBytes(est), humanBytes(freeBytes))
+	}
+
+	sum, err := a.WriteEscrowBundle(sidecarDir, plan, nil)
+	if err != nil {
+		return "Skipped (error): " + err.Error() + " — the full Escrow Bundle lives in the Recovery Kit."
+	}
+	wrote, _ := sum["bytes"].(int64)
+	note := fmt.Sprintf("Wrote the `%s` bundle to `%s/%s/` — %s across %v component(s). It preserves Mnemosyne's own reader (binaries%s) so this medium's software travels with it; the three-tool restore never needs it. See its `ESCROW_README.md`.",
+		mode, sealSidecarDir, escrowBundleDir, humanBytes(wrote), sum["components"], map[string]string{EscrowFull: " + source", EscrowBinariesOnly: ""}[mode])
+	if plan.MissingCount > 0 {
+		note += fmt.Sprintf(" Note: %d component(s) were not cached and omitted (%s).", plan.MissingCount, strings.Join(plan.MissingNames, ", "))
+	}
+	return note
 }
 
 // joinCap joins up to n items, appending "(+k more)" when truncated.

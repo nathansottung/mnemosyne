@@ -1,0 +1,11 @@
+Mnemosyne source-escrow placeholder
+===================================
+
+This is a DEV placeholder. Release builds replace escrow/mnemosyne-src.tar.gz
+with the real `git archive` of the tagged source (see .github/workflows/release.yml),
+which the binary then embeds. In a source checkout the running binary instead
+regenerates the tarball from the working tree via `git archive` at bundle time.
+
+If you are reading this inside an Escrow Bundle, the source tarball could not be
+resolved at build time and no git tree was available — recompile from the tagged
+GitHub release instead.

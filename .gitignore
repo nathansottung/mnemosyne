@@ -3,6 +3,9 @@ mnemosyne
 mnemosyne.exe
 mnemosyne-*
 *.zip
+# ...but the embedded escrow source placeholder MUST be tracked (go:embed needs it;
+# release builds overwrite it with the real tagged source before compiling).
+!escrow/mnemosyne-src.tar.gz
 
 # local data - NEVER commit catalogs or keystores
 catalog.json

@@ -47,6 +47,7 @@ type Config struct {
 	ThrottleMbps          float64           `json:"throttle_mbps"` // 0 = unthrottled; caps writer-side MB/s (thermal control)
 	BurnCommand           string            `json:"burn_command"`
 	BurnVerifyMount       string            `json:"burn_verify_mount"`
+	OpticalEcc            bool              `json:"optical_ecc"` // note dvdisaster ECC as an intended extra layer on optical packages (docs + RESTORE.txt); par2 works regardless
 	VerifyDueMonths       int               `json:"verify_due_months"`
 	RequiredCopies        int               `json:"required_copies"`                // redundancy goal; fewer verified copies = under-protected
 	FinalizeVerifyDays    int               `json:"finalize_verify_days"`           // finalize: every copy on the volume must have verified within this many days
@@ -59,6 +60,10 @@ type Config struct {
 	TapeDevice            string            `json:"tape_device"`                    // tape drive device path, e.g. \\.\Tape0, /dev/nst0, /dev/sg1; blank = per-OS default
 	AuthToken             string            `json:"auth_token"`                     // bearer token required on every /api call when the server binds a non-localhost address (containers); env MNEMO_AUTH_TOKEN overrides
 	DriftInformational    []string          `json:"drift_informational_extensions"` // muted in reconcile, excluded from alarm totals
+	VersionsRetained      int               `json:"versions_retained"`              // per-file retained content-version cap; 0 = unlimited (default). Capping forgets only the catalog pointer to old bytes, never the media.
+	EscrowOnMedia         string            `json:"escrow_on_media"`                // escrow bundle written onto each finalized volume: "full" | "binaries-only" | "off" (default binaries-only, for space)
+	EscrowIncludeReaders  bool              `json:"escrow_include_readers"`         // include source tarballs of the format readers the census references (e.g. LibRaw)
+	EscrowCacheDir        string            `json:"escrow_cache_dir"`               // where fetched release binaries + toolchain source are cached; blank = <data>/escrow-cache
 	Tools                 map[string]string `json:"tools"`
 }
 
@@ -67,7 +72,8 @@ func defaultConfig() Config {
 	// B, 12-month verify window (read-back is always on).
 	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, Par2ExtraArgs: "-t0", BufferGB: 8, BlockMB: 64,
 		VerifyDueMonths: 12, RequiredCopies: 2, FinalizeVerifyDays: 30, BufferPct: 5, SmartBlockFinalize: true,
-		BuildVerify: "full", RoutineVerifyLevel: "B", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
+		BuildVerify: "full", RoutineVerifyLevel: "B", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"},
+		EscrowOnMedia: EscrowBinariesOnly, Tools: map[string]string{}}
 }
 
 // buildVerifyMode normalises the configured build-verification tier to one of
@@ -410,6 +416,7 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 	// Batch catalog writes for the duration of the scan (idempotent re-run).
 	a.Store.BeginBatch()
 	defer a.Store.EndBatch()
+	a.Store.SetVersionsRetained(a.LoadConfig().VersionsRetained) // cap file-version history per config
 	folder := a.Store.AddFolder(collectionID, root)
 
 	var paths []string
@@ -428,10 +435,10 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 	total := len(paths)
 	parallelHash(paths, func(d int) {
 		progress(float64(d)/float64(total), fmt.Sprintf("hashed %d/%d", d, total))
-	}, func(p, h string, size int64) {
+	}, func(p, sha, b3 string, size int64, mtime time.Time) {
 		if rel, e := filepath.Rel(root, p); e == nil {
 			a.Store.UpsertFile(File{CollectionID: collectionID, FolderID: folder.ID,
-				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: h})
+				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: sha, Blake3: b3, ModTime: mtime})
 		}
 	})
 	a.Store.Flush()
@@ -440,10 +447,11 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 }
 
 // parallelHash hashes paths across a worker pool sized min(8, NumCPU). fn is
-// called concurrently for each readable file (path, sha256, size) — callers
+// called concurrently for each readable file with BOTH hashes computed in one
+// read pass: sha256 (durable, on-media) and blake3 (fast, catalog-only) — callers
 // must make fn safe (Store methods already lock). progress(done) fires every 25
-// files and at the end. This is the shared pool used by scan and reconcile.
-func parallelHash(paths []string, progress func(done int), fn func(path, hash string, size int64)) {
+// files and at the end. This is the shared pool used by scan, reconcile, and dock.
+func parallelHash(paths []string, progress func(done int), fn func(path, sha, b3 string, size int64, mtime time.Time)) {
 	workers := runtime.NumCPU()
 	if workers > 8 {
 		workers = 8
@@ -461,8 +469,8 @@ func parallelHash(paths []string, progress func(done int), fn func(path, hash st
 			defer wg.Done()
 			for p := range jobs {
 				if st, e := os.Stat(p); e == nil && !st.IsDir() {
-					if h, e := hashFileHex(p); e == nil {
-						fn(p, h, st.Size())
+					if sha, b3, e := hashFileBoth(p); e == nil {
+						fn(p, sha, b3, st.Size(), st.ModTime().UTC())
 					}
 				}
 				if n := atomic.AddInt64(&done, 1); progress != nil && (n%25 == 0 || int(n) == total) {
@@ -964,7 +972,8 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 			return fail(fmt.Errorf("encrypting private manifest: %w", err))
 		}
 	}
-	writeRestoreTxt(work, c)
+	writeRestoreTxt(work, c, cfg.OpticalEcc)
+	writeBagItTags(work, c) // BagIt tag files beside the package (institutional legibility)
 
 	c.StagedDir = work
 	setStatus("STAGED", "")
@@ -1132,11 +1141,12 @@ func segJoinList(c *Chunk) string {
 	return strings.Join(parts, "+")
 }
 
-func writeRestoreTxt(dir string, c *Chunk) {
+func writeRestoreTxt(dir string, c *Chunk, opticalEcc bool) {
 	var t string
 	if c.Spanned {
 		t = spannedRestoreTxt(c)
 		t = appendPrivacyNote(t, c)
+		t = appendOpticalNote(t, c, opticalEcc)
 		_ = os.WriteFile(filepath.Join(dir, "RESTORE.txt"), []byte(t), 0o644)
 		return
 	}
@@ -1190,7 +1200,17 @@ No compression anywhere — extracted bytes are the originals.
 `, c.Name, c.HashAlg, c.EncHash, pl)
 	}
 	t = appendPrivacyNote(t, c)
+	t = appendOpticalNote(t, c, opticalEcc)
 	_ = os.WriteFile(filepath.Join(dir, "RESTORE.txt"), []byte(t), 0o644)
+}
+
+// appendOpticalNote adds the optional dvdisaster-ECC paragraph for optical
+// packages — stating plainly that par2 repair works regardless.
+func appendOpticalNote(t string, c *Chunk, eccEnabled bool) string {
+	if !isOpticalKind(c.MediaKind) {
+		return t
+	}
+	return t + opticalEccParagraph(eccEnabled)
 }
 
 // appendPrivacyNote adds the one paragraph RESTORE.txt needs when this medium's

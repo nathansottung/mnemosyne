@@ -52,7 +52,8 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 	var warnings []string
 
 	progress(0.15, "inventory")
-	if err := os.WriteFile(filepath.Join(kit, "MEDIA_INVENTORY.md"), []byte(mediaInventoryMD(chunks, volm)), 0o644); err != nil {
+	inventory := mediaInventoryMD(chunks, volm) + a.retainedVersionsMD()
+	if err := os.WriteFile(filepath.Join(kit, "MEDIA_INVENTORY.md"), []byte(inventory), 0o644); err != nil {
 		return nil, err
 	}
 
@@ -73,20 +74,37 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 		return nil, err
 	}
 
+	// Escrow Bundle: the archive preserves its own reader. The Kit always gets the
+	// FULL bundle (source + binaries + toolchain) — it is the canonical, off-site
+	// belt-and-suspenders home. Never fail the kit over it: a missing cache just
+	// means a smaller bundle plus a recorded note.
+	progress(0.66, "escrow bundle")
+	cfg := a.LoadConfig()
+	escrowPlan := a.planEscrow(EscrowFull, cfg.EscrowIncludeReaders, a.FormatCensus(0))
+	escrowSummary, escErr := a.WriteEscrowBundle(kit, escrowPlan, func(f float64, m string) { progress(0.66+0.02*f, m) })
+	if escErr != nil {
+		warnings = append(warnings, "escrow bundle: "+escErr.Error())
+	} else if escrowPlan.MissingCount > 0 {
+		warnings = append(warnings, fmt.Sprintf("escrow bundle: %d component(s) not cached and omitted (%s) — run 'Fetch escrow cache' then regenerate for a complete bundle",
+			escrowPlan.MissingCount, strings.Join(escrowPlan.MissingNames, ", ")))
+	}
+
 	progress(0.7, "key QR cards")
 	qrWritten := 0
 	for i, k := range keys {
-		// The .txt card never carries the passphrase — only ref + fingerprint.
+		// The .txt card never carries the passphrase — only ref + fingerprint. The
+		// secret lives in the QR (.png) and the typable key sheet (.sheet.txt).
 		card := fmt.Sprintf("Mnemosyne key card\nkey_ref:      %s\nfingerprint:  %s (SHA-256 of the passphrase)\nnote:         %s\n\n"+
-			"The passphrase itself is NOT written here in plaintext. It lives only inside\n"+
-			"%s.png (QR payload  MNEMO1|<key_ref>|<passphrase>) and in your keystore files.\n",
+			"The passphrase itself is NOT written here in plaintext. It lives inside\n"+
+			"%[4]s.png (QR payload  MNEMO1|<key_ref>|<passphrase>), the typable\n"+
+			"%[4]s.sheet.txt (retype it — each line self-checks), and your keystore files.\n",
 			k.Ref, k.Fingerprint, k.Note, k.Ref)
 		if err := os.WriteFile(filepath.Join(keysDir, k.Ref+".txt"), []byte(card), 0o644); err != nil {
 			return nil, err
 		}
 		pass, err := a.Passphrase(k.Ref)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("key %s: no reachable keystore holds it — QR card omitted (%v)", k.Ref, err))
+			warnings = append(warnings, fmt.Sprintf("key %s: no reachable keystore holds it — QR card + sheet omitted (%v)", k.Ref, err))
 			continue
 		}
 		png, err := qrcode.Encode("MNEMO1|"+k.Ref+"|"+pass, qrcode.Medium, 320)
@@ -95,6 +113,11 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 			continue
 		}
 		if err := os.WriteFile(filepath.Join(keysDir, k.Ref+".png"), png, 0o644); err != nil {
+			return nil, err
+		}
+		// Typable key sheet — same secret as the QR, no scanner required.
+		if err := os.WriteFile(filepath.Join(keysDir, k.Ref+".sheet.txt"),
+			[]byte(keySheet(k.Ref, k.Note, k.Fingerprint, pass)), 0o644); err != nil {
 			return nil, err
 		}
 		qrWritten++
@@ -106,6 +129,7 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 	return map[string]any{
 		"output_dir": kit, "chunks": len(chunks), "keys": len(keys),
 		"qr_cards": qrWritten, "warning": recoveryKitWarning, "warnings": warnings,
+		"escrow": escrowSummary,
 	}, nil
 }
 
@@ -214,8 +238,12 @@ func writeVolumesTable(b *strings.Builder, volm map[int]*Volume) {
 		if loc == "" {
 			loc = "—"
 		}
+		label := v.Label
+		if v.DriveEncrypted {
+			label += " ⚠🔒" // drive-level AES — flagged loud in the notes below
+		}
 		body.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
-			mdCell(v.Label), mdCell(barcode), mdCell(v.Kind), mdCell(loc), mdCell(serial), mdCell(model), cap))
+			mdCell(label), mdCell(barcode), mdCell(v.Kind), mdCell(loc), mdCell(serial), mdCell(model), cap))
 		rows++
 	}
 	if rows == 0 {
@@ -228,6 +256,28 @@ func writeVolumesTable(b *strings.Builder, volm map[int]*Volume) {
 	b.WriteString(body.String())
 	if anyNote {
 		b.WriteString("\n\\* Serial reported via a USB/1394 bridge or dock may be the enclosure's, not the drive's — treat it as a hint, not a fingerprint.\n")
+	}
+	// Drive-level AES (stenc/LTO hardware) is a decade-scale trap — shout about it.
+	var enc []*Volume
+	for _, id := range ids {
+		if v := volm[id]; v != nil && v.DriveEncrypted {
+			enc = append(enc, v)
+		}
+	}
+	if len(enc) > 0 {
+		b.WriteString("\n> ### 🔒 DRIVE-ENCRYPTED MEDIA — READ THIS\n>\n> " + driveEncWarning + "\n>\n")
+		for _, v := range enc {
+			line := "> - **" + mdCell(v.Label) + "**"
+			if v.Barcode != "" {
+				line += " (barcode `" + mdCell(v.Barcode) + "`)"
+			}
+			if v.DriveEncNote != "" {
+				line += " — drive key: " + mdCell(v.DriveEncNote)
+			} else {
+				line += " — **drive key location NOT recorded** — find it before you need it."
+			}
+			b.WriteString(line + "\n")
+		}
 	}
 }
 
@@ -349,6 +399,12 @@ single project going dark can strand your data.
 
 This kit describes %d package(s) and %d key(s). See `+"`MEDIA_INVENTORY.md`"+` for
 the full per-package table and `+"`RESTORE_RUNBOOK.md`"+` for the deep-dive.
+
+The `+"`escrow-bundle/`"+` folder is **software escrow** — Mnemosyne's own static
+binaries and source, plus the source of the restore tools (par2cmdline, GnuPG),
+so the software that wrote these media travels with them. It is belt-and-suspenders,
+never required: read `+"`escrow-bundle/ESCROW_README.md`"+`. The three-tool restore
+above needs none of it.
 
 ---
 

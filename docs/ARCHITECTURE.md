@@ -112,6 +112,31 @@ HTTP; `pipeline.go`/`writer.go`/… know nothing about routing; `main.go` knows
 nothing about JSON-on-disk. Swapping any layer (e.g. the storage backend, or
 the UI) touches one file's surface.
 
+## Hashing: SHA-256 on media, BLAKE3 in the hot loops
+
+Two hashes, one read pass, strict roles — and one rule that never bends:
+
+> **BLAKE3 never appears on media.**
+
+**SHA-256 is the only hash that ever touches a medium.** It is the anchor of the
+custody chain and appears in every manifest, sidecar, BagIt file, per-line key
+sheet, and Recovery-Kit inventory — because it is the hash a stranger in 2050 can
+recompute *anywhere* (`sha256sum`, `certutil -hashfile`, `Get-FileHash`) with no
+Mnemosyne and no exotic tooling. Coupling the archive's legibility to a younger,
+less-ubiquitous hash would be a bet against the future; we don't make it.
+
+**BLAKE3 lives purely in the hot loops** — scans, drift/scrub comparisons, and
+dock first-passes — as a fast, media-decoupled content-identity hash. It is
+computed in the *same read pass* as SHA-256 (`hashFileBoth`: one `os.Open`, an
+`io.MultiWriter` into both hashers), so it costs only marginal CPU on top of the
+SHA-256 we must compute anyway, and it gives the internals a modern
+throughput-headroom hash for content matching (the dock matches BLAKE3-first, with
+a SHA-256 fallback for files scanned before BLAKE3 was recorded). It is stored
+only in the catalog (`File.Blake3`, `omitempty`) and is **deliberately absent from
+`ChunkFileRef`**, which is the struct serialized into on-medium manifests — so
+there is no code path that can leak it onto a disc or tape. If you add a new media
+writer, it emits SHA-256; BLAKE3 stays home.
+
 ## Custody chain
 
 Integrity is a chain of hashes, each link independently checkable. Nothing is

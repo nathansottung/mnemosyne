@@ -75,6 +75,34 @@ type File struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	HashAlg      string `json:"hash_alg"`
 	Hash         string `json:"hash"`
+	// Blake3 is a fast, media-decoupled content-identity hash computed in the same
+	// read pass as Hash during scans/drift/dock. It is CATALOG-ONLY — it accelerates
+	// hot-loop comparisons and must NEVER be written to a medium (see hashing.go /
+	// docs/ARCHITECTURE.md). SHA-256 (Hash) remains the sole on-media hash.
+	Blake3 string `json:"blake3,omitempty"`
+	// Archival version retention (prompt 50): the fields above describe the CURRENT
+	// content; ModTime/FirstSeen timestamp it, and Versions is the append-only
+	// history of superseded prior content. A rescan that finds new bytes moves the
+	// outgoing {hash,size,mtime,first_seen} into Versions instead of discarding it —
+	// old packages still hold those bytes, so the catalog stops pretending they are
+	// gone. Empty/zero on legacy catalogs; backfilled lazily on next UpsertFile.
+	ModTime   time.Time     `json:"mtime,omitempty"`
+	FirstSeen time.Time     `json:"first_seen,omitempty"`
+	Versions  []FileVersion `json:"versions,omitempty"` // superseded prior versions, oldest→newest
+}
+
+// FileVersion is a superseded prior state of a file, retained so the catalog
+// remembers what earlier sealed packages still protect. Append-only; the current
+// version lives on the File itself. Content is located by Hash — package and
+// mirror membership is content-addressed (ChunkFileRef.Hash), so every retained
+// version remains findable even after the file's current bytes moved on.
+type FileVersion struct {
+	Hash         string    `json:"hash"`
+	HashAlg      string    `json:"hash_alg,omitempty"`
+	SizeBytes    int64     `json:"size_bytes"`
+	ModTime      time.Time `json:"mtime,omitempty"`
+	FirstSeen    time.Time `json:"first_seen,omitempty"`
+	SupersededAt time.Time `json:"superseded_at"`
 }
 
 type ChunkFileRef struct {
@@ -178,6 +206,14 @@ type Volume struct {
 	Sealed        bool           `json:"sealed,omitempty"`
 	SealedAt      *time.Time     `json:"sealed_at,omitempty"`
 	Finalizations []Finalization `json:"finalizations,omitempty"`
+	// Drive-level (hardware) AES — e.g. an LTO drive's built-in encryption set via
+	// `stenc`. This sits ENTIRELY OUTSIDE Mnemosyne's par2→gpg→tar restore story:
+	// the bytes on the tape are ciphertext only the drive+key can decrypt, so a lost
+	// drive key means the tape is unreadable by ANYTHING — gpg included. Mnemosyne
+	// does not set it; this flag records that it WAS set (so inventories and the
+	// Recovery Kit can shout about it). DriveEncNote records where the drive key lives.
+	DriveEncrypted bool   `json:"drive_encrypted,omitempty"`
+	DriveEncNote   string `json:"drive_enc_note,omitempty"`
 }
 
 // Finalization is one entry in a volume's seal ceremony history: who did it,
@@ -416,6 +452,13 @@ type DriftItem struct {
 	Volumes       []string `json:"volumes,omitempty"` // "LABEL (location)" restore-from pointers
 	NeedsBackup   bool     `json:"needs_backup,omitempty"`
 	Informational bool     `json:"informational,omitempty"`
+	// Version retention (prompt 50): for a MODIFIED file the backed-up bytes are now
+	// a RETAINED prior version. PriorVersion is its one-line restore-source locator
+	// ("v2 · 2024-03-12 · in NSP-C0003 on tape LTO-0007"); FileID/PriorHash let the
+	// UI open the full version history / restore that exact version.
+	FileID       int    `json:"file_id,omitempty"`
+	PriorHash    string `json:"prior_hash,omitempty"`
+	PriorVersion string `json:"prior_version,omitempty"`
 }
 
 // ExtDrift is the per-file-type headline row (".NEF: 2 missing, 0 modified").
@@ -481,6 +524,11 @@ type Store struct {
 	// at a million files. Rebuilt from the catalog on open; kept in sync by
 	// UpsertFile. Nil until first built.
 	fileIdx map[string]*File
+	// versionsRetained caps the per-file retained-version history (0 = unlimited,
+	// the default). The App sets it from config before a scan/reconcile so UpsertFile
+	// can prune under the lock. Capping only forgets the catalog's POINTER to old
+	// bytes — the bytes stay sealed in their packages; it never deletes media.
+	versionsRetained int
 	// Batched persistence: during a long job (scan/adopt/mirror) the App brackets
 	// the work in BeginBatch/EndBatch; while batchDepth>0, save() coalesces writes
 	// (at most one every batchInterval) and marks the catalog dirty, then EndBatch
@@ -849,19 +897,73 @@ func (s *Store) UpsertFile(f File) *File {
 	if s.fileIdx == nil {
 		s.buildFileIndexLocked()
 	}
+	now := time.Now().UTC()
 	key := fileKey(f.CollectionID, f.FolderID, f.RelPath)
 	if e := s.fileIdx[key]; e != nil { // O(1) replace of a prior entry
+		if e.FirstSeen.IsZero() { // backfill legacy rows so history has a start date
+			e.FirstSeen = now
+		}
+		// Content changed → RETAIN the outgoing version instead of discarding it.
+		// The old bytes are still sealed in whatever package(s) hold e.Hash; keeping
+		// the record means the catalog can still point a restore at them.
+		if e.Hash != "" && f.Hash != "" && e.Hash != f.Hash {
+			e.Versions = append(e.Versions, FileVersion{
+				Hash: e.Hash, HashAlg: e.HashAlg, SizeBytes: e.SizeBytes,
+				ModTime: e.ModTime, FirstSeen: e.FirstSeen, SupersededAt: now,
+			})
+			if s.versionsRetained > 0 && len(e.Versions) > s.versionsRetained {
+				// Forget only the OLDEST catalog pointers; the bytes remain on media.
+				e.Versions = append([]FileVersion(nil), e.Versions[len(e.Versions)-s.versionsRetained:]...)
+			}
+			e.FirstSeen = now // the new current version is first seen now
+		}
 		e.SizeBytes, e.HashAlg, e.Hash = f.SizeBytes, f.HashAlg, f.Hash
+		if f.Blake3 != "" {
+			e.Blake3 = f.Blake3
+		}
+		if !f.ModTime.IsZero() {
+			e.ModTime = f.ModTime
+		}
 		return e
 	}
 	nf := f
 	nf.ID = s.next("file")
+	if nf.FirstSeen.IsZero() {
+		nf.FirstSeen = now
+	}
 	s.c.Files = append(s.c.Files, &nf)
 	s.fileIdx[key] = &nf
 	return &nf
 }
 
+// SetVersionsRetained sets the per-file retained-version cap (0 = unlimited).
+// Called before a scan/reconcile from config so UpsertFile prunes consistently.
+func (s *Store) SetVersionsRetained(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n < 0 {
+		n = 0
+	}
+	s.versionsRetained = n
+}
+
 func (s *Store) Flush() { s.mu.Lock(); defer s.mu.Unlock(); _ = s.save() }
+
+// FilesWithVersions returns every file that has retained at least one superseded
+// version (more than one known content version), sorted by path — the input to
+// the Recovery Kit's multi-version note.
+func (s *Store) FilesWithVersions() []*File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*File
+	for _, f := range s.c.Files {
+		if len(f.Versions) > 0 {
+			out = append(out, f)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RelPath < out[j].RelPath })
+	return out
+}
 
 func (s *Store) FilesOf(collectionID int) []*File {
 	s.mu.Lock()
@@ -985,6 +1087,9 @@ func (s *Store) Search(qr SearchQuery) []map[string]any {
 		}
 		row := map[string]any{"file_id": f.ID, "rel_path": f.RelPath, "size_bytes": f.SizeBytes, "hash": f.Hash, "ext": pathExt(f.RelPath)}
 		row["protection_status"], row["protection_detail"] = pst, pdet
+		if len(f.Versions) > 0 { // total known content versions (current + retained history)
+			row["version_count"] = len(f.Versions) + 1
+		}
 		if pprof != nil {
 			row["profile_name"] = pprof.Name
 		}

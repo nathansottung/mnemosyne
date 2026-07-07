@@ -9,3 +9,8 @@
 
 # Windows batch files must stay CRLF or cmd.exe can mis-parse them.
 *.bat  text eol=crlf
+
+# The embedded escrow source tarball is binary — never normalize it or go:embed
+# would compile a corrupted archive.
+*.tar.gz binary
+*.gz     binary

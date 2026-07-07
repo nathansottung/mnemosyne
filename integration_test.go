@@ -554,3 +554,112 @@ func TestIntegration_Throttle(t *testing.T) {
 		t.Errorf("read_mbps %.1f should exceed write_mbps %.1f", readMBps, writeMBps)
 	}
 }
+
+// planBuildWriteOne plans (packaging whatever is currently unbacked in the
+// collection), builds, and writes the single new package to a fresh volume. It
+// returns the package name and the on-medium package folder (a valid restore
+// source_dir).
+func (s *itServer) planBuildWriteOne(cid int, volLabel string) (name, pkgDir string) {
+	s.t.Helper()
+	plan := s.obj("POST", "/api/plan", map[string]any{
+		"collection_id": cid, "media_kind": "CUSTOM", "target_gb": 1, "encrypted": false, "par2": 10,
+	})
+	pkgs, ok := plan["chunks_created"].([]any)
+	if !ok || len(pkgs) == 0 {
+		s.t.Fatalf("plan created no packages: %v", plan)
+	}
+	pkg := pkgs[0].(map[string]any)
+	pid := int(pkg["id"].(float64))
+	name = pkg["name"].(string)
+	s.job(s.obj("POST", fmt.Sprintf("/api/chunks/%d/build", pid), nil))
+	dest := s.t.TempDir()
+	vid := s.addVolume(volLabel, "vault")
+	s.job(s.obj("POST", fmt.Sprintf("/api/chunks/%d/write", pid), map[string]any{"dest_dir": dest, "volume_id": vid}))
+	return name, filepath.Join(dest, name)
+}
+
+// TestIntegration_VersionRetentionRoundTrip is the prompt-50 acceptance test:
+// back up a file, modify it, back up again, then restore EACH version to scratch
+// and hash-match both against their originals. It proves the old bytes were never
+// forgotten and each retained version is independently restorable.
+func TestIntegration_VersionRetentionRoundTrip(t *testing.T) {
+	s := newIT(t)
+	s.setConfig(nil) // plaintext packages — no keystores needed
+
+	srcDir := t.TempDir()
+	doc := filepath.Join(srcDir, "doc.txt")
+	v1 := bytes.Repeat([]byte("VERSION ONE — the original bytes\n"), 500)
+	v2 := bytes.Repeat([]byte("VERSION TWO — deliberately different\n"), 400)
+	if err := os.WriteFile(doc, v1, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	coll := s.obj("POST", "/api/collections", map[string]any{"name": "VR"})
+	cid := int(coll["id"].(float64))
+
+	// --- back up version 1 ---
+	s.job(s.obj("POST", fmt.Sprintf("/api/collections/%d/scan", cid), map[string]any{"path": srcDir}))
+	_, pkg1Dir := s.planBuildWriteOne(cid, "LTO-0007")
+
+	// --- modify to version 2, rescan (retains v1), back up version 2 ---
+	if err := os.WriteFile(doc, v2, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.job(s.obj("POST", fmt.Sprintf("/api/collections/%d/scan", cid), map[string]any{"path": srcDir}))
+	_, pkg2Dir := s.planBuildWriteOne(cid, "LTO-0008")
+
+	// --- the catalog should now know two versions of doc.txt ---
+	var fileID int
+	var vc int
+	for _, r := range s.arr("GET", fmt.Sprintf("/api/search?q=doc.txt&collection_id=%d", cid), nil) {
+		rm := r.(map[string]any)
+		if rm["rel_path"] == "doc.txt" {
+			fileID = int(rm["file_id"].(float64))
+			if v, ok := rm["version_count"].(float64); ok {
+				vc = int(v)
+			}
+		}
+	}
+	if fileID == 0 {
+		t.Fatal("doc.txt not found in search")
+	}
+	if vc != 2 {
+		t.Fatalf("expected version_count 2 in search, got %d", vc)
+	}
+	fd := s.obj("GET", fmt.Sprintf("/api/files/%d", fileID), nil)
+	versions, _ := fd["versions"].([]any)
+	if len(versions) != 2 {
+		t.Fatalf("file detail should list 2 versions, got %d", len(versions))
+	}
+
+	// --- restore each version to its own scratch dir and hash-match ---
+	out1 := t.TempDir()
+	s.job(s.obj("POST", fmt.Sprintf("/api/files/%d/restore", fileID), map[string]any{
+		"output_dir": out1, "source_dir": pkg1Dir, "version": 1,
+	}))
+	assertBytesEqual(t, filepath.Join(out1, "doc.txt"), v1, "v1")
+
+	out2 := t.TempDir()
+	s.job(s.obj("POST", fmt.Sprintf("/api/files/%d/restore", fileID), map[string]any{
+		"output_dir": out2, "source_dir": pkg2Dir, "version": 2,
+	}))
+	assertBytesEqual(t, filepath.Join(out2, "doc.txt"), v2, "v2")
+
+	// --- default selector restores the newest (v2) ---
+	out3 := t.TempDir()
+	s.job(s.obj("POST", fmt.Sprintf("/api/files/%d/restore", fileID), map[string]any{
+		"output_dir": out3, "source_dir": pkg2Dir,
+	}))
+	assertBytesEqual(t, filepath.Join(out3, "doc.txt"), v2, "default→newest")
+}
+
+func assertBytesEqual(t *testing.T, path string, want []byte, label string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%s: restored file unreadable: %v", label, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s: restored bytes (%d) do not match the original (%d)", label, len(got), len(want))
+	}
+}

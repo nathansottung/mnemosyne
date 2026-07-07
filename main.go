@@ -175,6 +175,21 @@ func f(m map[string]any, k string) float64 {
 	return v
 }
 
+// parseAsOf accepts a date (2006-01-02) or a full RFC3339 timestamp for the
+// "restore the version current as of <when>" selector. A bare date is taken as
+// the END of that day (23:59:59 UTC) so "as of 2024-03-12" includes anything
+// written that day.
+func parseAsOf(sv string) (time.Time, error) {
+	sv = strings.TrimSpace(sv)
+	if t, err := time.Parse(time.RFC3339, sv); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse("2006-01-02", sv); err == nil {
+		return t.Add(24*time.Hour - time.Second).UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("as_of %q: use YYYY-MM-DD or an RFC3339 timestamp", sv)
+}
+
 func bl(m map[string]any, k string) bool {
 	v, _ := m[k].(bool)
 	return v
@@ -595,6 +610,36 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, app.FormatCensus(id))
 	})
 
+	// treemap — "where is my risk": one zoom level of the size×status treemap,
+	// computed from catalog sizes (never the disk). ?path= zooms in, ?color=drift
+	// re-tints by reconcile state where a report exists.
+	register(mux, "GET /api/collections/{id}/treemap", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		if app.Store.Collection(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		jsonOut(w, app.Store.Treemap(id, r.URL.Query().Get("path"), r.URL.Query().Get("color")))
+	})
+
+	// BagIt conformant-bag export — institutional handoff. Writes a valid bag
+	// (data/ payload + manifests + COMPARISON.md) for the archive.
+	register(mux, "POST /api/collections/{id}/bagit-export", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		if app.Store.Collection(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		out := s(body(r), "output_dir")
+		if out == "" {
+			jsonErr(w, 400, fmt.Errorf("output_dir required"))
+			return
+		}
+		jsonOut(w, runJob(app, "bagit-export", "BagIt export → "+out, func(p func(float64, string)) (map[string]any, error) {
+			return app.ExportBag(id, out, p)
+		}))
+	})
+
 	// planning + chunks
 	mux.HandleFunc("POST /api/plan", func(w http.ResponseWriter, r *http.Request) {
 		b := body(r)
@@ -778,6 +823,54 @@ func api(mux *http.ServeMux, app *App) {
 		}))
 	})
 
+	// file detail — the full retained-version history of one file, each version
+	// located to the package(s)/volume(s) that still hold its bytes.
+	mux.HandleFunc("GET /api/files/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		f := app.Store.FileByID(id)
+		if f == nil {
+			jsonErr(w, 404, fmt.Errorf("file %d not found", id))
+			return
+		}
+		versions := app.Store.FileVersions(id)
+		lines := make([]string, 0, len(versions))
+		for _, v := range versions {
+			lines = append(lines, v.LocatorLine())
+		}
+		jsonOut(w, map[string]any{"file": f, "versions": versions, "locators": lines})
+	})
+
+	// version-selectable file restore — default newest; {version:N} or
+	// {as_of:"2024-03-12"} picks a specific retained version and hash-verifies it.
+	mux.HandleFunc("POST /api/files/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		b := body(r)
+		if app.Store.FileByID(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("file %d not found", id))
+			return
+		}
+		out := s(b, "output_dir")
+		if out == "" {
+			jsonErr(w, 400, fmt.Errorf("output_dir required"))
+			return
+		}
+		sel := VersionSelector{Hash: s(b, "hash")}
+		if v := f(b, "version"); v > 0 {
+			sel.Index = int(v)
+		}
+		if as := strings.TrimSpace(s(b, "as_of")); as != "" {
+			t, err := parseAsOf(as)
+			if err != nil {
+				jsonErr(w, 400, err)
+				return
+			}
+			sel.AsOf = &t
+		}
+		jsonOut(w, runJob(app, "restore", fmt.Sprintf("Restore file %d", id), func(p func(float64, string)) (map[string]any, error) {
+			return app.RestoreFileVersion(id, sel, s(b, "source_dir"), out, p)
+		}))
+	})
+
 	// keys
 	mux.HandleFunc("GET /api/keys", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]any{"status": app.KeystoreStatus(), "keys": app.Store.KeyMetas()})
@@ -858,6 +951,57 @@ func api(mux *http.ServeMux, app *App) {
 			return app.BuildRecoveryKit(out, p)
 		})
 		resp["warning"] = recoveryKitWarning
+		jsonOut(w, resp)
+	})
+
+	// key sheet verify — "prove they typed it right". Reconstructs the passphrase
+	// from a retyped key sheet, checks each line's SHA-256 code, and (when a key_ref
+	// is given) confirms the reconstructed fingerprint matches that key. The secret
+	// itself is NEVER returned.
+	mux.HandleFunc("POST /api/keysheet/verify", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		sheet := s(b, "sheet")
+		if strings.TrimSpace(sheet) == "" {
+			jsonErr(w, 400, fmt.Errorf("sheet text required (paste the L01/L02/… PAYLOAD lines)"))
+			return
+		}
+		_, res := parseKeySheet(sheet)
+		out := map[string]any{"ok": res.OK, "lines": res.Lines, "bad_lines": res.BadLines,
+			"fingerprint": res.Fingerprint, "length": res.Length, "notes": res.Notes}
+		if ref := strings.TrimSpace(s(b, "key_ref")); ref != "" {
+			for _, k := range app.Store.KeyMetas() {
+				if k.Ref == ref {
+					match := strings.EqualFold(k.Fingerprint, res.Fingerprint)
+					out["key_ref"], out["fingerprint_matches"] = ref, match
+					out["ok"] = res.OK && match
+				}
+			}
+		}
+		jsonOut(w, out)
+	})
+
+	// escrow bundle — "the archive preserves its own reader": budget/status + the
+	// explicit (network-touching) cache fetch. Writing bundles never hits the
+	// network; this endpoint is how the cache gets populated.
+	mux.HandleFunc("GET /api/escrow", func(w http.ResponseWriter, r *http.Request) {
+		cfg := app.LoadConfig()
+		census := app.FormatCensus(0)
+		full := app.planEscrow(EscrowFull, cfg.EscrowIncludeReaders, census)
+		bin := app.planEscrow(EscrowBinariesOnly, cfg.EscrowIncludeReaders, census)
+		jsonOut(w, map[string]any{
+			"version": appVersion, "fetchable": looksLikeReleaseTag(appVersion),
+			"cache_dir": app.escrowCacheDir(), "policy": normEscrowMode(cfg.EscrowOnMedia),
+			"include_readers": cfg.EscrowIncludeReaders,
+			"full":            map[string]any{"present_bytes": full.PresentBytes, "estimated_bytes": full.estimatedBundleBytes(), "missing": full.MissingNames, "components": full.Components},
+			"binaries_only":   map[string]any{"present_bytes": bin.PresentBytes, "estimated_bytes": bin.estimatedBundleBytes(), "missing": bin.MissingNames},
+		})
+	})
+	mux.HandleFunc("POST /api/escrow/fetch", func(w http.ResponseWriter, r *http.Request) {
+		cfg := app.LoadConfig()
+		census := app.FormatCensus(0)
+		resp := runJob(app, "escrow-fetch", "Fetch escrow cache", func(p func(float64, string)) (map[string]any, error) {
+			return app.FetchEscrowCache(cfg.EscrowIncludeReaders, census, p)
+		})
 		jsonOut(w, resp)
 	})
 
@@ -947,6 +1091,29 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		jsonOut(w, map[string]any{"volume": v, "detected": id, "changed": changed})
+	})
+	// Mark (or clear) a volume as drive-encrypted (stenc/LTO hardware AES). This is
+	// AWARENESS only — Mnemosyne never sets drive encryption; it records that the
+	// operator did, so inventories and the Recovery Kit can warn loudly.
+	mux.HandleFunc("POST /api/volumes/{id}/drive-encryption", func(w http.ResponseWriter, r *http.Request) {
+		v := app.Store.Volume(pathID(r))
+		if v == nil {
+			jsonErr(w, 404, fmt.Errorf("volume not found"))
+			return
+		}
+		b := body(r)
+		v.DriveEncrypted = bl(b, "drive_encrypted")
+		v.DriveEncNote = s(b, "drive_enc_note")
+		if !v.DriveEncrypted {
+			v.DriveEncNote = ""
+		}
+		app.Store.UpdateVolume(v)
+		what := "cleared drive-encryption flag"
+		if v.DriveEncrypted {
+			what = "flagged DRIVE-ENCRYPTED (stenc/LTO hardware AES — outside the gpg restore story)"
+		}
+		app.Store.Log("volume", v.Label+": "+what)
+		jsonOut(w, map[string]any{"volume": v, "warning": driveEncWarning})
 	})
 	// Assign the next barcode from the configured scheme (prefix + counter) to a
 	// volume that has none yet — used at label time so every label is scannable.

@@ -1,0 +1,57 @@
+{
+  "_comment": "Escrow source registry — WHERE to obtain redistributable source for the restore toolchain and (optionally) format readers, and under what terms. Only components whose licenses PERMIT redistribution WITH source belong here. IBM LTFS and any other non-redistributable software must NEVER be added. sha256 may be blank (verified only when present); pin it once a release is vendored. URLs are the canonical upstream source tarballs, kept for the download-and-cache path.",
+
+  "toolchain": [
+    {
+      "name": "par2cmdline",
+      "version": "0.8.1",
+      "file": "par2cmdline-0.8.1.tar.gz",
+      "url": "https://github.com/Parchive/par2cmdline/releases/download/v0.8.1/par2cmdline-0.8.1.tar.gz",
+      "sha256": "",
+      "license": "GPL-2.0-or-later",
+      "license_note": "GNU GPL v2 or later. Redistribution is permitted provided the complete corresponding source (this tarball) accompanies it; the tarball's own COPYING file is the authoritative text. par2cmdline is the reference PAR2 (Reed–Solomon) repair tool — step 1 of the three-tool restore."
+    },
+    {
+      "name": "gnupg",
+      "version": "2.4.5",
+      "file": "gnupg-2.4.5.tar.bz2",
+      "url": "https://gnupg.org/ftp/gcrypt/gnupg/gnupg-2.4.5.tar.bz2",
+      "sha256": "",
+      "license": "GPL-3.0-or-later",
+      "license_note": "GNU GPL v3 or later (some libraries LGPL). Redistribution is permitted provided the complete corresponding source (this tarball) accompanies it; the tarball's own COPYING files are authoritative. GnuPG is the reference OpenPGP implementation — step 2 (decrypt) of the three-tool restore. Sequoia-PGP is an independent alternative named in the runbook."
+    }
+  ],
+
+  "readers": [
+    {
+      "name": "LibRaw",
+      "version": "0.21.2",
+      "file": "LibRaw-0.21.2.tar.gz",
+      "url": "https://www.libraw.org/data/LibRaw-0.21.2.tar.gz",
+      "sha256": "",
+      "license": "LGPL-2.1-only OR CDDL-1.0",
+      "license_note": "Dual-licensed LGPL v2.1 or CDDL v1.0 — both permit redistribution with source (COPYING.LGPL / COPYING.CDDL in the tarball are authoritative). Decodes most camera RAW formats.",
+      "exts": [".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".pef", ".srw", ".raw", ".3fr", ".iiq"]
+    },
+    {
+      "name": "dcraw",
+      "version": "9.28.0",
+      "file": "dcraw-9.28.0.tar.gz",
+      "url": "https://www.dechifro.org/dcraw/archive/dcraw-9.28.0.tar.gz",
+      "sha256": "",
+      "license": "Public-domain-ish (dcraw notice)",
+      "license_note": "Distributed by its author with permission to use, copy, and redistribute the source freely (see the notice atop dcraw.c). A tiny single-file RAW decoder — the belt-and-suspenders reader when LibRaw is unavailable.",
+      "exts": [".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".pef", ".srw", ".raw", ".3fr", ".iiq"]
+    },
+    {
+      "name": "OpenJPEG",
+      "version": "2.5.2",
+      "file": "openjpeg-2.5.2.tar.gz",
+      "url": "https://github.com/uclouvain/openjpeg/archive/refs/tags/v2.5.2.tar.gz",
+      "sha256": "",
+      "license": "BSD-2-Clause",
+      "license_note": "2-clause BSD — redistribution with source and notice permitted. Reference JPEG 2000 codec (LICENSE in the tarball is authoritative).",
+      "exts": [".jp2", ".j2k", ".jpf", ".jpx"]
+    }
+  ]
+}
