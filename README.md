@@ -401,6 +401,28 @@ promises. This is exactly why builds **enforce ≥2 keystores on different
 devices**, and why you should print the per-key QR cards and store them
 off-site. Plaintext packages have no such risk.
 
+**How much scratch (staging) space do I need?**
+**Not the size of your archive — just enough for one package.** Mnemosyne builds
+packages **one at a time** and frees each one's staging *before* starting the
+next, so scratch space only ever has to hold a single package's build peak, and
+that same space is reused for every package.
+
+Per-package build peak:
+- **Plaintext** — the tar *is* the payload, so peak ≈ **1× the package + par2**
+  (~1.05–1.1× the media size).
+- **Encrypted** — `gpg` reads the tar and writes the ciphertext, so the two
+  briefly coexist: peak ≈ **2× the package** during the encrypt step (a bit more
+  if you turn off `delete_tar_after_encrypt`).
+
+**Worked example — 100 TB archive → LTO-8 (~12 TB tapes):** that's ~9 packages of
+~12 TB each. You do **not** need 100 TB (let alone 250 TB) of scratch — you need
+room for **one** package: about **~13 TB** for plaintext (or ~24 TB if encrypted),
+**reused for all ~9 packages**. Staging is just a folder — point it at any drive
+with that much free (Settings), including an external drive; Mnemosyne streams
+from it to the destination. The app shows these exact numbers with a
+green/amber/red verdict after planning, before each build, and on the Home view
+(all from one endpoint, `GET /api/space-advice`).
+
 **Why not compression / dedup / a fancy container format?**
 Every layer is a future dependency and a bit-error amplifier. Media files
 barely compress anyway. Raw tar + external parity is the most boring, longest-

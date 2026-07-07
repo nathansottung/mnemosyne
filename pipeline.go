@@ -518,20 +518,18 @@ func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 in
 			"size_bytes": f.SizeBytes, "media_required": len(segs)})
 	}
 
+	// Staging peak is per-package (built one at a time, scratch reused), so the
+	// binding constraint is the single largest package — computed via the shared
+	// packageStagingPeak used by BuildChunk and /api/space-advice.
 	staging := map[string]any{"staging_dir": cfg.StagingDir}
 	if cfg.StagingDir != "" {
 		if free, err := diskFree(cfg.StagingDir); err == nil {
-			var worst int64 = payload
+			var peak int64
 			for _, c := range res.Chunks {
-				if c.DataBytes > worst {
-					worst = c.DataBytes
+				if p := packageStagingPeak(c.DataBytes, c.Par2, c.Encrypted, cfg.DeleteTarAfterEncrypt); p > peak {
+					peak = p
 				}
 			}
-			mult := 2.02
-			if !cfg.DeleteTarAfterEncrypt {
-				mult += float64(par2) / 100
-			}
-			peak := int64(float64(worst) * mult)
 			staging["free_bytes"] = free
 			staging["peak_per_chunk_bytes"] = peak
 			if peak > 0 {
@@ -589,13 +587,12 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		return err
 	}
-	mult := 2.02
-	if !cfg.DeleteTarAfterEncrypt {
-		mult += float64(c.Par2) / 100
-	}
+	// Pre-flight against this ONE package's build peak (shared with /api/space-advice
+	// so the pre-build advice and this refusal never disagree).
 	if free, err := diskFree(cfg.StagingDir); err == nil {
-		if need := int64(float64(c.DataBytes) * mult); free < need {
-			return fmt.Errorf("not enough staging space: need ~%.1f GB peak, have %.1f GB", float64(need)/1e9, float64(free)/1e9)
+		if need := packageStagingPeak(c.DataBytes, c.Par2, c.Encrypted, cfg.DeleteTarAfterEncrypt); free < need {
+			return fmt.Errorf("not enough staging space: this package's build peaks at ~%.1f GB but %s has only %.1f GB free — staging is just a folder, point it at any drive with room (Settings)",
+				float64(need)/1e9, cfg.StagingDir, float64(free)/1e9)
 		}
 	}
 

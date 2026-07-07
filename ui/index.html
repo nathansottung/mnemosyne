@@ -152,6 +152,18 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 const $=q=>document.querySelector(q);
 const api=async(m,u,b)=>{const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j};
 const GB=n=>((n||0)/1e9).toFixed(2);
+
+// ---- space advice: all numbers/verdicts come from GET /api/space-advice; the
+// UI only formats them so the staging math lives in exactly one place (Go).
+const SPACE_COLOR={red:'var(--bad)',amber:'#9a7a10',green:'var(--ok)',unknown:'var(--line)'};
+function GBn(b){return (b==null||b<0)?'?':GB(b)}
+function spaceChip(v){const c=SPACE_COLOR[v]||'var(--line)';const t={green:'FITS',amber:'TIGHT',red:'TOO SMALL'}[v]||'—';
+  return `<span class="etag" style="border-color:${c};color:${c}" title="green ≥110% · amber ≥100% · red under 100%">${t}</span>`}
+// Staging need vs free, with the standard red guidance ("staging is just a folder…").
+function stagingNeedHTML(dir,free,need,verdict){
+  let h=`<div class="dim" style="font:12px var(--mono);margin:4px 0">staging <b>${esc(dir||'(unset)')}</b> · needs ≥ <b>${GBn(need)} GB</b> · has ${GBn(free)} GB ${spaceChip(verdict)}</div>`;
+  if(verdict==='red')h+=`<div style="color:var(--bad);font-size:12px;margin:2px 0 4px">Staging is just a folder — point it at any drive with ${GBn(need)} GB free (<a href="#settings" style="color:var(--act)">Settings</a>).</div>`;
+  return h}
 const toast=(m,bad)=>{const d=document.createElement('div');if(bad)d.className='bad';d.textContent=m;$('#toast').append(d);setTimeout(()=>d.remove(),bad?7000:3500)};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -235,8 +247,9 @@ async function lamp(){try{const p=await api('GET','/api/preflight');const l=$('#
 
 /* ---------------- Home / Dashboard ---------------- */
 async function vHome(){
-  const [cs,chunks,cfgr,pre]=await Promise.all([
-    api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/preflight')]);
+  const [cs,chunks,cfgr,pre,adv]=await Promise.all([
+    api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/preflight'),
+    api('GET','/api/space-advice').catch(()=>null)]);
   const archives=cs||[]; const pkgs=chunks||[]; const cfg=(cfgr&&cfgr.config)||{};
   const required=cfg.required_copies||2; const months=cfg.verify_due_months||12;
   // Empty catalog → guided first run.
@@ -261,6 +274,8 @@ async function vHome(){
     <div class="stagearrow" aria-hidden="true">→</div>
     ${stage('Verify',verified,`verified copies`,'#packages')}
   </div>`;
+  if(adv){const pl=adv.plan||{};
+    h+=`<div class="dim" style="font:12px var(--mono);margin:2px 0 14px">Staging <b>${esc(adv.staging_dir||'(unset)')}</b> · ${GBn(adv.staging_free_bytes)} GB free · fits largest planned package: <b>${pl.fits?'yes':'no'}</b> ${adv.plan?spaceChip(pl.verdict):''} <span class="dim">(builds one package at a time; scratch is reused)</span></div>`;}
   h+='<div class="panel"><h2>Archives</h2><table><tr><th>Archive</th><th class="num">Files</th><th>Packages</th><th>Protection</th><th>Drift</th><th class="num">Verify-due</th></tr>';
   for(const a of archives){
     const p=byArch[a.id]||[];
@@ -418,10 +433,21 @@ function planDlg(id,name){dlg(`<h1>Plan packages for “${esc(name)}”</h1>
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Plan</button></div>`,
   async()=>{const r=await api('POST','/api/plan',{collection_id:id,media_kind:$('#d1').value,
       target_gb:parseFloat($('#d2').value)||0,par2_redundancy:parseInt($('#d3').value)||0,encrypted:$('#d4').checked});
-    const sp=r.spanned_chunks||[];const spMedia=sp.reduce((a,s)=>a+(s.media_required||0),0);
-    toast(`Planned ${r.chunks_created?.length||0} package(s)`+(sp.length?` · ${sp.length} spanned needing ${spMedia} media`:''),sp.length?1:0);
-    if(r.staging&&r.staging.warning)toast(r.staging.warning,1);
-    loc('packages')});}
+    const adv=await api('GET','/api/space-advice?collection_id='+id).catch(()=>null);
+    renderPlanResult(r,adv);});}
+function renderPlanResult(r,adv){
+  const n=r.chunks_created?.length||0; const sp=r.spanned_chunks||[]; const pl=(adv&&adv.plan)||{};
+  let h=`${hdr('Plan created','staging is reused per package — you only need room for the biggest one, not the whole archive','packages')}
+  <div class="panel">
+    <div style="font-size:15px">This plan: <b>${pl.packages??n}</b> package(s) → <b>${pl.media_count??'?'}</b> media of <b>${esc(pl.media_kind||'?')}</b>.</div>
+    <div style="margin-top:6px">Largest package: <b>${GBn(pl.largest_package_bytes)} GB</b>.</div>
+    ${stagingNeedHTML(adv&&adv.staging_dir, adv&&adv.staging_free_bytes, pl.largest_staging_peak_bytes, pl.verdict)}
+    ${sp.length?`<div class="dim" style="margin-top:6px">${sp.length} oversized file(s) will span multiple media.</div>`:''}
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="loc('packages')">Go to Packages →</button>
+      <button class="btn ghost" onclick="loc('vault')">← Vault</button></div>
+  </div>`;
+  $('#view').innerHTML=h;
+}
 
 /* ---------------- Packages ---------------- */
 async function vChunks(){
@@ -489,12 +515,23 @@ async function spanWriteDlg(id,name){
     const body={dest_dir:d,throttle_mbps:parseFloat($('#d5').value)||0};Object.assign(body,volChoice());
     await api('POST',`/api/chunks/${id}/span-write`,body);
     toast('Segment write started — see Jobs. When it verifies, eject & label the tape, mount the next, then click again.',1);loc('jobs')})}
-async function doBuild(id){try{await api('POST',`/api/chunks/${id}/build`);toast('Build started — see Jobs');loc('jobs')}catch(e){toast(e.message,1)}}
+async function doBuild(id){
+  const adv=await api('GET','/api/space-advice?chunk_id='+id).catch(()=>null);
+  const p=(adv&&adv.package)||{};
+  const body=`<h1>Build package</h1>
+    <div class="panel">
+      <div class="dim" style="margin-bottom:4px">Peak scratch while this ${p.encrypted?'encrypted':'plaintext'} package builds:</div>
+      ${stagingNeedHTML(adv&&adv.staging_dir, p.staging_free_bytes, p.staging_peak_bytes, p.staging_verdict)}
+      <div class="dim" style="font-size:11.5px;margin-top:6px">This scratch is freed once the package is written — the next build reuses it.</div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="go()">Build now</button></div>`;
+  dlg(body,async()=>{await api('POST',`/api/chunks/${id}/build`);toast('Build started — see Jobs');loc('jobs')});
+}
 async function writeDlg(id,name,payload){
   const vols=await api('GET','/api/volumes')||[];
   dlg(`<h1>Write ${esc(name)}</h1>
   <label>Destination (LTFS tape mount, archive drive, burn folder)</label>
-  <input id="d1" class="full" placeholder="T:\\  or  /mnt/ltfs  or  E:\\archive" oninput="checkDest(${payload||0})">
+  <input id="d1" class="full" placeholder="T:\\  or  /mnt/ltfs  or  E:\\archive" oninput="checkDest(${id})">
   <div id="dwarn"></div>
   ${volPicker(vols)}
   <div class="row"><div style="flex:1"><label>RAM buffer GB (blank = setting)</label><input id="d2" class="full" type="number" step="0.5" placeholder="16"></div>
@@ -507,13 +544,12 @@ async function writeDlg(id,name,payload){
     Object.assign(body,volChoice());
     await api('POST',`/api/chunks/${id}/write`,body);
     toast('Write started — see Jobs');loc('jobs')});}
-let destT;function checkDest(payload){clearTimeout(destT);destT=setTimeout(async()=>{
+let destT;function checkDest(id){clearTimeout(destT);destT=setTimeout(async()=>{
   const p=$('#d1')&&$('#d1').value.trim();const el=$('#dwarn');if(!el)return;
-  if(!p||!payload){el.innerHTML='';return}
-  try{const r=await api('GET','/api/pathinfo?path='+encodeURIComponent(p));
-    if(r.free_bytes!=null && r.free_bytes < payload*1.1)
-      el.innerHTML=`<div style="color:#8a6d10;font:12px var(--mono);margin:4px 0">⚠ Low space: ${GB(r.free_bytes)} GB free at destination, need ≥ ${GB(payload*1.1)} GB (110% of payload). Write may fail.</div>`;
-    else el.innerHTML='';
+  if(!p){el.innerHTML='';return}
+  try{const adv=await api('GET',`/api/space-advice?chunk_id=${id}&dest=${encodeURIComponent(p)}`);const d=adv.dest||{};
+    el.innerHTML=`<div class="dim" style="font:12px var(--mono);margin:4px 0">destination · needs ≥ <b>${GBn(d.package_bytes)} GB</b> · has ${GBn(d.free_bytes)} GB ${spaceChip(d.verdict)}</div>`
+      +(d.verdict==='red'?`<div style="color:var(--bad);font-size:12px">Not enough room on the destination — free space, or pick another drive.</div>`:'');
   }catch(e){el.innerHTML=''}
 },300)}
 async function doVerify(id){try{const r=await api('POST',`/api/chunks/${id}/verify`,{});

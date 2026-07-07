@@ -202,6 +202,14 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, map[string]any{"config": cfg, "keystore_status": app.KeystoreStatus()})
 	})
+	// Space advice — the single source of truth for "do I have room?" so the UI
+	// never re-implements the staging math. See space.go.
+	mux.HandleFunc("GET /api/space-advice", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		cid, _ := strconv.Atoi(q.Get("collection_id"))
+		chid, _ := strconv.Atoi(q.Get("chunk_id"))
+		jsonOut(w, app.SpaceAdvice(cid, chid, q.Get("dest")))
+	})
 
 	// collections + scan
 	register(mux, "GET /api/collections", func(w http.ResponseWriter, r *http.Request) {
