@@ -254,12 +254,13 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 	chunks, _, _ := a.volumeChunks(v)
 
 	type invPkg struct {
-		Name           string     `json:"name"`
-		Bytes          int64      `json:"bytes"`
-		Encrypted      bool       `json:"encrypted"`
-		Spanned        bool       `json:"spanned,omitempty"`
-		LastVerifiedAt *time.Time `json:"last_verified_at,omitempty"`
-		Files          []string   `json:"files"`
+		Name           string         `json:"name"`
+		Bytes          int64          `json:"bytes"`
+		Encrypted      bool           `json:"encrypted"`
+		Spanned        bool           `json:"spanned,omitempty"`
+		LastVerifiedAt *time.Time     `json:"last_verified_at,omitempty"`
+		Integrity      *BuildVerified `json:"integrity,omitempty"` // effective integrity this package was built with
+		Files          []string       `json:"files"`
 	}
 	pkgs := make([]invPkg, 0, len(chunks))
 	for _, c := range chunks {
@@ -274,7 +275,7 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 			files = append(files, cf.RelPath)
 		}
 		pkgs = append(pkgs, invPkg{Name: c.Name, Bytes: c.EncBytes, Encrypted: c.Encrypted,
-			Spanned: c.Spanned, LastVerifiedAt: lv, Files: files})
+			Spanned: c.Spanned, LastVerifiedAt: lv, Integrity: c.BuildVerified, Files: files})
 	}
 
 	frec := map[string]any{"mnemosyne_finalization": 1, "generated_utc": now.Format(time.RFC3339),

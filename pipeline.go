@@ -52,7 +52,8 @@ type Config struct {
 	FinalizeVerifyDays    int               `json:"finalize_verify_days"`           // finalize: every copy on the volume must have verified within this many days
 	BufferPct             float64           `json:"buffer_pct"`                     // finalize: min % of the drive left free to seal — full drives die young
 	SmartBlockFinalize    bool              `json:"smart_block_finalize"`           // finalize: block when SMART data exists and is failing/advisory
-	BuildVerify           string            `json:"build_verify"`                   // "full" (default): prove contents + decrypt round-trip; "fast": skip both (unproven)
+	BuildVerify           string            `json:"build_verify"`                   // integrity tier: "full" (contents + round-trip), "contents", or "none" (unproven, amber)
+	RoutineVerifyLevel    string            `json:"routine_verify_level"`           // default routine re-verify level: "B" (full) or "C" (sample)
 	BarcodeScheme         string            `json:"barcode_scheme"`                 // prefix for auto-assigned volume barcodes, e.g. "NSP" -> NSP-0001
 	TapeTool              string            `json:"tape_tool"`                      // path to a tape-diagnostics CLI (itdt/tapeinfo/sg_logs/hp_ltt); blank = auto-probe PATH
 	TapeDevice            string            `json:"tape_device"`                    // tape drive device path, e.g. \\.\Tape0, /dev/nst0, /dev/sg1; blank = per-OS default
@@ -62,21 +63,16 @@ type Config struct {
 }
 
 func defaultConfig() Config {
+	// Defaults are the ARCHIVAL preset: full build-verify, 10% par2, routine level
+	// B, 12-month verify window (read-back is always on).
 	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, Par2ExtraArgs: "-t0", BufferGB: 8, BlockMB: 64,
 		VerifyDueMonths: 12, RequiredCopies: 2, FinalizeVerifyDays: 30, BufferPct: 5, SmartBlockFinalize: true,
-		BuildVerify: "full", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
+		BuildVerify: "full", RoutineVerifyLevel: "B", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
 }
 
-// buildVerifyMode normalises the configured build-verification level. Anything
-// other than an explicit "fast" means "full": archival correctness is the
-// default, so a blank/legacy/typo'd value proves the chain rather than skipping
-// it. Speed is the deliberate opt-out.
-func (cfg Config) buildVerifyMode() string {
-	if strings.EqualFold(strings.TrimSpace(cfg.BuildVerify), "fast") {
-		return "fast"
-	}
-	return "full"
-}
+// buildVerifyMode normalises the configured build-verification tier to one of
+// full / contents / none (archival correctness is the default for blank/legacy).
+func (cfg Config) buildVerifyMode() string { return normBuildVerify(cfg.BuildVerify) }
 
 const fastBuildWarning = "FAST build: stage-vs-source and decrypt round-trip verification were SKIPPED — this package's contents and decryptability are UNPROVEN."
 
@@ -447,7 +443,7 @@ type PlanResult struct {
 func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 int, encrypted bool) (*PlanResult, error) {
 	cfg := a.LoadConfig()
 	if par2 <= 0 {
-		par2 = cfg.Par2Redundancy
+		par2 = a.effectiveIntegrity(collectionID).Par2Redundancy // archive override, else global preset
 	}
 	target := MediaPresets[mediaKind]
 	if targetGB > 0 {
@@ -760,11 +756,18 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	// were previously only fingerprinted — the tar contains the source byte-exact
 	// (stage_verify) and the ciphertext decrypts back to the tar (crypt_verify).
 	// "fast" skips both and records the honest amber warning. See buildVerifyMode.
-	mode := cfg.buildVerifyMode()
-	bv := &BuildVerified{Mode: mode}
-	if mode == "fast" {
+	// The build-verify tier comes from this archive's EFFECTIVE integrity (its own
+	// override, else the global preset), and the resulting attestation records the
+	// full effective settings so the medium self-documents its assurance level.
+	iv := a.effectiveIntegrity(c.CollectionID)
+	mode := iv.BuildVerify
+	bv := &BuildVerified{Mode: mode, Preset: iv.Preset, Par2Percent: c.Par2,
+		RoutineVerifyLevel: iv.RoutineVerifyLevel, VerifyDueMonths: iv.VerifyDueMonths, ReadbackAfterWrite: true}
+	if mode == BuildVerifyNone {
 		bv.Warning = fastBuildWarning
 	}
+	doContents := mode == BuildVerifyFull || mode == BuildVerifyContents
+	doRoundtrip := mode == BuildVerifyFull
 
 	progress(0.05, "tar…")
 	t := time.Now()
@@ -787,9 +790,9 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 
 	// (1) STAGE-VS-SOURCE — prove the package CONTAINS the source, byte-exact,
 	// by stream-reading the tar and hashing every member against the catalog.
-	// This runs before encryption (and before the tar may be deleted). "fast"
+	// This runs before encryption (and before the tar may be deleted). "none"
 	// skips it; contents stay unproven.
-	if mode == "full" {
+	if doContents {
 		t = time.Now()
 		if err := verifyTarContents(tarPath, c.Files); err != nil {
 			return fail(err)
@@ -826,9 +829,9 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 
 		// (2) DECRYPT ROUND-TRIP — prove the ciphertext actually decrypts back to
 		// the verified tar. gpg -d is piped straight into a SHA-256 hasher, so no
-		// plaintext ever lands on disk; the result must equal tar_hash. "fast"
-		// skips it; decryptability stays unproven.
-		if mode == "full" {
+		// plaintext ever lands on disk; the result must equal tar_hash. Only the
+		// full tier runs it; otherwise decryptability stays unproven.
+		if doRoundtrip {
 			t = time.Now()
 			pass := chunkPass
 			if buildDecryptPassphraseHook != nil { // test-only: simulate a corrupt encryption step
@@ -861,8 +864,8 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 		finish("stage", t, 0.72)
 		// A plaintext package has no encryption step to corrupt: its payload IS the
 		// stage-verified tar, so the decrypt round-trip holds true by identity when
-		// contents were proven. It is left false in fast mode (contents unproven).
-		if mode == "full" {
+		// contents were proven. Left false when contents were not proven.
+		if doRoundtrip {
 			bv.DecryptRoundtrip = true
 		}
 	}

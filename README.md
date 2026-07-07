@@ -318,6 +318,43 @@ source → [contents-verified] tar → [roundtrip-verified] ciphertext
   verified copies as *under-protected* — *because two copies in two locations
   is the actual goal, and gaps should be visible at a glance.*
 
+### 🎛 How much integrity do I need?
+
+Mnemosyne has many independent integrity knobs — build-verify depth, par2
+redundancy, routine verify level, the re-verify window, read-back. Rather than
+make you reason about each one, three **presets** bundle them into a single
+comprehensible choice (and every knob stays individually editable — edit one and
+the preset reads *Custom*):
+
+| Preset | build verify | par2 | routine verify level | verify due | read-back after write |
+|---|---|---|---|---|---|
+| ARCHIVAL (default) | contents + decrypt round-trip | 10% | B (full) | 12 months | always |
+| BALANCED | contents only | 10% | C routine / B on due date | 12 months | always |
+| FAST | none (amber-flagged) | 5% | C | 24 months | always |
+
+**Use ARCHIVAL for anything irreplaceable; use FAST only for re-creatable data.**
+BALANCED sits between: it still proves each package contains your files, but
+routine re-checks sample the ends (level C) and only go full (level B) on the
+due date. FAST *skips proving the tar contains your files* — a package could
+preserve a mistake without warning — which is why it is flagged amber
+everywhere and reserved for data you could simply regenerate.
+
+The preset is selectable globally in **Settings → Integrity**, and overridable
+**per archive** (an Integrity field beside the archive's protection Profile — the
+Profile says *how many copies*, Integrity says *how hard each copy is proven*).
+Lowering integrity anywhere requires an explicit amber confirmation.
+
+**Read-back after write is never configurable off.** Every write is immediately
+re-read and hash-checked before the copy is trusted — there is no toggle to
+disable it, because writing unverified media would defeat the entire point of a
+backup. (If you go looking for that switch, the UI tells you so where it would
+be.)
+
+Each package's **manifest** and each **volume inventory** record the effective
+integrity settings used at build/write time (in the `build_verified` block), so
+the media self-document how much assurance they were created with — a FAST-built
+package says so, on the medium, decades from now.
+
 ### 🎚 Tiered verification — levels A / B / C
 
 Re-hashing a 100 TB mirror set in full, on a schedule, is often impractical — so

@@ -157,6 +157,7 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <a href="#home" data-v="home">Home</a>
   <a href="#vault" data-v="vault">Vault</a>
   <a href="#protection" data-v="protection">Protection</a>
+  <a href="#integrity" data-v="integrity">Integrity</a>
   <a href="#packages" data-v="packages">Packages</a>
   <a href="#burn" data-v="burn">Burn</a>
   <a href="#volumes" data-v="volumes">Volumes</a>
@@ -211,6 +212,7 @@ const HELP={
   home:['Home — archive health at a glance','This board shows the state of everything you keep. The strip across the top (Catalog → Package → Write → Verify) shows live totals for each stage of the pipeline and doubles as navigation — click a stage to go there. The table below breaks every archive down by package status, protection (verified copies vs. your goal), unresolved drift, and packages due for re-verification. Every number links straight to the relevant view.'],
   vault:['Vault — archives & file search','An Archive is a body of work you keep together (e.g. "Personal", "Photography Business"). Scan folders into it — every file is SHA-256 hashed at the source. Plan groups files into media-sized packages; Rescan & compare detects what changed since you backed up. The search box answers the real questions: which package and which physical volume holds a given file — searchable by path, by SHA-256 (exact or prefix, to ask "is THIS file backed up?"), by extension, and by protection status, scoped to one archive (e.g. "show me every unprotected .NEF").'],
   protection:['Protection — the 3-2-1 model, made explicit','The real 3-2-1 rule has THREE dimensions: how many copies, across how many distinct kinds of media, and how many offsite. A Profile expresses all three; you assign one to an Archive and, optionally, override it on any folder path (nearest-ancestor-wins). Every file then gets exactly one of six statuses — Unassigned, Not backed up, Partial, Complete, Over-complete, Out-of-policy — always shown as colour + icon + text. Only verified copies count toward requirements. Built-in profiles are immutable; duplicate one to start a custom policy.'],
+  integrity:['Integrity — how hard each copy is proven','The app has many independent assurance knobs — build verification depth, par2 redundancy, routine verify level, the re-verify window, read-back. This panel unifies them into three presets: ARCHIVAL (prove everything — for anything irreplaceable), BALANCED, and FAST (skip proving contents — only for re-creatable data, and flagged amber). Pick one globally or override per archive; every individual knob stays editable, at which point the preset reads "Custom". Read-back after every write is always on and cannot be disabled. Each package\'s manifest and each volume inventory record the effective settings used, so the media self-document how much assurance they were built with.'],
   packages:['Packages — the archival units','A Package is one self-contained, media-sized unit: a tar of files + par2 parity + manifest + RESTORE.txt (an OAIS AIP in plain English). The lifecycle rail reads PLANNED → BUILDING → STAGED → WRITING → WRITTEN → VERIFIED; red means FAILED. Build a package, then Write it to a volume with read-back verification. Packages too big for one medium are spanned across several, one tape at a time.'],
   burn:['Burn — the optical disc queue','Optical media can\'t stream continuously, so discs are fed one at a time. A burn queue holds one disc per package and survives reboots (a disc caught mid-burn resets to pending — it may be a coaster). Click "Burn next disc", wait, then write the package name on the physical disc. Square colours: green = done, red = failed, amber = in progress, grey = pending.'],
   volumes:['Volumes — where the bytes physically live','A Volume is a physical medium you can hold: a tape, drive, or disc, with a barcode, kind, an Onsite/Offsite flag (the "1" in 3-2-1), and free-text location ("office safe"). Each Copy records which package sits on which volume and when it last verified. Scan a barcode into the lookup box to jump straight to a medium\'s contents — no mounting needed. When a volume is done, Finalize seals it: it enforces preconditions (recent verify, free-space buffer, SMART), writes a seal record + inventory onto the medium, marks it SEALED (further writes need an audit-logged unseal), and opens the printable label — the "close the box and label it" moment.'],
@@ -254,10 +256,11 @@ function timingStr(t){if(!t)return '';const parts=[];
    shows a green stamp; "fast" shows the amber warning that contents +
    decryptability are unproven. */
 function buildVerifiedStr(c){const b=c.build_verified;if(!b)return '';
-  if(b.mode==='fast')return `<div style="font-size:11px;margin-top:2px"><span class="etag due" title="${esc(b.warning||'')}">⚠ fast build — contents & decrypt UNPROVEN</span></div>`;
+  const preset=b.preset?` <span class="dim">· ${esc(b.preset)}${b.par2_percent?' · par2 '+b.par2_percent+'%':''}</span>`:'';
+  if(b.mode==='none'||b.mode==='fast')return `<div style="font-size:11px;margin-top:2px"><span class="etag due" title="${esc(b.warning||'')}">⚠ FAST build — contents &amp; decrypt UNPROVEN</span>${preset}</div>`;
   const parts=[];if(b.contents)parts.push('contents');if(b.decrypt_roundtrip)parts.push('decrypt round-trip');
   if(!parts.length)return '';
-  return `<div class="dim" style="font-size:11px;margin-top:2px" title="stage-vs-source + decrypt round-trip proven at build">🛡 build-verified: ${parts.join(' · ')}</div>`}
+  return `<div class="dim" style="font-size:11px;margin-top:2px" title="proven at build; media self-document the effective integrity">🛡 build-verified: ${parts.join(' · ')}${preset}</div>`}
 
 /* ---- verification history + due tracking ---- */
 function latestOKTime(c){let t=null;
@@ -402,8 +405,9 @@ async function doRecompute(){try{const r=await api('POST','/api/protection/recom
    resolution. Inherited assignments render muted; explicit ones render solid. */
 let _tnodes=[];let _tcid=0;
 async function vArchiveProtection(id){
-  const [d,profs,cs]=await Promise.all([api('GET','/api/collections/'+id+'/protection'),api('GET','/api/profiles'),api('GET','/api/collections')]);
+  const [d,profs,cs,iv]=await Promise.all([api('GET','/api/collections/'+id+'/protection'),api('GET','/api/profiles'),api('GET','/api/collections'),api('GET','/api/collections/'+id+'/integrity')]);
   const res=d.protection||{}; _tnodes=res.nodes||[]; _tcid=id;
+  const ieff=(iv&&iv.effective)||{};
   const name=((cs||[]).find(c=>c.id===id)||{}).name||('Archive #'+id);
   const ap=res.archive_profile;
   window._profs=profs||[];
@@ -415,6 +419,12 @@ async function vArchiveProtection(id){
     <div class="row" style="align-items:center;gap:10px">
       <div style="flex:1">Every folder without its own assignment inherits this. ${ap?`<b>${esc(ap.name)}</b> <span class="dim">· ${esc(reqStr(ap))}</span>`:'<span class="protbadge" style="border-color:var(--idle);color:var(--idle)"><b aria-hidden="true">○</b> Unassigned</span>'}</div>
       <button class="btn" onclick="assignDlgArchive(${id},'${esc(ap?ap.id:'')}')">Assign profile…</button></div></div>
+  <div class="panel"><h2>Integrity — how hard each copy is proven</h2>
+    <div class="row" style="align-items:center;gap:10px">
+      <div style="flex:1">The Profile says how many copies; Integrity says how hard each is proven.
+        <b style="color:${ivColor(ieff.preset)}">${esc(ieff.preset||'—')}</b>
+        <span class="dim">· ${esc(IV_BV[ieff.build_verify]||ieff.build_verify||'')} · par2 ${ieff.par2_redundancy}% · verify ${esc(ieff.routine_verify_level||'')} · due ${ieff.verify_due_months}mo${iv&&iv.override?'':' · inherited (global)'}</span></div>
+      <button class="btn" onclick="integrityArchiveDlg(${id},'${esc(name)}')">Change…</button></div></div>
   <div class="panel"><h2>Folders — assign a profile to override (context action per row)</h2>
     <div class="dim" style="font-size:11.5px;margin-bottom:8px">Muted profile = inherited from an ancestor. Solid = an explicit assignment on this folder. A folder's status is the worst status among its files.</div>`;
   if(!_tnodes.length)h+='<div class="empty">No scanned files yet — scan a folder into this archive first.</div>';
@@ -479,6 +489,103 @@ async function dupProfile(id,name){try{await api('POST','/api/profiles/'+encodeU
   toast('Duplicated — edit the copy');vProtection()}catch(e){toast(e.message,1)}}
 async function delProfile(id,name){if(!confirm('Delete profile “'+name+'”? In-use profiles are refused until reassigned.'))return;
   try{await api('DELETE','/api/profiles/'+encodeURIComponent(id));toast('Profile deleted');vProtection()}catch(e){toast(e.message,1)}}
+
+/* ---------------- Integrity presets ----------------
+   Unify the assurance knobs (build verify, par2, verify level, verify due,
+   read-back) into ARCHIVAL / BALANCED / FAST without removing control. */
+const IV_BV={full:'contents + round-trip',contents:'contents only',none:'none (amber)'};
+const IV_ROWS=[
+  {k:'build_verify',label:'Build verify',fmt:v=>IV_BV[v]||v},
+  {k:'par2_redundancy',label:'par2 redundancy',fmt:v=>v+'%'},
+  {k:'routine_verify_level',label:'Routine verify level',fmt:v=>v==='B'?'B (full)':'C (sample)'},
+  {k:'verify_due_months',label:'Verify due',fmt:v=>v+' months'},
+  {k:'readback',label:'Read-back after write',fmt:()=>'always'},
+];
+const IV_ONELINERS={
+  ARCHIVAL:'Proves the tar contains your files AND decrypts back — nothing on faith. For anything irreplaceable.',
+  BALANCED:'Proves the tar contains your files; routine re-checks sample the ends, going full on the due date.',
+  FAST:'Skips proving the tar contains your files — packages could preserve a mistake. Only for re-creatable data.',
+};
+function ivRank(bv){return bv==='full'?3:bv==='contents'?2:1}
+function ivColor(preset){return preset==='FAST'?'var(--warn)':preset==='Custom'?'var(--ink-3)':'var(--act)'}
+function integrityTable(data,active){
+  const presets=data.presets||[];
+  let h='<div style="overflow-x:auto"><table><tr><th>Setting</th>';
+  for(const p of presets)h+=`<th style="text-align:center;${p.name===active?'color:var(--act)':''}">${p.name}${p.name===active?' ✓':''}</th>`;
+  h+='</tr>';
+  for(const row of IV_ROWS){
+    h+=`<tr><td class="dim">${row.label}</td>`;
+    for(const p of presets){
+      const val=row.k==='readback'?'always':p[row.k];
+      const on=p.name===active;const amber=row.k==='build_verify'&&p.build_verify==='none';
+      h+=`<td class="num" style="text-align:center;${on?'background:#2e5e4e14;font-weight:600;':''}${amber?'color:var(--warn);':''}">${esc(String(row.fmt(val)))}</td>`;
+    }
+    h+='</tr>';
+  }
+  return h+'</table></div>';
+}
+let _ivEff={},_ivPresets={};
+async function vIntegrity(){
+  const data=await api('GET','/api/integrity');
+  _ivPresets={};for(const p of (data.presets||[]))_ivPresets[p.name]=p;
+  const eff=data.effective||data.global||{};_ivEff=eff;const active=eff.preset;
+  let h=hdr('Integrity','how hard each copy is proven — presets that never remove control','integrity');
+  h+=`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
+    <h2 style="margin:0">Global integrity</h2>
+    <span class="protbadge" style="border-color:${ivColor(active)};color:${ivColor(active)}">${esc(active)}</span></div>
+    <div class="dim" style="font-size:11.5px;margin:6px 0 10px">The active preset is highlighted. Every value stays editable below — change one and the preset reads <b>Custom</b>.</div>
+    ${integrityTable(data,active)}
+    <div class="row" style="margin-top:12px">${(data.presets||[]).map(p=>`<button class="btn ${p.name==='FAST'?'ghost':''}" onclick="applyIntegrityPreset(0,'${p.name}')">${p.name}</button>`).join('')}</div>
+    <div class="dim" style="font-size:11.5px;margin-top:10px">${['ARCHIVAL','BALANCED','FAST'].map(n=>`<div style="margin:2px 0"><b style="color:${ivColor(n)}">${n}:</b> ${esc(IV_ONELINERS[n])}</div>`).join('')}</div>
+  </div>`;
+  h+=`<div class="panel" style="border-left:3px solid var(--act)"><b>Read-back after write is always on.</b> <span class="dim">Every write is immediately re-read and hash-checked before the copy is trusted — there is no toggle to disable it, because writing unverified media defeats the entire point of a backup. (Looking for that switch? This is where it would be.)</span></div>`;
+  h+=`<div class="panel"><h2>Individual knobs (advanced) — editing sets the preset to Custom</h2>
+    <div class="row">
+      <div style="flex:2"><label>Build verify</label><select id="iv_bv" class="full">
+        <option value="full"${eff.build_verify==='full'?' selected':''}>Full — contents + decrypt round-trip</option>
+        <option value="contents"${eff.build_verify==='contents'?' selected':''}>Contents only</option>
+        <option value="none"${eff.build_verify==='none'?' selected':''}>None — unproven (amber)</option></select></div>
+      <div style="flex:1"><label>par2 %</label><input id="iv_par2" class="full" type="number" min="0" value="${eff.par2_redundancy}"></div></div>
+    <div class="row"><div style="flex:2"><label>Routine verify level</label><select id="iv_rl" class="full">
+        <option value="B"${eff.routine_verify_level==='B'?' selected':''}>B — full</option>
+        <option value="C"${eff.routine_verify_level==='C'?' selected':''}>C — sample</option></select></div>
+      <div style="flex:1"><label>Verify due (months)</label><input id="iv_due" class="full" type="number" min="1" value="${eff.verify_due_months}"></div></div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="saveIntegrityKnobs(0)">Save knobs</button></div></div>`;
+  $('#view').innerHTML=h;
+}
+// Lowering integrity anywhere requires an explicit amber confirmation.
+function ivConfirmLower(targetBV,curBV,label){
+  if(ivRank(targetBV)>=ivRank(curBV))return true;
+  return confirm(`⚠ Lowering integrity${label?' for '+label:''}.\n\n${IV_ONELINERS.FAST&&targetBV==='none'?IV_ONELINERS.FAST:'Weaker build-verify means a package could preserve a mistake unproven.'}\n\nProceed?`);
+}
+async function applyIntegrityPreset(cid,name){
+  const tgt=_ivPresets[name]||{};
+  if(!ivConfirmLower(tgt.build_verify,(_ivEff||{}).build_verify,cid?'this archive':''))return;
+  try{await api('PUT',cid?`/api/collections/${cid}/integrity`:'/api/integrity',{preset:name});
+    toast('Integrity → '+name);cid?vArchiveProtection(cid):vIntegrity()}catch(e){toast(e.message,1)}
+}
+async function saveIntegrityKnobs(cid){
+  const bv=$('#iv_bv').value;
+  if(!ivConfirmLower(bv,(_ivEff||{}).build_verify,cid?'this archive':''))return;
+  try{await api('PUT',cid?`/api/collections/${cid}/integrity`:'/api/integrity',
+    {build_verify:bv,par2_redundancy:parseInt($('#iv_par2').value)||0,routine_verify_level:$('#iv_rl').value,verify_due_months:parseInt($('#iv_due').value)||12});
+    toast('Integrity saved');cid?vArchiveProtection(cid):vIntegrity()}catch(e){toast(e.message,1)}
+}
+// Per-archive override dialog (opened from the Protection page).
+async function integrityArchiveDlg(cid,name){
+  const data=await api('GET','/api/collections/'+cid+'/integrity');
+  _ivPresets={};for(const p of (data.presets||[]))_ivPresets[p.name]=p;
+  const eff=data.effective||{};_ivEff=eff;
+  dlg(`<h1>Integrity — ${esc(name)}</h1>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">${data.override?'This archive overrides the global integrity.':'Inheriting the <b>global</b> integrity ('+esc((data.global||{}).preset)+').'} Effective: <b style="color:${ivColor(eff.preset)}">${esc(eff.preset)}</b> · ${esc(IV_BV[eff.build_verify]||eff.build_verify)} · par2 ${eff.par2_redundancy}% · verify ${eff.routine_verify_level} · due ${eff.verify_due_months}mo · read-back always.</div>
+    ${integrityTable(data,eff.preset)}
+    <div class="row" style="margin-top:12px">${(data.presets||[]).map(p=>`<button class="btn ${p.name==='FAST'?'ghost':''}" onclick="applyIntegrityPreset(${cid},'${p.name}');document.querySelector('#dlg').close()">${p.name}</button>`).join('')}
+      ${data.override?`<button class="btn ghost" onclick="clearArchiveIntegrity(${cid})">Inherit global</button>`:''}</div>
+    <div class="dim" style="font-size:11px;margin-top:8px">For finer control, set knobs on the global <a href="#integrity" onclick="document.querySelector('#dlg').close()" style="color:var(--act)">Integrity panel</a>.</div>
+    <div class="row" style="margin-top:8px"><button class="btn ghost" onclick="document.querySelector('#dlg').close()">Close</button></div>`,async()=>{});
+}
+async function clearArchiveIntegrity(cid){try{await api('PUT',`/api/collections/${cid}/integrity`,{clear:true});
+  const d=$('#dlg');if(d)d.close();toast('Archive now inherits global integrity');vArchiveProtection(cid)}catch(e){toast(e.message,1)}}
 
 /* ---------------- Home / Dashboard ---------------- */
 async function vHome(){
@@ -1474,12 +1581,14 @@ async function vSettings(){
     <label>Keystore paths — one per line, minimum 2, different physical devices</label>
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
     <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Private media — encrypt the file listing (manifest) written to media, so a lost tape reveals no filenames (encrypted packages only; staging &amp; catalog stay plaintext)</label>
-    <label style="margin-top:10px">Build verification — how thoroughly each build proves the payload before you write it to media</label>
-    <select id="bvf" class="full" onchange="document.getElementById('bvwarn').style.display=this.value==='fast'?'block':'none'">
-      <option value="full" ${(cfg.build_verify||'full')!=='fast'?'selected':''}>Full (default) — prove the tar contains the source byte-exact AND the ciphertext decrypts back to it</option>
-      <option value="fast" ${cfg.build_verify==='fast'?'selected':''}>Fast — skip both proofs (faster, but contents &amp; decryptability are unproven)</option>
+    <div class="dim" style="font-size:11.5px;margin-top:10px;padding:8px 10px;border:1px solid var(--line);border-radius:6px">These are individual integrity knobs — most people just pick a preset on the <a href="#integrity" style="color:var(--act)">Integrity panel</a> (ARCHIVAL / BALANCED / FAST), globally or per archive. <b>Read-back after every write is always on and cannot be turned off here or anywhere</b> — writing unverified media would defeat the point of a backup.</div>
+    <label style="margin-top:10px">Build verification — how thoroughly each build proves the payload before you write it to media (editing → Custom preset)</label>
+    <select id="bvf" class="full" onchange="document.getElementById('bvwarn').style.display=this.value==='none'?'block':'none'">
+      <option value="full" ${(cfg.build_verify!=='contents'&&cfg.build_verify!=='none'&&cfg.build_verify!=='fast')?'selected':''}>Full — prove the tar contains the source byte-exact AND the ciphertext decrypts back to it</option>
+      <option value="contents" ${cfg.build_verify==='contents'?'selected':''}>Contents only — prove the tar contains the source; skip the decrypt round-trip</option>
+      <option value="none" ${(cfg.build_verify==='none'||cfg.build_verify==='fast')?'selected':''}>None — skip both proofs (faster, but contents &amp; decryptability are unproven)</option>
     </select>
-    <div id="bvwarn" class="err" style="display:${cfg.build_verify==='fast'?'block':'none'};margin-top:8px">⚠ Fast build skips stage-vs-source and decrypt round-trip verification. A package could archive a corrupt or undecryptable payload without warning. Full adds roughly one read pass + one decrypt pass per build — the price of never archiving a lie.</div>
+    <div id="bvwarn" class="err" style="display:${(cfg.build_verify==='none'||cfg.build_verify==='fast')?'block':'none'};margin-top:8px">⚠ None (FAST) skips proving the tar contains your files — packages could preserve a mistake with no warning. Full adds roughly one read pass + one decrypt pass per build — the price of never archiving a lie.</div>
     <div class="row"><div style="flex:1"><label>RAM buffer (GB)</label><input id="bg" class="full" type="number" step="0.5" value="${cfg.buffer_gb||8}"></div>
       <div style="flex:1"><label>Block size (MB)</label><input id="bm" class="full" type="number" value="${cfg.block_mb||64}"></div>
       <div style="flex:1"><label>par2 redundancy %</label><input id="pr" class="full" type="number" value="${cfg.par2_redundancy||10}"></div></div>
@@ -1566,7 +1675,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,packages:vChunks,burn:vBurn,volumes:vVolumes,dock:vDock,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,dock:vDock,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
 function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));

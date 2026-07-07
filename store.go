@@ -54,6 +54,11 @@ type Collection struct {
 	ID        int       `json:"id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
+	// Integrity is an optional per-archive override of the global integrity preset
+	// (nil = inherit the global setting). It sits beside the archive's protection
+	// Profile: the Profile says how many copies, Integrity says how hard each copy
+	// is proven.
+	Integrity *Integrity `json:"integrity,omitempty"`
 }
 
 type Folder struct {
@@ -251,14 +256,24 @@ type Copy struct {
 //     (no plaintext to disk) and the result matched tar_hash. For a plaintext
 //     package this is true by identity — the payload IS the verified tar.
 //
-// Mode is "full" (both checks ran) or "fast" (both skipped, Contents and
-// DecryptRoundtrip false, Warning set) — archival correctness is the default,
-// speed is the explicit opt-out.
+// Mode is "full" (contents + decrypt round-trip), "contents" (contents only), or
+// "none" (both skipped, Contents and DecryptRoundtrip false, Warning set) — the
+// three build-verify tiers of the integrity presets.
+//
+// The remaining fields ATTEST the effective integrity settings this package was
+// built with (preset, par2 %, routine verify level, verify-due window, and the
+// always-on read-back), so the on-medium manifest self-documents how much
+// assurance the media were created with.
 type BuildVerified struct {
-	Mode             string `json:"mode"`
-	Contents         bool   `json:"contents"`
-	DecryptRoundtrip bool   `json:"decrypt_roundtrip"`
-	Warning          string `json:"warning,omitempty"`
+	Mode               string `json:"mode"`
+	Contents           bool   `json:"contents"`
+	DecryptRoundtrip   bool   `json:"decrypt_roundtrip"`
+	Warning            string `json:"warning,omitempty"`
+	Preset             string `json:"preset,omitempty"`               // ARCHIVAL | BALANCED | FAST | Custom
+	Par2Percent        int    `json:"par2_percent,omitempty"`         // par2 redundancy the payload carries
+	RoutineVerifyLevel string `json:"routine_verify_level,omitempty"` // routine re-verify level (B | C)
+	VerifyDueMonths    int    `json:"verify_due_months,omitempty"`    // re-verify window
+	ReadbackAfterWrite bool   `json:"readback_after_write,omitempty"` // always true — writing unverified media is refused
 }
 
 // DockDrive is one legacy drive processed in a dock session: which volume it
@@ -640,6 +655,21 @@ func (s *Store) Collection(id int) *Collection {
 		}
 	}
 	return nil
+}
+
+// SetCollectionIntegrity sets (or clears, with nil) an archive's integrity
+// override.
+func (s *Store) SetCollectionIntegrity(id int, iv *Integrity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.c.Collections {
+		if c.ID == id {
+			c.Integrity = iv
+			_ = s.save()
+			return nil
+		}
+	}
+	return fmt.Errorf("archive %d not found", id)
 }
 
 func (s *Store) AddFolder(collectionID int, path string) *Folder {

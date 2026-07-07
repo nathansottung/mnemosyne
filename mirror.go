@@ -320,11 +320,12 @@ func (a *App) writeVolumeInventory(destDir string, vol *Volume) (string, error) 
 		Size    int64  `json:"size_bytes"`
 	}
 	type invArchive struct {
-		ArchiveID int       `json:"archive_id"`
-		Archive   string    `json:"archive"`
-		Chunk     string    `json:"chunk"`
-		Mirror    bool      `json:"mirror"`
-		Files     []invFile `json:"files"`
+		ArchiveID int            `json:"archive_id"`
+		Archive   string         `json:"archive"`
+		Chunk     string         `json:"chunk"`
+		Mirror    bool           `json:"mirror"`
+		Integrity *BuildVerified `json:"integrity,omitempty"` // built packages attest their effective integrity
+		Files     []invFile      `json:"files"`
 	}
 	var archives []invArchive
 	var totalFiles int
@@ -351,7 +352,7 @@ func (a *App) writeVolumeInventory(destDir string, vol *Volume) (string, error) 
 		if coll := a.Store.Collection(c.CollectionID); coll != nil {
 			name = coll.Name
 		}
-		archives = append(archives, invArchive{ArchiveID: c.CollectionID, Archive: name, Chunk: c.Name, Mirror: c.Mirror, Files: files})
+		archives = append(archives, invArchive{ArchiveID: c.CollectionID, Archive: name, Chunk: c.Name, Mirror: c.Mirror, Integrity: c.BuildVerified, Files: files})
 	}
 
 	snap := map[string]any{

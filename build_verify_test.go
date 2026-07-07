@@ -204,9 +204,10 @@ func TestBuildVerify_FastModeSkipsAndWarns(t *testing.T) {
 		t.Fatalf("fast build must SUCCEED (checks skipped): %v", err)
 	}
 	c = app.Store.Chunk(c.ID)
-	if c.BuildVerified == nil || c.BuildVerified.Mode != "fast" ||
+	// Legacy build_verify="fast" now normalises to the "none" tier (both proofs off).
+	if c.BuildVerified == nil || c.BuildVerified.Mode != "none" ||
 		c.BuildVerified.Contents || c.BuildVerified.DecryptRoundtrip {
-		t.Fatalf("fast build must record mode:fast with both proofs false: %+v", c.BuildVerified)
+		t.Fatalf("fast build must record mode:none with both proofs false: %+v", c.BuildVerified)
 	}
 	if c.BuildVerified.Warning == "" {
 		t.Error("fast build must carry an explicit amber warning")

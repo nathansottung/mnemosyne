@@ -62,6 +62,11 @@ tape.go        TapeCheck: optional tape-drive diagnostics (TapeAlert + LOG SENSE
 label.go       volumeLabelHTML: a self-contained printable volume label —
                Code128 of the barcode + QR of the volume ID + human identity.
 recoverykit.go Recovery Kit export (README + inventory + QR cards + runbook).
+integrity.go   Named integrity presets (ARCHIVAL/BALANCED/FAST) unifying the
+               build-verify tier, par2 %, routine verify level, verify-due window
+               and (always-on) read-back into one choice — global or per-archive
+               (Collection.Integrity), with the effective settings attested into
+               each package's build_verified block.
 browse.go      Read-only server-side folder browser (GET /api/browse) powering
                the path picker: lists a directory's immediate subfolders only,
                never file contents, and only where the operator navigates.

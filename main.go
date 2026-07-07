@@ -376,6 +376,46 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, map[string]any{"config": cfg, "keystore_status": app.KeystoreStatus()})
 	})
+	// Integrity presets — unify the assurance knobs into ARCHIVAL/BALANCED/FAST,
+	// globally or per archive. Individual knobs stay editable (→ "Custom").
+	mux.HandleFunc("GET /api/integrity", func(w http.ResponseWriter, r *http.Request) {
+		cid, _ := strconv.Atoi(r.URL.Query().Get("collection_id"))
+		jsonOut(w, app.integrityView(cid))
+	})
+	mux.HandleFunc("PUT /api/integrity", func(w http.ResponseWriter, r *http.Request) {
+		iv, err := app.applyGlobalIntegrity(body(r))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		app.Store.Log("integrity", fmt.Sprintf("global → %s (build_verify=%s, par2=%d%%, routine=%s, due=%dmo)",
+			iv.Preset, iv.BuildVerify, iv.Par2Redundancy, iv.RoutineVerifyLevel, iv.VerifyDueMonths))
+		jsonOut(w, app.integrityView(0))
+	})
+	register(mux, "GET /api/collections/{id}/integrity", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		if app.Store.Collection(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		jsonOut(w, app.integrityView(id))
+	})
+	register(mux, "PUT /api/collections/{id}/integrity", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		c := app.Store.Collection(id)
+		if c == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		iv, err := app.applyArchiveIntegrity(id, body(r))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		app.Store.Log("integrity", fmt.Sprintf("%s → %s (build_verify=%s, par2=%d%%)", c.Name, iv.Preset, iv.BuildVerify, iv.Par2Redundancy))
+		jsonOut(w, app.integrityView(id))
+	})
+
 	// Space advice — the single source of truth for "do I have room?" so the UI
 	// never re-implements the staging math. See space.go.
 	mux.HandleFunc("GET /api/space-advice", func(w http.ResponseWriter, r *http.Request) {
