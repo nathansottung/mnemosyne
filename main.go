@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +64,12 @@ func defaultDataDir() string {
 // ---- helpers ------------------------------------------------------------
 
 func jsonOut(w http.ResponseWriter, v any) {
+	// A nil slice marshals to `null`, which makes the browser blow up on
+	// `.length`/`.map` for an empty list (e.g. an empty catalog). Emit `[]` so
+	// every list endpoint is always a safe array.
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice && rv.IsNil() {
+		v = []any{}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }

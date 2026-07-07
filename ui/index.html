@@ -237,10 +237,10 @@ async function lamp(){try{const p=await api('GET','/api/preflight');const l=$('#
 async function vHome(){
   const [cs,chunks,cfgr,pre]=await Promise.all([
     api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/preflight')]);
-  const archives=cs||[]; const pkgs=chunks||[]; const cfg=cfgr.config||{};
+  const archives=cs||[]; const pkgs=chunks||[]; const cfg=(cfgr&&cfgr.config)||{};
   const required=cfg.required_copies||2; const months=cfg.verify_due_months||12;
   // Empty catalog → guided first run.
-  if(!archives.length){ $('#view').innerHTML=gettingStarted(cfg,pre,archives,pkgs); return; }
+  if(!archives.length){ $('#view').innerHTML=gettingStarted(cfg,pre||{},archives,pkgs); return; }
   const totalFiles=archives.reduce((a,c)=>a+(c.files||0),0);
   const written=pkgs.filter(c=>currentCopies(c).length>0).length;
   const verified=pkgs.filter(c=>verifiedCopies(c)>0).length;
@@ -313,8 +313,9 @@ function gettingStarted(cfg,pre,archives,pkgs){
 
 /* ---------------- Vault (archives) ---------------- */
 async function vVault(){
-  const [cs,chunksAll,cfgr]=await Promise.all([api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config')]);
-  const cfg=cfgr.config||{}; const months=cfg.verify_due_months||12; const required=cfg.required_copies||2;
+  let [cs,chunksAll,cfgr]=await Promise.all([api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config')]);
+  cs=cs||[]; chunksAll=chunksAll||[];
+  const cfg=(cfgr&&cfgr.config)||{}; const months=cfg.verify_due_months||12; const required=cfg.required_copies||2;
   const due=dueCount(chunksAll,months);
   const under=(chunksAll||[]).filter(c=>currentCopies(c).length>0&&verifiedCopies(c)<required).length;
   let h=`${hdr('Vault','catalog · every file hashed at the source','vault')}
