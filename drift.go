@@ -2,9 +2,12 @@ package main
 
 // drift.go — inventory reconciliation. Compare a collection's source folders as
 // they are NOW against what its chunks actually hold, and classify every path:
-// UNCHANGED, NEW, MODIFIED, MISSING, MOVED. Different file types drift for
-// different reasons, so the per-extension table is the headline and sidecar
-// types (e.g. .xmp) are muted out of the alarm totals.
+// UNCHANGED, NEW, MODIFIED, MISSING, MOVED. The NEW state (a file present on
+// disk but not yet in any package) is surfaced to users as UNARCHIVED; the
+// stored state value stays "NEW" so old drift reports keep loading — the UI/docs
+// map it for display. Different file types drift for different reasons, so the
+// per-extension table is the headline and sidecar types (e.g. .xmp) are muted
+// out of the alarm totals.
 
 import (
 	"fmt"
@@ -95,6 +98,14 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 		}
 		vols := chunkVolumes(c, volm)
 		for _, cf := range c.Files {
+			// Adopted packages carry file listings with no source-folder linkage
+			// (no File record, so FileID 0 → empty folder path). They describe
+			// contents ON media, not files on disk, so they take no part in the
+			// disk-vs-backup drift comparison — skip them to avoid bogus MISSING.
+			folder := folderPath[fileFolder[cf.FileID]]
+			if folder == "" {
+				continue
+			}
 			h := cf.Hash
 			if h == "" {
 				h = preHash[cf.FileID]
@@ -103,7 +114,7 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 			if rel == "" {
 				rel = fileRel[cf.FileID]
 			}
-			abs := filepath.Join(folderPath[fileFolder[cf.FileID]], filepath.FromSlash(rel))
+			abs := filepath.Join(folder, filepath.FromSlash(rel))
 			b := &backed{abs: abs, rel: rel, hash: h, chunk: c.Name, vols: vols}
 			backedByPath[abs] = b
 			if h != "" {

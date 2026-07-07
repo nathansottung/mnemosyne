@@ -2,11 +2,12 @@ package main
 
 // span.go — spanning a single chunk whose payload is larger than one medium.
 //
-// Doctrine preserved: the payload (.tar.gpg) is byte-split into segment files
-// <chunk>.segNNN sized to the medium; par2 is still computed over the WHOLE
-// payload at build time; restore is rejoin (copy /b | cat) then the usual
-// par2 -> gpg -> tar. Each segment is streamed through the ring buffer and
-// read-back verified, so every tape proves it holds its verified bytes.
+// Doctrine preserved: the payload (payloadName: <chunk>.tar.gpg when encrypted,
+// <chunk>.tar when not) is byte-split into segment files <chunk>.segNNN sized to
+// the medium; par2 is still computed over the WHOLE payload at build time;
+// restore is rejoin (copy /b | cat) then the usual par2 -> gpg -> tar. Each
+// segment is streamed through the ring buffer and read-back verified, so every
+// tape proves it holds its verified bytes.
 
 import (
 	"fmt"
@@ -51,15 +52,23 @@ func planSegments(payloadBytes, target int64) []Segment {
 	return out
 }
 
-func par2SetFiles(dir, name string) []string {
-	m, _ := filepath.Glob(filepath.Join(dir, name+".tar.gpg*.par2"))
-	sort.Strings(m)
-	return m
+// par2SetFiles returns the par2 set beside the payload, whose names follow the
+// payload (<payload>.par2, <payload>.volNNN+MM.par2). It tries the current
+// payload name first, then the legacy .tar.gpg name so a plaintext package built
+// before the rename still resolves its <name>.tar.gpg.par2 set.
+func par2SetFiles(dir string, c *Chunk) []string {
+	for _, n := range payloadNameCandidates(c) {
+		if m, _ := filepath.Glob(filepath.Join(dir, n+"*.par2")); len(m) > 0 {
+			sort.Strings(m)
+			return m
+		}
+	}
+	return nil
 }
 
-func par2SetSize(dir, name string) int64 {
+func par2SetSize(dir string, c *Chunk) int64 {
 	var total int64
-	for _, m := range par2SetFiles(dir, name) {
+	for _, m := range par2SetFiles(dir, c) {
 		if st, err := os.Stat(m); err == nil {
 			total += st.Size()
 		}
@@ -72,7 +81,7 @@ func par2SetSize(dir, name string) int64 {
 // ride on the last data tape if they fit, otherwise they get their own tape.
 func (a *App) finalizeSegments(c *Chunk, work string) {
 	segs := planSegments(c.EncBytes, c.TargetBytes)
-	par2Total := par2SetSize(work, c.Name)
+	par2Total := par2SetSize(work, c)
 	last := segs[len(segs)-1]
 	const sidecarReserve = 512 * 1024 // manifest + RESTORE.txt cushion
 	if last.Bytes+par2Total+sidecarReserve > c.TargetBytes {
@@ -138,7 +147,10 @@ func (a *App) SpanWriteNext(id int, destDir string, bufferGB float64, blockMB in
 	seg := &c.Segments[segIdx]
 	seg.VolumeID = volumeID
 	N := len(c.Segments)
-	payload := filepath.Join(c.StagedDir, c.Name+".tar.gpg")
+	payload := payloadPathIn(c.StagedDir, c)
+	if payload == "" {
+		return nil, fmt.Errorf("staged payload for %s missing under %s", c.Name, c.StagedDir)
+	}
 	destChunk := filepath.Join(destDir, c.Name)
 	if err := os.MkdirAll(destChunk, 0o755); err != nil {
 		return nil, err
@@ -155,7 +167,7 @@ func (a *App) SpanWriteNext(id int, destDir string, bufferGB float64, blockMB in
 	if seg.Par2 {
 		// Dedicated par2 tape.
 		progress(0.1, fmt.Sprintf("writing par2 set (tape %d/%d)", seg.Index, N))
-		if err := copyPar2Set(c.StagedDir, destChunk, c.Name); err != nil {
+		if err := copyPar2Set(c.StagedDir, destChunk, c); err != nil {
 			return fail(err)
 		}
 	} else {
@@ -187,7 +199,7 @@ func (a *App) SpanWriteNext(id int, destDir string, bufferGB float64, blockMB in
 		// par2 rides the last data tape when it wasn't given its own.
 		if seg.Index == dataSegmentCount(c.Segments) && !c.Segments[N-1].Par2 {
 			progress(0.85, "writing par2 set alongside last segment")
-			if err := copyPar2Set(c.StagedDir, destChunk, c.Name); err != nil {
+			if err := copyPar2Set(c.StagedDir, destChunk, c); err != nil {
 				return fail(err)
 			}
 		}
@@ -237,10 +249,10 @@ func (a *App) SpanWriteNext(id int, destDir string, bufferGB float64, blockMB in
 	return map[string]any{"chunk": c.Name, "segment": seg.Index, "of": N, "done": done, "complete": done == N, "message": msg}, nil
 }
 
-func copyPar2Set(stagedDir, destChunk, name string) error {
-	files := par2SetFiles(stagedDir, name)
+func copyPar2Set(stagedDir, destChunk string, c *Chunk) error {
+	files := par2SetFiles(stagedDir, c)
 	if len(files) == 0 {
-		return fmt.Errorf("no par2 files found in staged dir for %s", name)
+		return fmt.Errorf("no par2 files found in staged dir for %s", c.Name)
 	}
 	for _, src := range files {
 		dst := filepath.Join(destChunk, filepath.Base(src))
@@ -281,9 +293,11 @@ func copySidecars(stagedDir, destChunk string, c *Chunk) error {
 }
 
 // rejoinSegments concatenates <chunk>.segNNN files found in sourceDir into
-// outputDir/<chunk>.tar.gpg and copies the par2 set beside it, so the existing
-// restore path (par2 -> gpg -> tar) runs unchanged. This is the automated form
-// of the `cat seg* > payload` step RESTORE.txt documents by hand.
+// outputDir/<payload> and copies the par2 set beside it, so the existing restore
+// path (par2 -> gpg -> tar) runs unchanged. This is the automated form of the
+// `cat seg* > payload` step RESTORE.txt documents by hand. The joined file is
+// named after whichever par2 set is present (current <payload>.par2, or a legacy
+// <name>.tar.gpg.par2 set) so `par2 verify <payload>.par2` matches either way.
 func rejoinSegments(sourceDir, outputDir string, c *Chunk, progress func(float64, string)) (string, error) {
 	segs, _ := filepath.Glob(filepath.Join(sourceDir, c.Name+".seg*"))
 	if len(segs) == 0 {
@@ -298,7 +312,19 @@ func rejoinSegments(sourceDir, outputDir string, c *Chunk, progress func(float64
 	if want > 0 && len(segs) != want {
 		return "", fmt.Errorf("found %d segment files but package needs %d — some tapes are missing", len(segs), want)
 	}
-	joined := filepath.Join(outputDir, c.Name+".tar.gpg")
+	// Pick the payload base name from the par2 set actually on the media.
+	base := payloadName(c)
+	for _, cand := range payloadNameCandidates(c) {
+		if m, _ := filepath.Glob(filepath.Join(sourceDir, cand+"*.par2")); len(m) > 0 {
+			base = cand
+			break
+		}
+		if m, _ := filepath.Glob(filepath.Join(sourceDir, "*", cand+"*.par2")); len(m) > 0 {
+			base = cand
+			break
+		}
+	}
+	joined := filepath.Join(outputDir, base)
 	out, err := os.Create(joined)
 	if err != nil {
 		return "", err
@@ -318,7 +344,7 @@ func rejoinSegments(sourceDir, outputDir string, c *Chunk, progress func(float64
 		in.Close()
 	}
 	// bring the par2 set next to the joined payload for verify/repair
-	for _, glob := range []string{filepath.Join(sourceDir, c.Name+".tar.gpg*.par2"), filepath.Join(sourceDir, "*", c.Name+".tar.gpg*.par2")} {
+	for _, glob := range []string{filepath.Join(sourceDir, base+"*.par2"), filepath.Join(sourceDir, "*", base+"*.par2")} {
 		if m, _ := filepath.Glob(glob); len(m) > 0 {
 			for _, p := range m {
 				_ = copyFile(p, filepath.Join(outputDir, filepath.Base(p)))

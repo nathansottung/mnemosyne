@@ -25,6 +25,9 @@ import (
 //go:embed ui
 var uiFS embed.FS
 
+// appVersion is overridden at release time via the linker flag
+// -ldflags "-X main.appVersion=v2.1.0". It must stay a var (not a const) for the
+// -X override to take effect. See .github/workflows/release.yml.
 var appVersion = "2.0.0"
 
 func main() {
@@ -322,6 +325,24 @@ func api(mux *http.ServeMux, app *App) {
 			return err
 		}))
 	})
+	register(mux, "POST /api/chunks/{id}/rewrite-copy", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		b := body(r)
+		c := app.Store.Chunk(id)
+		if c == nil {
+			jsonErr(w, 404, fmt.Errorf("package not found"))
+			return
+		}
+		vol := int(f(b, "volume_id"))
+		if vol <= 0 {
+			jsonErr(w, 400, fmt.Errorf("volume_id required (the volume whose copy to re-write)"))
+			return
+		}
+		jsonOut(w, runJob(app, "write", "Re-write "+c.Name+" copy", func(p func(float64, string)) error {
+			_, err := app.RewriteCopy(id, vol, f(b, "buffer_gb"), int(f(b, "block_mb")), f(b, "throttle_mbps"), p)
+			return err
+		}))
+	})
 	register(mux, "POST /api/chunks/{id}/span-write", func(w http.ResponseWriter, r *http.Request) {
 		id := pathID(r)
 		b := body(r)
@@ -365,6 +386,27 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, runJob(app, "verify", "Verify campaign — "+dest, func(p func(float64, string)) error {
 			_, err := app.VerifyCampaign(dest, p)
+			return err
+		}))
+	})
+	mux.HandleFunc("POST /api/adopt", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		mount := s(b, "mount_path")
+		if mount == "" {
+			jsonErr(w, 400, fmt.Errorf("mount_path required (the mounted legacy medium)"))
+			return
+		}
+		cid := int(f(b, "collection_id"))
+		if app.Store.Collection(cid) == nil {
+			jsonErr(w, 400, fmt.Errorf("collection_id required (the archive to adopt into)"))
+			return
+		}
+		vol := resolveVolume(app, b)
+		deep, _ := b["deep"].(bool)
+		// Adoption result (adopted / skipped-duplicate / unreadable) is surfaced via
+		// the job's final label and the refreshed Packages/Volumes views.
+		jsonOut(w, runJob(app, "adopt", "Adopt media — "+mount, func(p func(float64, string)) error {
+			_, err := app.AdoptMedia(mount, cid, vol, deep, p)
 			return err
 		}))
 	})
@@ -494,6 +536,9 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		for _, c := range app.Store.Chunks(0) {
 			for _, cp := range c.Copies {
+				if cp.Superseded {
+					continue // history of a rewritten medium, not a live copy
+				}
 				if a := st[cp.VolumeID]; a != nil {
 					if !a.chunks[c.ID] {
 						a.chunks[c.ID] = true
@@ -550,7 +595,7 @@ func api(mux *http.ServeMux, app *App) {
 			row := map[string]any{"id": c.ID, "name": c.Name, "status": c.Status, "bytes": c.EncBytes,
 				"spanned": c.Spanned, "file_count": c.FileCount, "encrypted": c.Encrypted, "private_manifest": c.PrivateManifest}
 			for _, cp := range c.Copies {
-				if cp.VolumeID == v.ID {
+				if cp.VolumeID == v.ID && !cp.Superseded {
 					on = true
 					row["path"], row["last_verified_at"], row["verify_ok"] = cp.Path, cp.LastVerifiedAt, cp.VerifyOK
 				}

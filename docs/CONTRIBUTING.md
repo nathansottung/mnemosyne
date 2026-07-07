@@ -47,6 +47,11 @@ Match the surrounding code — it is intentional, not accidental:
   existing comment density and naming.
 - **UI is one vanilla-JS file** (`ui/index.html`), no build step. Keep it that
   way; changes ship by editing the file.
+- **Line endings are normalized by `.gitattributes`.** The repo root carries a
+  `.gitattributes` with `* text=auto` plus explicit `eol=lf` for `*.go`, `*.md`,
+  and `*.html`, and `eol=crlf` for `*.bat` (so `cmd.exe` parses batch files
+  correctly). Don't commit CRLF into source or docs; if a clone shows spurious
+  whole-file diffs, run `git add --renormalize .` once.
 
 ## Smoke test (manual, end-to-end)
 
@@ -87,6 +92,23 @@ toggle `private_media` and confirm no plaintext `manifest.json` on the medium).
 You can also verify the doctrine holds *without Mnemosyne* — that's the real
 test: `par2 verify` → `gpg -d` → `tar -xf` by hand on the written folder, per
 [`RESTORE_RUNBOOK.md`](RESTORE_RUNBOOK.md).
+
+## Cutting a release
+
+Releases are fully automated by [`.github/workflows/release.yml`](../.github/workflows/release.yml):
+pushing a `v*` tag cross-compiles all targets (pure Go, `CGO_ENABLED=0`), zips
+each with the docs, writes `SHA-256SUMS.txt`, and publishes a GitHub Release.
+The version is baked into the binary via `-ldflags "-X main.appVersion=<tag>"`.
+
+```bash
+# from a clean main that builds + vets + tests green:
+git tag v2.1.0
+git push --tags
+```
+
+That's the whole process — watch the **Release** workflow in the Actions tab;
+the binaries and checksums appear on the Releases page when it finishes. (Every
+push/PR also runs the **CI** workflow: vet + build + `go test ./...`.)
 
 ## PR expectations
 

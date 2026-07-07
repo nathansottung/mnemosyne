@@ -184,30 +184,45 @@ func (a *App) BurnNext(id int, progress func(float64, string)) (map[string]any, 
 		return nil, err
 	}
 
+	// Optical discs aren't picked from the volume list, so a burned disc lands on
+	// the "(unregistered)" volume — the operator can register/relabel it there.
+	copyPath := strings.TrimSpace(cfg.BurnVerifyMount)
+	if copyPath == "" {
+		copyPath = "optical disc " + c.Name
+	}
+	// recordBurnCopy records the burn result on the disc's copy and re-derives the
+	// package status. A bad burn fails the DISC (a coaster — re-burn), and marks
+	// only THIS copy failed; it never marks the package FAILED while staging or
+	// another verified copy survives.
+	recordBurnCopy := func(ok bool) {
+		a.Store.RecordCopy(c, a.Store.EnsureUnregistered().ID, copyPath, ok)
+		a.refreshChunkStatus(c)
+		a.Store.UpdateChunk(c)
+	}
+
 	verified := false
 	if mount := strings.TrimSpace(cfg.BurnVerifyMount); mount != "" {
 		set("VERIFYING", "")
 		progress(0.7, "verify "+c.Name)
-		payload := filepath.Join(mount, c.Name+".tar.gpg")
-		if _, err := os.Stat(payload); err != nil {
-			alt := filepath.Join(mount, c.Name, c.Name+".tar.gpg")
-			if _, err2 := os.Stat(alt); err2 == nil {
-				payload = alt
-			} else {
-				set("FAILED", fmt.Sprintf("burned disc unreadable: neither %s nor %s found (is the disc mounted at %s?)", payload, alt, mount))
-				a.Store.AppendVerifyEvent(c, VerifyEvent{At: time.Now().UTC(), OK: false, Path: payload, Note: "burn verify: unreadable"})
-				return nil, errors.New(disc.Detail)
-			}
+		payload := findPayload(mount, c)
+		if payload == "" {
+			set("FAILED", fmt.Sprintf("burned disc unreadable: no payload (%s, flat or in a %s/ folder) found (is the disc mounted at %s?)",
+				strings.Join(payloadNameCandidates(c), " or "), c.Name, mount))
+			a.Store.AppendVerifyEvent(c, VerifyEvent{At: time.Now().UTC(), OK: false, Path: mount, Note: "burn verify: unreadable"})
+			recordBurnCopy(false)
+			return nil, errors.New(disc.Detail)
 		}
 		h, err := hashFileHex(payload)
 		if err != nil {
 			set("FAILED", "cannot hash burned payload: "+err.Error())
 			a.Store.AppendVerifyEvent(c, VerifyEvent{At: time.Now().UTC(), OK: false, Path: payload, Note: "burn verify: " + err.Error()})
+			recordBurnCopy(false)
 			return nil, err
 		}
 		if h != c.EncHash {
 			set("FAILED", fmt.Sprintf("verify mismatch — disc=%s expected=%s (bad burn; re-burn on a fresh blank)", h, c.EncHash))
 			a.Store.AppendVerifyEvent(c, VerifyEvent{At: time.Now().UTC(), OK: false, Path: payload, Note: "burn verify: hash mismatch"})
+			recordBurnCopy(false)
 			return nil, errors.New(disc.Detail)
 		}
 		a.Store.AppendVerifyEvent(c, VerifyEvent{At: time.Now().UTC(), OK: true, Path: payload, Note: "burn verify"})
@@ -217,15 +232,8 @@ func (a *App) BurnNext(id int, progress func(float64, string)) (map[string]any, 
 	now := time.Now().UTC()
 	disc.BurnedAt = &now
 	set("DONE", "")
-	// Record this burned disc as a copy. Optical discs aren't picked from the
-	// volume list, so they land on the "(unregistered)" volume — the operator
-	// can register/relabel the disc there. verify_ok reflects whether a mount
-	// read-back actually happened.
-	copyPath := strings.TrimSpace(cfg.BurnVerifyMount)
-	if copyPath == "" {
-		copyPath = "optical disc " + c.Name
-	}
-	a.Store.RecordCopy(c, a.Store.EnsureUnregistered().ID, copyPath, verified)
+	// verify_ok reflects whether a mount read-back actually happened.
+	recordBurnCopy(verified)
 	a.Store.Log("burn", fmt.Sprintf("%s burned in %q", c.Name, q.Name))
 	progress(1.0, "done")
 	return map[string]any{"queue": q.Name, "chunk": c.Name, "status": "DONE"}, nil

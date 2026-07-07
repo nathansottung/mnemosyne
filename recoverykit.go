@@ -40,10 +40,14 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 
 	chunks := a.Store.Chunks(0)
 	keys := a.Store.KeyMetas()
+	volm := map[int]*Volume{}
+	for _, v := range a.Store.Volumes() {
+		volm[v.ID] = v
+	}
 	var warnings []string
 
 	progress(0.15, "inventory")
-	if err := os.WriteFile(filepath.Join(kit, "MEDIA_INVENTORY.md"), []byte(mediaInventoryMD(chunks)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(kit, "MEDIA_INVENTORY.md"), []byte(mediaInventoryMD(chunks, volm)), 0o644); err != nil {
 		return nil, err
 	}
 
@@ -93,19 +97,20 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 	}, nil
 }
 
-func mediaInventoryMD(chunks []*Chunk) string {
+func mediaInventoryMD(chunks []*Chunk, volm map[int]*Volume) string {
 	var b strings.Builder
 	b.WriteString("# Media Inventory\n\n")
 	b.WriteString("Generated " + time.Now().UTC().Format(time.RFC3339) + " — every package Mnemosyne has cataloged.\n\n")
-	b.WriteString("`Payload SHA-256` is the hash of the file as written to the medium (the `.tar.gpg`): ")
-	b.WriteString("the ciphertext for encrypted packages, the plain tar for unencrypted ones. It is what you check with `sha256sum` before restoring.\n\n")
+	b.WriteString("`Payload SHA-256` is the hash of the file as written to the medium: the ciphertext ")
+	b.WriteString("`<name>.tar.gpg` for encrypted packages, the plain tar `<name>.tar` for unencrypted ones ")
+	b.WriteString("(the `Payload` column gives each package's exact filename). It is what you check with `sha256sum` before restoring.\n\n")
 	if len(chunks) == 0 {
 		b.WriteString("_No packages cataloged yet._\n")
 		return b.String()
 	}
 	anyPrivate := false
-	b.WriteString("| Package | Media | Written destination | Size (bytes) | Payload SHA-256 | Encrypted | Manifest | Key ref | Files |\n")
-	b.WriteString("|-------|-------|---------------------|-------------:|-----------------|-----------|----------|---------|------:|\n")
+	b.WriteString("| Package | Payload file | Media | Written destination | Size (bytes) | Payload SHA-256 | Encrypted | Manifest | Key ref | Files |\n")
+	b.WriteString("|-------|--------------|-------|---------------------|-------------:|-----------------|-----------|----------|---------|------:|\n")
 	for _, c := range chunks {
 		dest := c.WrittenDest
 		if dest == "" {
@@ -127,8 +132,8 @@ func mediaInventoryMD(chunks []*Chunk) string {
 		if c.PrivateManifest {
 			manifest, anyPrivate = "encrypted (.gpg)", true
 		}
-		b.WriteString(fmt.Sprintf("| %s | %s | %s | %d | `%s` | %s | %s | %s | %d |\n",
-			mdCell(c.Name), mdCell(c.MediaKind), mdCell(dest), c.EncBytes, hash, enc, manifest, mdCell(key), c.FileCount))
+		b.WriteString(fmt.Sprintf("| %s | `%s` | %s | %s | %d | `%s` | %s | %s | %s | %d |\n",
+			mdCell(c.Name), payloadName(c), mdCell(c.MediaKind), mdCell(dest), c.EncBytes, hash, enc, manifest, mdCell(key), c.FileCount))
 	}
 	if anyPrivate {
 		b.WriteString("\n**Private media:** packages marked `encrypted (.gpg)` above shipped their file " +
@@ -136,7 +141,109 @@ func mediaInventoryMD(chunks []*Chunk) string {
 			"To read one, decrypt with the package's key passphrase (QR card in `keys/`):\n\n" +
 			"    gpg -d NAME.manifest.json.gpg\n")
 	}
+
+	// Copies & placement: where each package physically lives, straight from the
+	// catalog's copies and (for spanned packages) per-segment records.
+	b.WriteString("\n## Copies & placement\n\n")
+	b.WriteString("Which physical volume each package lives on, and — for spanned packages — the exact tape each segment was written to. Locate a medium here, then follow its `RESTORE.txt`.\n")
+	for _, c := range chunks {
+		b.WriteString("\n### " + c.Name + "\n\n")
+		writeCopiesTable(&b, c, volm)
+		if c.Spanned && len(c.Segments) > 0 {
+			writeSegmentsTable(&b, c, volm)
+		}
+	}
 	return b.String()
+}
+
+// volDesc renders a volume as "Label (location)" for inline placement text,
+// falling back to the raw id or "(unregistered)" when the volume is unknown.
+func volDesc(volm map[int]*Volume, id int) string {
+	if v := volm[id]; v != nil {
+		if v.Location != "" {
+			return v.Label + " (" + v.Location + ")"
+		}
+		return v.Label
+	}
+	if id == 0 {
+		return "(unregistered)"
+	}
+	return fmt.Sprintf("vol#%d", id)
+}
+
+func copyResult(cp Copy) string {
+	res := "not yet verified"
+	if cp.VerifyOK != nil {
+		if *cp.VerifyOK {
+			res = "verified ✓"
+		} else {
+			res = "FAILED ✗"
+		}
+	}
+	if cp.LastVerifiedAt != nil {
+		res += " " + cp.LastVerifiedAt.UTC().Format("2006-01-02")
+	}
+	if cp.Superseded {
+		res += " (superseded — re-written)"
+	}
+	return res
+}
+
+func writeCopiesTable(b *strings.Builder, c *Chunk, volm map[int]*Volume) {
+	if len(c.Copies) == 0 {
+		if c.Spanned {
+			b.WriteString("_Recorded as a single spanned copy once every segment is written; see segment placement below._\n")
+		} else {
+			b.WriteString("_Not yet written to any volume._\n")
+		}
+		return
+	}
+	b.WriteString("**Copies**\n\n")
+	b.WriteString("| Volume | Barcode | Kind | Location | Last verify | Path |\n")
+	b.WriteString("|--------|---------|------|----------|-------------|------|\n")
+	for _, cp := range c.Copies {
+		label, barcode, kind, loc := "(unregistered)", "—", "—", "—"
+		if v := volm[cp.VolumeID]; v != nil {
+			label = v.Label
+			if v.Barcode != "" {
+				barcode = v.Barcode
+			}
+			if v.Kind != "" {
+				kind = v.Kind
+			}
+			if v.Location != "" {
+				loc = v.Location
+			}
+		}
+		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
+			mdCell(label), mdCell(barcode), mdCell(kind), mdCell(loc), mdCell(copyResult(cp)), mdCell(cp.Path)))
+	}
+}
+
+func writeSegmentsTable(b *strings.Builder, c *Chunk, volm map[int]*Volume) {
+	b.WriteString("\n**Spanned segments** — the payload was byte-split across these media (rejoin per `RESTORE.txt`):\n\n")
+	b.WriteString("| Segment | Bytes | Hash (prefix) | Status | Volume | Destination |\n")
+	b.WriteString("|---------|------:|---------------|--------|--------|-------------|\n")
+	for _, sg := range c.Segments {
+		name := fmt.Sprintf("%d of %d", sg.Index, len(c.Segments))
+		if sg.Par2 {
+			name += " · par2 set"
+		}
+		hp := "—"
+		if sg.Hash != "" {
+			n := len(sg.Hash)
+			if n > 16 {
+				n = 16
+			}
+			hp = "`" + sg.Hash[:n] + "…`"
+		}
+		dest := sg.Dest
+		if dest == "" {
+			dest = "(not yet written)"
+		}
+		b.WriteString(fmt.Sprintf("| %s | %d | %s | %s | %s | %s |\n",
+			mdCell(name), sg.Bytes, hp, mdCell(sg.Status), mdCell(volDesc(volm, sg.VolumeID)), mdCell(dest)))
+	}
 }
 
 // mdCell keeps a value from breaking the one-line table row.
@@ -172,29 +279,35 @@ the full per-package table and `+"`RESTORE_RUNBOOK.md`"+` for the deep-dive.
 
 ## What a package looks like on a medium
 
-Each package is a small folder on its medium:
+Each package is a small folder on its medium. The payload's filename tells you
+which kind it is: **`+"`NAME.tar.gpg`"+`** (encrypted) or **`+"`NAME.tar`"+`**
+(plaintext). The `+"`.par2`"+` parity files always follow that payload name.
 
     NAME/
-      NAME.tar.gpg            the payload (see "Encrypted vs plaintext" below)
-      NAME.tar.gpg.par2       parity index (Reed–Solomon error correction)
-      NAME.tar.gpg.vol*.par2  parity blocks (typically ~10%% redundancy)
-      NAME.manifest.json      full file list, sizes, hashes, encrypted flag, key_ref
-      RESTORE.txt             package-specific copy of these steps
+      NAME.tar.gpg   or  NAME.tar   the payload (see "Encrypted vs plaintext" below)
+      <payload>.par2                parity index (Reed–Solomon error correction)
+      <payload>.vol*.par2           parity blocks (typically ~10%% redundancy)
+      NAME.manifest.json            full file list, hashes, encrypted flag, key_ref,
+                                    and payload_file (the exact payload filename)
+      RESTORE.txt                   package-specific copy of these steps
 
 There is **no compression anywhere** — what you extract is byte-identical to
 the originals.
 
 ## Encrypted vs plaintext packages — check first
 
-Open `+"`NAME.manifest.json`"+` (any text editor) and read the `+"`\"encrypted\"`"+` field,
-or check the **Encrypted** column in `+"`MEDIA_INVENTORY.md`"+`:
+Open `+"`NAME.manifest.json`"+` (any text editor) and read the `+"`\"encrypted\"`"+` field
+(or `+"`\"payload_file\"`"+`), or check the **Encrypted** / **Payload file** columns in
+`+"`MEDIA_INVENTORY.md`"+`:
 
-- **encrypted: true**  — the `+"`.tar.gpg`"+` is OpenPGP/AES-256 ciphertext.
-  Do all three steps: **repair → decrypt → extract**. You need the passphrase
-  for its `+"`key_ref`"+` (scan the matching QR in `+"`keys/`"+`, or read it from a keystore).
-- **encrypted: false** — the `+"`.tar.gpg`"+` is a *plain tar* that merely keeps the
-  `+"`.tar.gpg`"+` name so the media layout is uniform. **Skip decryption entirely.**
-  Do two steps: **repair → extract**. No key, no passphrase.
+- **encrypted: true**  — the payload is `+"`NAME.tar.gpg`"+`, OpenPGP/AES-256
+  ciphertext. Do all three steps: **repair → decrypt → extract**. You need the
+  passphrase for its `+"`key_ref`"+` (scan the matching QR in `+"`keys/`"+`, or read it from a keystore).
+- **encrypted: false** — the payload is `+"`NAME.tar`"+`, a *plain tar* (no `+"`.gpg`"+`
+  suffix, nothing to decrypt). **Skip decryption entirely.** Do two steps:
+  **repair → extract**. No key, no passphrase. (Media written by older Mnemosyne
+  versions may still name a plaintext payload `+"`NAME.tar.gpg`"+`; it is likewise a
+  plain tar — extract it directly.)
 
 ---
 
@@ -207,8 +320,11 @@ Pick any PAR2 2.0 implementation:
 - **par2cmdline** — the reference CLI (github.com/Parchive/par2cmdline)
 - **MultiPar** — Windows GUI/CLI (multipar), reads the same %%.par2 files
 
-    par2 verify NAME.tar.gpg.par2
-    par2 repair NAME.tar.gpg.par2      # only if verify reports damage
+Use the `+"`.par2`"+` next to the payload — `+"`NAME.tar.gpg.par2`"+` for an encrypted
+package, `+"`NAME.tar.par2`"+` for a plaintext one:
+
+    par2 verify NAME.tar.gpg.par2     # encrypted  (or NAME.tar.par2 for plaintext)
+    par2 repair NAME.tar.gpg.par2     # only if verify reports damage
 
 ## Step 2 — Decrypt (encrypted packages ONLY)
 
@@ -238,8 +354,8 @@ The payload is a POSIX pax/ustar tar (IEEE 1003.1), readable by:
 
     # encrypted package, after Step 2 produced NAME.tar:
     tar -xf NAME.tar
-    # plaintext package — extract the payload directly, no decryption:
-    tar -xf NAME.tar.gpg
+    # plaintext package — extract the payload (NAME.tar) directly, no decryption:
+    tar -xf NAME.tar
     # one file only (either case), give its path from the manifest:
     tar -xf NAME.tar "some/path/inside/the/archive.ext"
 
@@ -248,8 +364,9 @@ The payload is a POSIX pax/ustar tar (IEEE 1003.1), readable by:
 ## Verifying integrity without restoring
 
 `+"`NAME.manifest.json`"+` records the SHA-256 of the payload (key `+"`ciphertext_hash`"+`,
-which for plaintext packages is simply the tar's hash). Compare it with any hashing
-tool of the era:
+which for plaintext packages is simply the tar's hash) and the payload's exact
+filename (`+"`payload_file`"+`). Hash that file with any tool of the era — substitute
+`+"`NAME.tar`"+` below for a plaintext package:
 
     # Linux / macOS / Git Bash:
     sha256sum NAME.tar.gpg

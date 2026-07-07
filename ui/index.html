@@ -174,6 +174,13 @@ function emptyState(msg,actionsHTML){return `<div class="empty">${msg}${actionsH
 
 const STAGES=['PLANNED','BUILDING','STAGED','WRITING','WRITTEN','VERIFIED'];
 function rail(c){
+  // Adopted packages never went through the build/write pipeline; show them as a
+  // fully-done rail (they arrived pre-made and were hash-verified on adoption).
+  if(c.status==='ADOPTED-VERIFIED'){
+    let h='<div class="rail" title="adopted from existing media">';
+    STAGES.forEach((s,i)=>h+='<i class="done"></i>'+(i<STAGES.length-1?'<s class="done"></s>':''));
+    return h+'</div><div class="raillbl">ADOPTED · VERIFIED</div>';
+  }
   let idx=STAGES.indexOf(c.status); const dead=c.status==='FAILED';
   if(dead) idx=Math.max(1,STAGES.indexOf('STAGED')*(c.staged_dir?1:0)||1);
   if(c.status==='VERIFIED') idx=STAGES.length-1;
@@ -196,7 +203,7 @@ function latestOKTime(c){let t=null;
   for(const e of (c.verify_events||[]))if(e.ok&&(!t||e.at>t))t=e.at;
   if(!t&&c.verify_ok&&c.verified_at)t=c.verified_at;
   return t}
-function isVerifyDue(c,months){if(c.status!=='VERIFIED')return false;
+function isVerifyDue(c,months){if(c.status!=='VERIFIED'&&c.status!=='ADOPTED-VERIFIED')return false;
   const t=latestOKTime(c);if(!t)return true;
   const cut=new Date();cut.setMonth(cut.getMonth()-(months||12));return new Date(t)<cut}
 function dueCount(cs,months){return (cs||[]).filter(c=>isVerifyDue(c,months)).length}
@@ -235,9 +242,9 @@ async function vHome(){
   // Empty catalog → guided first run.
   if(!archives.length){ $('#view').innerHTML=gettingStarted(cfg,pre,archives,pkgs); return; }
   const totalFiles=archives.reduce((a,c)=>a+(c.files||0),0);
-  const written=pkgs.filter(c=>(c.copies||[]).length>0).length;
+  const written=pkgs.filter(c=>currentCopies(c).length>0).length;
   const verified=pkgs.filter(c=>verifiedCopies(c)>0).length;
-  const under=pkgs.filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+  const under=pkgs.filter(c=>currentCopies(c).length>0&&verifiedCopies(c)<required).length;
   const due=dueCount(pkgs,months);
   const byArch={}; for(const c of pkgs){(byArch[c.collection_id]=byArch[c.collection_id]||[]).push(c)}
   let h=hdr('Home','archive health at a glance','home');
@@ -259,7 +266,7 @@ async function vHome(){
     const p=byArch[a.id]||[];
     const sc={}; for(const c of p)sc[c.status]=(sc[c.status]||0)+1;
     const stamps=[...STAGES,'FAILED'].filter(s=>sc[s]).map(s=>`<span class="stamp ${s}" title="${sc[s]} ${s}">${sc[s]}</span>`).join(' ')||'<span class="dim">none yet</span>';
-    const au=p.filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+    const au=p.filter(c=>currentCopies(c).length>0&&verifiedCopies(c)<required).length;
     const prot=p.filter(c=>verifiedCopies(c)>=required).length;
     const ad=dueCount(p,months); const dr=a.drift;
     h+=`<tr>
@@ -309,7 +316,7 @@ async function vVault(){
   const [cs,chunksAll,cfgr]=await Promise.all([api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config')]);
   const cfg=cfgr.config||{}; const months=cfg.verify_due_months||12; const required=cfg.required_copies||2;
   const due=dueCount(chunksAll,months);
-  const under=(chunksAll||[]).filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+  const under=(chunksAll||[]).filter(c=>currentCopies(c).length>0&&verifiedCopies(c)<required).length;
   let h=`${hdr('Vault','catalog · every file hashed at the source','vault')}
   ${under?`<div class="panel" style="border-left:3px solid var(--bad)"><b>${under}</b> package${under>1?'s are':' is'} under-protected — fewer than ${required} verified copies. Write another copy to a volume in a different location.</div>`:''}
   ${due?`<div class="panel" style="border-left:3px solid #9a7a10"><b>${due}</b> verified package${due>1?'s':''} due for re-verification (older than ${months} months). Open <a href="#packages" style="color:var(--act)">Packages → Verify a medium</a> and re-check the tape/disc.</div>`:''}
@@ -348,19 +355,22 @@ async function vDrift(id,name){
     <button class="btn" onclick="doReconcile(${id},'${esc(name||'')}')">Rescan again</button></div>
   <div class="panel"><h2>Summary</h2><div class="row" style="gap:14px">
     <span class="stamp ${changes?'FAILED':'VERIFIED'}">${changes} changes</span>
-    <span class="dim">unchanged ${c.unchanged||0} · new ${c.new||0} · modified ${c.modified||0} · missing ${c.missing||0} · moved ${c.moved||0}</span>
+    <span class="dim">unchanged ${c.unchanged||0} · <span title="present on disk, not yet in any package">unarchived ${c.new||0}</span> · modified ${c.modified||0} · missing ${c.missing||0} · moved ${c.moved||0}</span>
     ${infoTotal?`<span class="dim">informational (excluded): ${infoTotal}</span>`:''}</div></div>
   <div class="panel"><h2>By file type — different types mean different things</h2>`;
   const rows=(d.by_ext||[]).filter(e=>!e.informational);const inf=(d.by_ext||[]).filter(e=>e.informational);
   if(!rows.length&&!inf.length)h+='<div class="empty">No differences — sources match the backup.</div>';
-  else{h+='<table><tr><th>Type</th><th class="num">Missing</th><th class="num">Modified</th><th class="num">New</th><th class="num">Moved</th></tr>';
+  else{h+='<table><tr><th>Type</th><th class="num">Missing</th><th class="num">Modified</th><th class="num" title="present on disk, not yet in any package">Unarchived</th><th class="num">Moved</th></tr>';
     for(const e of rows)h+=extRow(e);
     if(inf.length){h+='<tr><td colspan="5" class="dim" style="padding-top:8px">informational (sidecar churn — excluded from alarm totals)</td></tr>';for(const e of inf)h+=extRow(e,true);}
     h+='</table>'}
   h+='</div>';
   const items=d.items||[];
+  // State value stays "NEW" in the catalog JSON; it renders as UNARCHIVED.
+  const STATE_LABEL={MISSING:'MISSING',MODIFIED:'MODIFIED',NEW:'UNARCHIVED',MOVED:'MOVED'};
+  const STATE_HINT={NEW:'present on disk, not yet in any package'};
   for(const st of ['MISSING','MODIFIED','NEW','MOVED']){const list=items.filter(it=>it.state===st&&!it.informational);
-    if(list.length)h+=`<div class="panel"><h2>${st} (${list.length})</h2>${itemList(list)}</div>`}
+    if(list.length)h+=`<div class="panel"><h2${STATE_HINT[st]?` title="${STATE_HINT[st]}"`:''}>${STATE_LABEL[st]} (${list.length})</h2>${itemList(list)}</div>`}
   const infoItems=items.filter(it=>it.informational);
   if(infoItems.length)h+=`<div class="panel" style="opacity:.65"><h2 class="dim">Informational (${infoItems.length}) — sidecar churn, not counted</h2>${itemList(infoItems)}</div>`;
   $('#view').innerHTML=h;
@@ -417,7 +427,7 @@ async function vChunks(){
   const [cs,cfgr,vs]=await Promise.all([api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/volumes')]);
   const chunks=cs||[]; const cfg=cfgr.config||{}; const months=cfg.verify_due_months||12; const required=cfg.required_copies||2; const due=dueCount(chunks,months);
   const volmap={}; for(const r of (vs||[])){const v=r.volume;volmap[v.id]=v}
-  const under=chunks.filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+  const under=chunks.filter(c=>currentCopies(c).length>0&&verifiedCopies(c)<required).length;
   let h=`${hdr('Packages','tar → AES-256 → par2 · one package per medium (large packages span several)','packages')}
   <div class="panel"><div class="row"><button class="btn ghost" onclick="verifyCampaignDlg()">Verify a medium…</button>
     ${due?`<span class="etag due">${due} verify due</span>`:''}
@@ -427,7 +437,7 @@ async function vChunks(){
   if(!chunks.length){h+='<div class="empty">No packages yet — packages are media-sized units built from an archive&#39;s files.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="loc(&#39;vault&#39;)">Go to an Archive →</button></div></div>'}
   else{h+='<table><tr><th>Package</th><th>Lifecycle</th><th class="num">Data</th><th class="num">Files</th><th>Key</th><th></th></tr>';
     for(const c of chunks.sort((a,b)=>b.id-a.id)){
-      h+=`<tr><td><div class="mono">${esc(c.name)} <span class="etag ${c.encrypted?'enc':'plain'}">${c.encrypted?'AES-256':'plaintext'}</span>${isVerifyDue(c,months)?' <span class="etag due">verify due</span>':''}${copyTag(c,required)}</div><div class="dim" style="font-size:11.5px">${esc(c.media_kind)} · ${esc(c.src_root)}</div>
+      h+=`<tr><td><div class="mono">${esc(c.name)} <span class="etag ${c.encrypted?'enc':'plain'}">${c.encrypted?'AES-256':'plaintext'}</span>${c.adopted?' <span class="etag" title="cataloged from pre-existing media">adopted</span>':''}${c.listing_unknown?' <span class="etag due" title="contents not enumerated — restore or deep-adopt to list">listing unknown</span>':''}${isVerifyDue(c,months)?' <span class="etag due">verify due</span>':''}${copyTag(c,required)}</div><div class="dim" style="font-size:11.5px">${esc(c.media_kind)} · ${esc(c.src_root||(c.adopted?'adopted in place':''))}</div>
         ${c.build_timings?`<div class="dim mono" style="font-size:11px">${esc(timingStr(c.build_timings))}</div>`:''}
         ${ringStr(c)}
         ${segStr(c)}
@@ -588,15 +598,29 @@ function ageStr(iso){if(!iso)return 'never';const d=new Date(iso);const days=Mat
   const when=iso.slice(0,10);
   if(days<1)return when+' (today)';if(days<45)return when+` (${days}d ago)`;
   return when+` (${Math.round(days/30)}mo ago)`}
-function verifiedCopies(c){return (c.copies||[]).filter(x=>x.verify_ok===true).length}
-function copyTag(c,required){const total=(c.copies||[]).length;if(!total)return '';
+// Superseded copies are history of a failed-then-rewritten medium; they never
+// count toward redundancy, only appear in the per-package history line.
+function currentCopies(c){return (c.copies||[]).filter(x=>!x.superseded)}
+function verifiedCopies(c){return currentCopies(c).filter(x=>x.verify_ok===true).length}
+function copyMark(v){return v===true?'✓':v===false?'✗':'?'}
+function copyTag(c,required){const total=currentCopies(c).length;if(!total)return '';
   const vc=verifiedCopies(c);
   if(vc<required)return ` <span class="etag due" title="redundancy goal ${required}">under-protected (${vc} of ${required} copies)</span>`;
   return ` <span class="etag enc" title="redundancy goal ${required}">${vc} verified copies</span>`}
-function copiesLine(c,volmap){if(!(c.copies||[]).length)return '';
-  const parts=(c.copies||[]).map(cp=>{const v=volmap[cp.volume_id]||{};const mark=cp.verify_ok===true?'✓':cp.verify_ok===false?'✗':'?';
-    return `${esc(v.label||'vol#'+cp.volume_id)}${v.location?' ('+esc(v.location)+')':''} ${mark}`});
-  return `<div class="dim" style="font-size:11px">copies: ${parts.join(' · ')}</div>`}
+function copiesLine(c,volmap){const cur=currentCopies(c);const sup=(c.copies||[]).filter(x=>x.superseded);
+  if(!cur.length&&!sup.length)return '';
+  const parts=cur.map(cp=>{const v=volmap[cp.volume_id]||{};const lbl=esc(v.label||'vol#'+cp.volume_id)+(v.location?' ('+esc(v.location)+')':'');
+    let s=`${lbl} ${copyMark(cp.verify_ok)}`;
+    if(cp.verify_ok===false&&!c.spanned)
+      s+=` <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="doRewriteCopy(${c.id},${cp.volume_id},'${esc(v.label||('vol#'+cp.volume_id))}')">Re-write this copy</button>`;
+    return s});
+  let h=`<div class="dim" style="font-size:11px">copies: ${parts.join(' · ')||'<span class="dim">none current</span>'}</div>`;
+  if(sup.length)h+=`<div class="dim" style="font-size:10.5px;opacity:.65">superseded: ${sup.map(cp=>{const v=volmap[cp.volume_id]||{};return esc(v.label||'vol#'+cp.volume_id)+' '+copyMark(cp.verify_ok)}).join(' · ')}</div>`;
+  return h}
+async function doRewriteCopy(id,vol,label){
+  if(!confirm('Re-write this package to '+label+' from staging?\n\nThe failed copy is kept in history (superseded); a fresh copy is written and read-back verified.'))return;
+  try{await api('POST',`/api/chunks/${id}/rewrite-copy`,{volume_id:vol});
+    toast('Re-write started — see Jobs. When it verifies, the copy is protected again.');loc('jobs')}catch(e){toast(e.message,1)}}
 
 function volPicker(vols){
   const opts=(vols||[]).map(r=>{const v=r.volume||r;return `<option value="${v.id}">${esc(v.label)}${v.barcode?' · '+esc(v.barcode):''}${v.location?' · '+esc(v.location):''}</option>`}).join('');
@@ -620,7 +644,9 @@ async function vVolumes(){
   <div class="panel"><div class="row">
     <input id="bclookup" placeholder="Scan a barcode → jump to its contents" style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')volLookup()">
     <button class="btn ghost" onclick="volLookup()">Look up</button>
-    <button class="btn" onclick="newVolumeDlg()">Register volume…</button></div></div>
+    <button class="btn ghost" onclick="adoptDlg()">Adopt media…</button>
+    <button class="btn" onclick="newVolumeDlg()">Register volume…</button></div>
+    <div class="dim" style="font-size:11.5px;margin-top:6px">Have archives written before Mnemosyne (or by hand with tar+par2)? <b>Adopt media…</b> catalogs them in place — no rewriting.</div></div>
   <div class="panel"><h2>Registered media (${vols.length})</h2>`;
   if(!vols.length)h+='<div class="empty">No volumes yet — a volume is a physical tape/drive/disc with a barcode and location.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="newVolumeDlg()">Register volume…</button></div></div>';
   else{h+='<table><tr><th>Label</th><th>Barcode</th><th>Kind</th><th>Location</th><th class="num">Packages</th><th class="num">Bytes</th><th>Last verified</th></tr>';
@@ -661,7 +687,25 @@ function showManifest(name,m){const files=m.files||[];
     <div class="mono" style="font-size:11.5px;max-height:60vh;overflow:auto">${files.map(f=>esc(f.rel_path||f)).join('<br>')||'—'}</div></div>`;
   $('#view').innerHTML=h;
 }
+async function adoptDlg(){
+  const [colls,vols]=await Promise.all([api('GET','/api/collections'),api('GET','/api/volumes')]);
+  if(!(colls||[]).length){toast('Create an archive first (Vault → Create archive) to adopt into',1);return}
+  const collOpts=(colls||[]).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  dlg(`<h1>Adopt existing media</h1>
+    <div class="dim" style="margin-bottom:8px">Point at a mounted medium (or folder). Every payload found — <span class="mono">*.tar</span> / <span class="mono">*.tar.gpg</span>, flat or one folder deep — is hashed and cataloged as an <b>ADOPTED-VERIFIED</b> package with a copy on the chosen volume. Nothing is rewritten; already-cataloged payloads are skipped by hash.</div>
+    <label>Archive to adopt into</label><select id="d0" class="full">${collOpts}</select>
+    <label>Mounted medium / folder to scan</label><input id="d1" class="full" placeholder="T:\\ or E:\\ or /mnt/old-hdd">
+    ${volPicker(vols)}
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="ddeep" style="width:auto"> Deep adopt — list contents via <span class="mono">tar -tvf</span> (plaintext tars, or encrypted with a known key). Slower; reads each payload once.</label>
+    <div class="dim" style="font-size:11px">Without a manifest and without deep adopt, contents stay "listing unknown" until a restore.</div>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Scan &amp; adopt</button></div>`,
+  async()=>{const mount=$('#d1').value.trim();if(!mount)return;
+    const body={mount_path:mount,collection_id:parseInt($('#d0').value)||0,deep:$('#ddeep').checked};
+    Object.assign(body,volChoice());
+    await api('POST','/api/adopt',body);
+    toast('Adoption started — see Jobs; adopted packages appear here and in Packages when it finishes',1);loc('jobs')})}
 function newVolumeDlg(){dlg(`<h1>Register volume</h1>
+
   <label>Barcode (scan now — this field is focused; scan+Enter registers)</label><input id="d0" class="full" placeholder="scan or type" onkeydown="if(event.key==='Enter')go()">
   <label>Label (defaults to the barcode)</label><input id="d1" class="full" placeholder="e.g. NSP-0007">
   <div class="row"><div style="flex:1"><label>Kind</label><select id="d2" class="full"><option>TAPE</option><option>HDD</option><option>SSD</option><option>OPTICAL</option><option>OTHER</option></select></div>
@@ -761,7 +805,7 @@ async function vSettings(){
   <div class="panel"><h2>Optical burning</h2>
     <label>Burn command — <span class="mono dim">{SRC}</span> = package staged folder, <span class="mono dim">{LABEL}</span> = package name. Exit code 0 = success.</label>
     <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='ImgBurn: "C:\\Program Files (x86)\\ImgBurn\\ImgBurn.exe" /MODE BUILD /BUILDMODE DISC /SRC "{SRC}" /VOLUMELABEL "{LABEL}" /START /CLOSESUCCESS /NOIMAGEDETAILS'>
-    <label>Verify mount (optional) — after burning, hash <span class="mono dim">&lt;mount&gt;/&lt;name&gt;.tar.gpg</span> and compare to the package's enc_hash. Blank = skip.</label>
+    <label>Verify mount (optional) — after burning, hash the package's payload <span class="mono dim">&lt;mount&gt;/&lt;name&gt;.tar</span> (plaintext) or <span class="mono dim">.tar.gpg</span> (encrypted) and compare to its enc_hash. Blank = skip.</label>
     <input id="bv" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_verify_mount||'')}" placeholder="E:\\ or /mnt/optical">
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>`;
   $('#view').innerHTML=h;

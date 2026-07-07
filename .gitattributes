@@ -1,0 +1,11 @@
+# Normalize line endings so the repo is byte-stable across Windows/Unix clones.
+# Default: let Git detect text vs binary and normalize to LF in the repo.
+* text=auto
+
+# Source and docs are always LF in the repo (and in working trees).
+*.go   text eol=lf
+*.md   text eol=lf
+*.html text eol=lf
+
+# Windows batch files must stay CRLF or cmd.exe can mis-parse them.
+*.bat  text eol=crlf

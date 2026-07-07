@@ -13,11 +13,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
+
+// normPath canonicalises a filesystem path for comparison: cleaned, forward-
+// slashed, and case-folded on case-insensitive platforms (Windows). This lets
+// copy matching survive separator/case differences between how a copy's path
+// was stored and how a verify destination is later typed (e.g. T:/ vs T:\).
+func normPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = filepath.ToSlash(filepath.Clean(p))
+	if runtime.GOOS == "windows" {
+		p = strings.ToLower(p)
+	}
+	return p
+}
+
+// pathRelated reports whether a and b name the same location or one contains the
+// other, comparing at path-segment boundaries (so /a/b never matches /a/bc).
+func pathRelated(a, b string) bool {
+	a, b = normPath(a), normPath(b)
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
 
 type Collection struct {
 	ID        int       `json:"id"`
@@ -71,16 +97,22 @@ type Chunk struct {
 	VerifyOK        *bool              `json:"verify_ok"`
 	Error           string             `json:"error"`
 	Files           []ChunkFileRef     `json:"files"`
-	BuildTimings    map[string]float64 `json:"build_timings,omitempty"` // per-stage seconds: tar, hash, encrypt/stage, par2
-	VerifyEvents    []VerifyEvent      `json:"verify_events,omitempty"` // append-only integrity-check log
-	RingStats       *RingStats         `json:"ring_stats,omitempty"`    // last write's ring-buffer telemetry
-	Spanned         bool               `json:"spanned"`                 // payload split across several media
-	Segments        []Segment          `json:"segments,omitempty"`      // one per medium/tape when Spanned
-	Copies          []Copy             `json:"copies,omitempty"`        // physical copies of this chunk on registered volumes
+	BuildTimings    map[string]float64 `json:"build_timings,omitempty"`   // per-stage seconds: tar, hash, encrypt/stage, par2
+	VerifyEvents    []VerifyEvent      `json:"verify_events,omitempty"`   // append-only integrity-check log
+	RingStats       *RingStats         `json:"ring_stats,omitempty"`      // last write's ring-buffer telemetry
+	Spanned         bool               `json:"spanned"`                   // payload split across several media
+	Segments        []Segment          `json:"segments,omitempty"`        // one per medium/tape when Spanned
+	Copies          []Copy             `json:"copies,omitempty"`          // physical copies of this chunk on registered volumes
+	Adopted         bool               `json:"adopted,omitempty"`         // cataloged from pre-existing media, not built here
+	ListingUnknown  bool               `json:"listing_unknown,omitempty"` // adopted without a manifest/TOC — contents unenumerated
 	CreatedAt       time.Time          `json:"created_at"`
 	WrittenAt       *time.Time         `json:"written_at,omitempty"`
 	VerifiedAt      *time.Time         `json:"verified_at,omitempty"`
 }
+
+// Statuses a chunk can hold. ADOPTED-VERIFIED marks a package cataloged from
+// pre-existing media (payload hashed and recorded as truth) rather than built.
+const StatusAdoptedVerified = "ADOPTED-VERIFIED"
 
 // Segment is one medium's worth of a spanned chunk: a byte range of the
 // finished payload (or the par2 set on its own tape when Par2 is set). The
@@ -112,12 +144,18 @@ type Volume struct {
 
 // Copy is one physical instance of a chunk on a registered volume. Two verified
 // copies on volumes in different locations is the redundancy goal.
+//
+// Superseded marks a copy retained only for history: when a failed copy is
+// re-written to the same volume, the old record is kept (superseded=true) so the
+// verify trail is not lost, while a fresh Copy takes its place. Superseded copies
+// never count toward redundancy or the "current" per-volume copy.
 type Copy struct {
 	VolumeID       int        `json:"volume_id"`
 	Path           string     `json:"path"`
 	WrittenAt      *time.Time `json:"written_at,omitempty"`
 	LastVerifiedAt *time.Time `json:"last_verified_at,omitempty"`
 	VerifyOK       *bool      `json:"verify_ok,omitempty"`
+	Superseded     bool       `json:"superseded,omitempty"`
 }
 
 // VerifyEvent is one integrity check of a chunk's payload against its
@@ -172,7 +210,7 @@ type Audit struct {
 // the collection's chunks hold. MISSING/MODIFIED carry a restore pointer
 // (which chunk + which volumes hold the backed-up version).
 type DriftItem struct {
-	State         string   `json:"state"` // NEW MODIFIED MISSING MOVED (UNCHANGED is counted, not listed)
+	State         string   `json:"state"` // NEW MODIFIED MISSING MOVED (UNCHANGED is counted, not listed). NEW renders as UNARCHIVED in the UI/docs; the stored value stays "NEW".
 	Path          string   `json:"path"`
 	Ext           string   `json:"ext"`
 	Hash          string   `json:"hash,omitempty"`
@@ -472,9 +510,16 @@ func (s *Store) Search(q string, limit int) []map[string]any {
 			row["chunk_status"] = ch.Status
 			row["written_dest"] = ch.WrittenDest
 			row["key_ref"] = ch.KeyRef
+			// The on-medium payload filename to look for (<name>.tar / <name>.tar.gpg).
+			row["payload"] = payloadName(ch)
 			// "which volumes, verified when?" — the whole point of the feature.
+			// Superseded copies are failed-then-rewritten history, not restore
+			// sources, so they are omitted here.
 			copies := make([]map[string]any, 0, len(ch.Copies))
 			for _, cp := range ch.Copies {
+				if cp.Superseded {
+					continue
+				}
 				e := map[string]any{"path": cp.Path, "verify_ok": cp.VerifyOK, "last_verified_at": cp.LastVerifiedAt}
 				if v := vol[cp.VolumeID]; v != nil {
 					e["volume_label"], e["location"], e["kind"], e["barcode"] = v.Label, v.Location, v.Kind, v.Barcode
@@ -671,15 +716,16 @@ func (s *Store) VolumeByBarcode(barcode string) *Volume {
 
 func (s *Store) UpdateVolume(v *Volume) { s.mu.Lock(); defer s.mu.Unlock(); _ = s.save() }
 
-// RecordCopy adds or refreshes the copy of chunk c on the given volume and
-// persists. verifiedOK reflects the read-back that just happened.
+// RecordCopy adds or refreshes the current (non-superseded) copy of chunk c on
+// the given volume and persists. verifiedOK reflects the read-back that just
+// happened. A superseded copy on the same volume is left untouched as history.
 func (s *Store) RecordCopy(c *Chunk, volumeID int, path string, verifiedOK bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	ok := verifiedOK
 	for i := range c.Copies {
-		if c.Copies[i].VolumeID == volumeID {
+		if c.Copies[i].VolumeID == volumeID && !c.Copies[i].Superseded {
 			c.Copies[i].Path = path
 			c.Copies[i].LastVerifiedAt = &now
 			c.Copies[i].VerifyOK = &ok
@@ -691,35 +737,73 @@ func (s *Store) RecordCopy(c *Chunk, volumeID int, path string, verifiedOK bool)
 	_ = s.save()
 }
 
-// UpdateCopyVerify refreshes the last_verified_at/verify_ok of the copy whose
-// Path matches (or the sole copy) after a verify against that medium.
+// UpdateCopyVerify refreshes the last_verified_at/verify_ok of the current
+// (non-superseded) copy whose Path matches (or the sole current copy) after a
+// verify against that medium.
 func (s *Store) UpdateCopyVerify(c *Chunk, path string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	matched := false
+	current := 0
+	var soleIdx int
 	for i := range c.Copies {
-		p := c.Copies[i].Path
-		// base-mount vs chunk-subfolder both match (one is a prefix of the other)
-		if p != "" && path != "" && (strings.HasPrefix(p, path) || strings.HasPrefix(path, p)) {
+		if c.Copies[i].Superseded {
+			continue
+		}
+		current++
+		soleIdx = i
+		// base-mount vs chunk-subfolder both match (one contains the other),
+		// tolerant of separator/case differences across platforms.
+		if pathRelated(c.Copies[i].Path, path) {
 			v := ok
 			c.Copies[i].LastVerifiedAt, c.Copies[i].VerifyOK = &now, &v
 			matched = true
 		}
 	}
-	if !matched && len(c.Copies) == 1 {
+	if !matched && current == 1 {
 		v := ok
-		c.Copies[0].LastVerifiedAt, c.Copies[0].VerifyOK = &now, &v
+		c.Copies[soleIdx].LastVerifiedAt, c.Copies[soleIdx].VerifyOK = &now, &v
 	}
 	_ = s.save()
 }
 
-// VerifiedCopyCount returns how many copies last verified OK (spanned chunks
-// count as one copy once fully written+verified).
+// SupersedeCopy marks the current (non-superseded) copy of c on volumeID as
+// superseded — retained in history — and returns its destination folder so a
+// re-write can target the same medium. Returns "" if there is no current copy.
+func (s *Store) SupersedeCopy(c *Chunk, volumeID int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range c.Copies {
+		if c.Copies[i].VolumeID == volumeID && !c.Copies[i].Superseded {
+			c.Copies[i].Superseded = true
+			p := c.Copies[i].Path
+			_ = s.save()
+			return p
+		}
+	}
+	return ""
+}
+
+// VerifiedCopyCount returns how many current copies last verified OK (spanned
+// chunks count as one copy once fully written+verified). Superseded copies —
+// history of failed-then-rewritten media — are excluded.
 func (c *Chunk) VerifiedCopyCount() int {
 	n := 0
 	for _, cp := range c.Copies {
-		if cp.VerifyOK != nil && *cp.VerifyOK {
+		if !cp.Superseded && cp.VerifyOK != nil && *cp.VerifyOK {
+			n++
+		}
+	}
+	return n
+}
+
+// CurrentCopyCount returns how many non-superseded copies exist (verified or
+// not) — the number of live physical instances the catalog tracks.
+func (c *Chunk) CurrentCopyCount() int {
+	n := 0
+	for _, cp := range c.Copies {
+		if !cp.Superseded {
 			n++
 		}
 	}

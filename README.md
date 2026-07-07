@@ -1,5 +1,7 @@
 # Mnemosyne — Archival Vault
 
+[![CI](https://github.com/nsottung/mnemosyne/actions/workflows/ci.yml/badge.svg)](https://github.com/nsottung/mnemosyne/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nsottung/mnemosyne?logo=github&color=2e5e4e)](https://github.com/nsottung/mnemosyne/releases/latest)
 [![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Single binary](https://img.shields.io/badge/deploy-single%20binary-2e5e4e)](#quickstart)
@@ -21,14 +23,42 @@ in which house — each verified copy lives on.
 
 ---
 
+## Download
+
+Prebuilt, self-contained binaries for every release are on the
+**[Releases page](https://github.com/nsottung/mnemosyne/releases/latest)** —
+pick the zip for your OS/architecture:
+
+| Zip | Platform |
+|-----|----------|
+| `mnemosyne-windows-amd64.zip` | Windows (x64) |
+| `mnemosyne-linux-amd64.zip`   | Linux server / NAS (x64) |
+| `mnemosyne-linux-arm64.zip`   | Raspberry Pi / ARM Linux |
+| `mnemosyne-darwin-arm64.zip`  | Apple Silicon macOS |
+| `mnemosyne-darwin-amd64.zip`  | Intel macOS |
+
+Each zip contains the binary plus `README.md`, `LICENSE`, and the
+`RESTORE_RUNBOOK.md` so the archive stays hand-restorable even offline. Verify
+your download against **`SHA-256SUMS.txt`** (attached to every release):
+
+```
+sha256sum -c SHA-256SUMS.txt          # Linux / macOS / Git Bash
+# or on Windows PowerShell:
+(Get-FileHash mnemosyne-windows-amd64.zip -Algorithm SHA256).Hash
+```
+
+Builds are produced by the tag-triggered [release workflow](.github/workflows/release.yml)
+(pure Go, `CGO_ENABLED=0`, `-ldflags "-s -w -X main.appVersion=<tag>"`).
+
 ## Quickstart
 
-**1. Download & run.** Grab the binary for your OS — it's self-contained.
+**1. Download & run.** Grab the binary for your OS (see [Download](#download)) —
+it's self-contained.
 
 ```
 mnemosyne.exe                # Windows — then open http://127.0.0.1:7821
 ./mnemosyne-linux-amd64      # Linux (server / NAS / Pi)
-./mnemosyne-macos-arm64      # Apple Silicon
+./mnemosyne-darwin-arm64     # Apple Silicon
 ```
 Flags: `-port 7821 -data ~/.mnemo`. Open the printed URL; the **Preflight**
 panel (Settings) checks that `tar`/`gpg`/`par2` are installed and tells you
@@ -90,6 +120,19 @@ Mnemosyne follows the life of your data. Each step earns its place:
 - **Verify a medium / campaign** re-checks one tape (or everything on it) in
   one click — *because bit-rot is silent; you find it on a schedule, not during
   a restore.*
+- **Copy-level verification** — every check (write read-back, manual verify,
+  verify campaign, burn verify) records its result on the *specific copy* it
+  read, and appends to the package's verify-event history. A failed medium
+  marks **that copy** failed; it does **not** mark the whole package failed
+  while the staged payload or another verified copy is intact. The package's
+  status is derived from the best evidence it has — *because one rotted tape
+  out of three copies is a copy problem, not a data-loss event, and the UI
+  should say so: "copy on ARCH-01: FAILED · copy on TAPE-01: verified."* Only a
+  corrupt **staged artifact** or a failed **build** marks a package `FAILED`.
+- **Re-write this copy** — one click re-runs the write of a failed copy to the
+  same volume from staging, read-back verifies it, and restores redundancy. The
+  failed copy is kept in history (marked *superseded*) so the verify trail is
+  never lost.
 - **Verify history + due tracking** flags copies not re-checked within
   `verify_due_months` — *because "I verified it once in 2026" is not a plan.*
 - **Redundancy policy** flags any package with fewer than `required_copies`
@@ -97,6 +140,14 @@ Mnemosyne follows the life of your data. Each step earns its place:
   is the actual goal, and gaps should be visible at a glance.*
 
 ### 🔎 Find & track
+- **Adopt existing media** — catalog archives written *before* Mnemosyne (or by
+  hand with `tar`+`par2`) without rewriting a byte. Point **Volumes → Adopt
+  media…** at a mount; every `*.tar` / `*.tar.gpg` payload is hashed and recorded
+  as an `ADOPTED-VERIFIED` package with a verified copy on the volume. Adoption
+  is idempotent (payloads already cataloged are skipped by hash), so pointing it
+  at your own written chunks is a safe no-op — *because your legacy 100 TB should
+  become first-class without a migration project.* See
+  [Adopting existing media](#adopting-existing-media).
 - **Volumes** are physical media with barcode, kind, and free-text location;
   scan a barcode to jump straight to a tape's contents — *because a shelf of
   unlabeled LTO cartridges is a museum of unknowns.*
@@ -104,8 +155,9 @@ Mnemosyne follows the life of your data. Each step earns its place:
   search answers "on tape NSP-0007 (office safe) and HDD ARCH-03 (parents'
   house), both verified 2026-03."*
 - **Drift (Rescan & compare)** classifies the source vs. what's backed up:
-  NEW / MODIFIED / MISSING / MOVED, per file-type — *because you need to know a
-  `.NEF` went missing, and not be drowned in expected `.xmp` churn.*
+  UNARCHIVED (present on disk, not yet in any package) / MODIFIED / MISSING /
+  MOVED, per file-type — *because you need to know a `.NEF` went missing, and
+  not be drowned in expected `.xmp` churn.*
 
 ### 🔓 Restore
 - **Three-command restore**, documented on every medium in `RESTORE.txt` —
@@ -117,6 +169,47 @@ Mnemosyne follows the life of your data. Each step earns its place:
 - **Recovery Kit** exports a single folder — plain-language instructions,
   media inventory, per-key QR cards, the runbook — *because your future self
   may have the tapes and the keystores but no memory of how any of this worked.*
+
+---
+
+## Adopting existing media
+
+You almost certainly have data on disks and tapes from before Mnemosyne. The
+**Adopt media…** action (Volumes view) brings it into the catalog *in place* —
+nothing is copied, re-tarred, or re-encrypted. Point it at a mount and pick the
+archive + volume; it scans for payloads (`*.tar` / `*.tar.gpg`, flat or one
+folder deep), and for each one hashes the payload and records an
+`ADOPTED-VERIFIED` package with a verified **copy** on that volume.
+
+**What is always known** (recorded for every adopted package):
+
+- the **payload SHA-256** as it exists on the medium (the integrity anchor —
+  future verifies compare against exactly this);
+- whether it is **encrypted** (`.tar.gpg`) or **plaintext** (`.tar`);
+- whether a **par2** set rides alongside it;
+- **where it physically lives** (the volume + path).
+
+**What is known only if the archive carries it:**
+
+- **Contents (file list + per-file source hashes)** come from a `manifest.json`
+  if one is present (a `manifest.json.gpg` is decrypted by trying your keystore
+  passphrases). Without a manifest the package is marked **"listing unknown —
+  restore to enumerate contents."**
+- **Deep adopt** (a checkbox) fills the listing *without* a manifest by streaming
+  the payload through `tar -tvf` (works for plaintext tars, or encrypted ones
+  whose key is in a keystore). This gives you **paths and sizes but not source
+  hashes** — the original per-file hashes are unknowable without the manifest.
+- **Key reference** for encrypted payloads comes from the manifest (or the
+  keystore key that decrypted it); an encrypted payload with no known key can be
+  cataloged and verified by hash, but not listed or restored until the key turns
+  up.
+
+**Idempotent by design:** a payload whose hash is already in the catalog is
+reported as *skipped-duplicate*, never double-cataloged — so re-running adoption,
+or accidentally adopting a Mnemosyne-written chunk, changes nothing. Adopted
+packages behave like native ones everywhere else: they count toward redundancy,
+show in search and on volumes, and can be verified and restored with the same
+`par2`/`gpg`/`tar` doctrine.
 
 ---
 

@@ -1,0 +1,53 @@
+name: Release
+
+# Cut a release by pushing a version tag:  git tag v2.1.0 && git push --tags
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # required to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Cross-compile, zip, and checksum
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          echo "Building Mnemosyne ${TAG}"
+          mkdir -p dist
+          # Pure-Go, static (CGO disabled) binaries for every supported target.
+          for target in windows/amd64 linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do
+            goos="${target%/*}"; goarch="${target#*/}"
+            bin="mnemosyne-${goos}-${goarch}"
+            [ "$goos" = "windows" ] && bin="${bin}.exe"
+            stage="staging/${goos}-${goarch}"
+            mkdir -p "$stage"
+            echo "  -> ${bin}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w -X main.appVersion=${TAG}" -o "$stage/$bin" .
+            # Every download is self-documenting: the binary plus the hand-restore docs.
+            cp README.md LICENSE docs/RESTORE_RUNBOOK.md "$stage/"
+            ( cd "$stage" && zip -q -r "../../dist/mnemosyne-${goos}-${goarch}.zip" . )
+          done
+          # One checksum file over all release artifacts.
+          ( cd dist && sha256sum *.zip > SHA-256SUMS.txt )
+          echo "Artifacts:"; ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA-256SUMS.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true

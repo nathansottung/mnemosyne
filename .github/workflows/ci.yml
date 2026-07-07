@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # The integration tests drive the real restore doctrine (par2 -> gpg -> tar),
+      # so the tools must be present or the tests will t.Skip. tar ships with the
+      # runner; gnupg provides gpg, par2 provides par2.
+      - name: Install restore tools
+        run: sudo apt-get update && sudo apt-get install -y gnupg par2
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./... -v

@@ -161,6 +161,39 @@ func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
 
 // ---- chunk-level operations -------------------------------------------
 
+// stagedPayloadPresent reports whether the package's staged payload still exists
+// on disk — the local artifact a fresh copy can be re-written from.
+func (a *App) stagedPayloadPresent(c *Chunk) bool {
+	return c.StagedDir != "" && payloadPathIn(c.StagedDir, c) != ""
+}
+
+// refreshChunkStatus recomputes a package's lifecycle status from the best
+// available evidence, per the multi-copy model: one bad copy never drags the
+// whole package to FAILED while the staged artifact or another verified copy
+// survives. FAILED stays reserved for build/staging failures (set directly by
+// those paths); this never sets FAILED. PLANNED/BUILDING are pre-staging states
+// owned by the build and left untouched (a write/verify can't run on them). The
+// mid-write WRITING state IS resolved here — the write calls this at the end to
+// transition to its evidence-based status.
+func (a *App) refreshChunkStatus(c *Chunk) {
+	switch c.Status {
+	case "PLANNED", "BUILDING":
+		return
+	}
+	switch {
+	case c.VerifiedCopyCount() > 0:
+		ok := true
+		c.Status, c.Error, c.VerifyOK = "VERIFIED", "", &ok
+	case c.CurrentCopyCount() > 0:
+		// A copy exists but none verifies — written yet under-protected; the
+		// per-copy state carries the failure, the package is not FAILED.
+		bad := false
+		c.Status, c.Error, c.VerifyOK = "WRITTEN", "", &bad
+	case a.stagedPayloadPresent(c):
+		c.Status, c.Error, c.VerifyOK = "STAGED", "", nil
+	}
+}
+
 func (a *App) WriteChunk(id int, destDir string, bufferGB float64, blockMB int, throttleMbps float64, volumeID int, progress func(float64, string)) (map[string]any, error) {
 	cfg := a.LoadConfig()
 	if bufferGB <= 0 {
@@ -182,10 +215,14 @@ func (a *App) WriteChunk(id int, destDir string, bufferGB float64, blockMB int, 
 	if c.StagedDir == "" || (c.Status != "STAGED" && c.Status != "WRITTEN" && c.Status != "VERIFIED" && c.Status != "FAILED") {
 		return nil, fmt.Errorf("package %s is %s; build it first", c.Name, c.Status)
 	}
-	enc := filepath.Join(c.StagedDir, c.Name+".tar.gpg")
-	if _, err := os.Stat(enc); err != nil {
-		return nil, fmt.Errorf("staged ciphertext missing: %s", enc)
+	enc := payloadPathIn(c.StagedDir, c)
+	if enc == "" {
+		return nil, fmt.Errorf("staged payload missing under %s", c.StagedDir)
 	}
+	// Preserve whatever name the payload was staged under (current <name>.tar /
+	// <name>.tar.gpg, or the legacy .tar.gpg for a plaintext package built before
+	// the rename) so the on-medium payload stays consistent with its sidecars.
+	payloadBase := filepath.Base(enc)
 	dest := filepath.Join(destDir, c.Name)
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return nil, err
@@ -193,7 +230,14 @@ func (a *App) WriteChunk(id int, destDir string, bufferGB float64, blockMB int, 
 	var need int64
 	entries, _ := os.ReadDir(c.StagedDir)
 	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".tar") || e.Name() == "filelist.txt" {
+		n := e.Name()
+		// Skip staging-only files: dirs, the filelist, and the intermediate tar
+		// that sits beside the ciphertext for encrypted packages. For a plaintext
+		// package the tar IS the payload (n == payloadBase), so it is counted.
+		if e.IsDir() || n == "filelist.txt" {
+			continue
+		}
+		if n == c.Name+".tar" && n != payloadBase {
 			continue
 		}
 		if st, err := e.Info(); err == nil {
@@ -206,59 +250,110 @@ func (a *App) WriteChunk(id int, destDir string, bufferGB float64, blockMB int, 
 
 	c.Status = "WRITING"
 	a.Store.UpdateChunk(c)
-	fail := func(err error) (map[string]any, error) {
+	// mediumFail: a write/medium error. The staged artifact is fine, so the
+	// package falls back to its evidence-based status (STAGED, or still VERIFIED
+	// via another copy) — never FAILED for a bad medium.
+	mediumFail := func(err error) (map[string]any, error) {
+		a.refreshChunkStatus(c)
+		a.Store.UpdateChunk(c)
+		return nil, err
+	}
+	// stagedFail: the staged artifact itself is corrupt (its bytes no longer hash
+	// to enc_hash). That IS a package-level FAILED.
+	stagedFail := func(err error) (map[string]any, error) {
 		c.Status, c.Error = "FAILED", err.Error()
 		a.Store.UpdateChunk(c)
 		return nil, err
 	}
 
-	progress(0.02, "writing ciphertext")
-	streamHash, stats, err := ringCopy(enc, filepath.Join(dest, c.Name+".tar.gpg"), 0, 0, blockMB, bufferGB, throttleMbps,
+	progress(0.02, "writing payload")
+	destPayload := filepath.Join(dest, payloadBase)
+	streamHash, stats, err := ringCopy(enc, destPayload, 0, 0, blockMB, bufferGB, throttleMbps,
 		func(p float64) { progress(0.02+p*0.66, "") })
 	c.RingStats = &stats // telemetry: proof the buffer decoupled read from a throttled write
 	if err != nil {
-		return fail(err)
+		return mediumFail(err)
 	}
 	if streamHash != c.EncHash {
-		return fail(fmt.Errorf("stream hash mismatch while writing (source read corrupted?)"))
+		return stagedFail(fmt.Errorf("stream hash mismatch while writing (staged payload corrupted — rebuild)"))
 	}
 
 	progress(0.70, "writing sidecars")
 	for _, e := range entries {
 		n := e.Name()
-		if e.IsDir() || n == c.Name+".tar.gpg" || strings.HasSuffix(n, ".tar") || n == "filelist.txt" {
+		// Skip the payload (streamed above) and the staging-only intermediate tar
+		// and filelist; copy every real sidecar (par2 set, manifest, RESTORE.txt).
+		if e.IsDir() || n == payloadBase || n == c.Name+".tar" || n == "filelist.txt" {
 			continue
 		}
 		if c.PrivateManifest && n == c.Name+".manifest.json" {
 			continue // private: the ENCRYPTED manifest.json.gpg ships instead
 		}
 		if err := copyFile(filepath.Join(c.StagedDir, n), filepath.Join(dest, n)); err != nil {
-			return fail(err)
+			return mediumFail(err)
 		}
 	}
 
 	progress(0.78, "read-back verify")
-	rb, err := hashFileHex(filepath.Join(dest, c.Name+".tar.gpg"))
+	rb, err := hashFileHex(destPayload)
 	if err != nil {
-		return fail(err)
+		return mediumFail(err)
 	}
 	ok := rb == c.EncHash
 	now := time.Now().UTC()
-	c.WrittenDest, c.WrittenAt, c.VerifiedAt, c.VerifyOK = dest, &now, &now, &ok
+	c.WrittenDest, c.WrittenAt = dest, &now
 	if ok {
-		c.Status, c.Error = "VERIFIED", ""
-	} else {
-		c.Status = "FAILED"
-		c.Error = "read-back hash mismatch: medium=" + rb
+		c.VerifiedAt = &now
 	}
-	a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: ok, Path: filepath.Join(dest, c.Name+".tar.gpg"), Note: "write read-back"})
 	if volumeID <= 0 {
 		volumeID = a.Store.EnsureUnregistered().ID
 	}
+	// Record the result on THIS copy; derive package status from all copies. A
+	// bad read-back marks only this copy failed — the package stays healthy if
+	// the staged payload or another verified copy is intact.
 	a.Store.RecordCopy(c, volumeID, dest, ok)
+	note := "write read-back"
+	if !ok {
+		note = "write read-back: hash mismatch medium=" + rb
+	}
+	a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: ok, Path: destPayload, Note: note})
+	a.refreshChunkStatus(c)
+	a.Store.UpdateChunk(c)
 	a.Store.Log("write", fmt.Sprintf("%s -> %s verify_ok=%v", c.Name, dest, ok))
-	progress(1.0, "verified")
-	return map[string]any{"chunk": c.Name, "dest": dest, "verify_ok": ok, "ring_buffer": stats}, nil
+	if ok {
+		progress(1.0, "verified")
+	} else {
+		progress(1.0, "read-back MISMATCH — copy marked failed")
+	}
+	return map[string]any{"chunk": c.Name, "dest": dest, "verify_ok": ok,
+		"status": c.Status, "verified_copies": c.VerifiedCopyCount(), "ring_buffer": stats}, nil
+}
+
+// RewriteCopy re-writes the package's copy on volumeID from staging to the same
+// destination folder, superseding the existing (typically FAILED) copy. The old
+// record is retained in history (superseded=true); the write creates a fresh
+// Copy. This is the "Re-write this copy" affordance for a failed medium.
+func (a *App) RewriteCopy(id, volumeID int, bufferGB float64, blockMB int, throttleMbps float64, progress func(float64, string)) (map[string]any, error) {
+	c := a.Store.Chunk(id)
+	if c == nil {
+		return nil, fmt.Errorf("package %d not found", id)
+	}
+	if c.Spanned {
+		return nil, fmt.Errorf("package %s is spanned; re-write its segments via span-write", c.Name)
+	}
+	var dest string
+	for i := range c.Copies {
+		if c.Copies[i].VolumeID == volumeID && !c.Copies[i].Superseded {
+			dest = c.Copies[i].Path
+			break
+		}
+	}
+	if dest == "" {
+		return nil, fmt.Errorf("no current copy of %s on volume %d to re-write", c.Name, volumeID)
+	}
+	a.Store.SupersedeCopy(c, volumeID)
+	// WriteChunk rebuilds dest as destDir/<name>, so pass the copy folder's parent.
+	return a.WriteChunk(id, filepath.Dir(dest), bufferGB, blockMB, throttleMbps, volumeID, progress)
 }
 
 func (a *App) VerifyChunk(id int, destDir string) (map[string]any, error) {
@@ -270,14 +365,10 @@ func (a *App) VerifyChunk(id int, destDir string) (map[string]any, error) {
 	if base == "" {
 		base = c.WrittenDest
 	}
-	enc := filepath.Join(base, c.Name+".tar.gpg")
-	if _, err := os.Stat(enc); err != nil {
-		alt := filepath.Join(base, c.Name, c.Name+".tar.gpg")
-		if _, err2 := os.Stat(alt); err2 == nil {
-			enc = alt
-		} else {
-			return nil, fmt.Errorf("%s not found", enc)
-		}
+	enc := findPayload(base, c)
+	if enc == "" {
+		return nil, fmt.Errorf("payload for %s not found under %s (looked for %s, flat or in a %s/ folder)",
+			c.Name, base, strings.Join(payloadNameCandidates(c), " or "), c.Name)
 	}
 	rb, err := hashFileHex(enc)
 	if err != nil {
@@ -285,17 +376,22 @@ func (a *App) VerifyChunk(id int, destDir string) (map[string]any, error) {
 	}
 	ok := rb == c.EncHash
 	now := time.Now().UTC()
-	c.VerifiedAt, c.VerifyOK = &now, &ok
-	if ok && c.Status == "WRITTEN" {
-		c.Status = "VERIFIED"
+	if ok {
+		c.VerifiedAt = &now
 	}
+	// Record the result on the copy that lives at this medium; the package status
+	// derives from ALL copies, so a single bad medium never marks the package
+	// FAILED while another copy or the staged payload is intact.
+	note := "media verify"
 	if !ok {
-		c.Status = "FAILED"
-		c.Error = "media verify failed"
+		note = "media verify: hash mismatch medium=" + rb
 	}
-	a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: ok, Path: enc, Note: "media verify"})
+	a.Store.AppendVerifyEvent(c, VerifyEvent{At: now, OK: ok, Path: enc, Note: note})
 	a.Store.UpdateCopyVerify(c, base, ok)
-	return map[string]any{"chunk": c.Name, "path": enc, "verify_ok": ok, "expected": c.EncHash, "actual": rb}, nil
+	a.refreshChunkStatus(c)
+	a.Store.UpdateChunk(c)
+	return map[string]any{"chunk": c.Name, "path": enc, "verify_ok": ok, "expected": c.EncHash, "actual": rb,
+		"status": c.Status, "verified_copies": c.VerifiedCopyCount()}, nil
 }
 
 // VerifyCampaign scans dest_dir for chunk folders/payloads whose names match
@@ -321,21 +417,29 @@ func (a *App) VerifyCampaign(destDir string, progress func(float64, string)) (ma
 	var cands []cand
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() { // dest/NAME/NAME.tar.gpg
+		if e.IsDir() { // dest/NAME/<payload> (current or legacy name)
 			if c, ok := byName[name]; ok {
-				p := filepath.Join(destDir, name, name+".tar.gpg")
-				if _, err := os.Stat(p); err == nil {
+				if p := payloadPathIn(filepath.Join(destDir, name), c); p != "" {
 					cands = append(cands, cand{c, p})
 				}
 			}
-		} else if strings.HasSuffix(name, ".tar.gpg") { // dest/NAME.tar.gpg
-			if c, ok := byName[strings.TrimSuffix(name, ".tar.gpg")]; ok {
-				cands = append(cands, cand{c, filepath.Join(destDir, name)})
-			}
+			continue
+		}
+		// flat payload: dest/NAME.tar or dest/NAME.tar.gpg
+		var base string
+		if strings.HasSuffix(name, ".tar.gpg") {
+			base = strings.TrimSuffix(name, ".tar.gpg")
+		} else if strings.HasSuffix(name, ".tar") {
+			base = strings.TrimSuffix(name, ".tar")
+		} else {
+			continue
+		}
+		if c, ok := byName[base]; ok {
+			cands = append(cands, cand{c, filepath.Join(destDir, name)})
 		}
 	}
 	if len(cands) == 0 {
-		return nil, fmt.Errorf("no cataloged packages found on %s (looked for NAME/NAME.tar.gpg or NAME.tar.gpg)", destDir)
+		return nil, fmt.Errorf("no cataloged packages found on %s (looked for NAME/<payload> or NAME.tar[.gpg])", destDir)
 	}
 	var okCount int
 	results := make([]map[string]any, 0, len(cands))
@@ -350,18 +454,18 @@ func (a *App) VerifyCampaign(destDir string, progress func(float64, string)) (ma
 			note = "campaign: hash mismatch"
 		}
 		now := time.Now().UTC()
-		cd.c.VerifiedAt, cd.c.VerifyOK = &now, &ok
 		if ok {
-			if cd.c.Status == "WRITTEN" {
-				cd.c.Status = "VERIFIED"
-			}
+			cd.c.VerifiedAt = &now
 			okCount++
-		} else {
-			cd.c.Status, cd.c.Error = "FAILED", "campaign verify failed"
 		}
+		// Copy-level result; package status derives from all copies (a bad medium
+		// on this campaign does not fail a package with other verified copies).
 		a.Store.AppendVerifyEvent(cd.c, VerifyEvent{At: now, OK: ok, Path: cd.path, Note: note})
 		a.Store.UpdateCopyVerify(cd.c, destDir, ok)
-		results = append(results, map[string]any{"chunk": cd.c.Name, "ok": ok, "path": cd.path})
+		a.refreshChunkStatus(cd.c)
+		a.Store.UpdateChunk(cd.c)
+		results = append(results, map[string]any{"chunk": cd.c.Name, "ok": ok, "path": cd.path,
+			"status": cd.c.Status, "verified_copies": cd.c.VerifiedCopyCount()})
 	}
 	progress(1.0, fmt.Sprintf("verified %d/%d ok", okCount, len(cands)))
 	a.Store.Log("verify-campaign", fmt.Sprintf("%s: %d/%d ok", destDir, okCount, len(cands)))
@@ -379,8 +483,8 @@ func (a *App) RestoreChunk(id int, sourceDir, outputDir string, members []string
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, err
 	}
-	enc := filepath.Join(sourceDir, c.Name+".tar.gpg")
-	if _, err := os.Stat(enc); err != nil {
+	enc := findPayload(sourceDir, c)
+	if enc == "" {
 		// Spanned restore drill: if the joined payload isn't present but the
 		// segment files are (all copied into one scratch dir), rejoin them —
 		// the same `cat seg* > payload` step RESTORE.txt documents by hand.
@@ -391,7 +495,7 @@ func (a *App) RestoreChunk(id int, sourceDir, outputDir string, members []string
 			}
 			enc = joined
 		} else {
-			return nil, fmt.Errorf("%s not found (point source at the package folder on the medium)", enc)
+			return nil, fmt.Errorf("payload for %s not found under %s (point source at the package folder on the medium)", c.Name, sourceDir)
 		}
 	}
 	par2Bin, err := a.tool("par2")

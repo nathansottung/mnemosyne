@@ -31,6 +31,9 @@ drift.go       Inventory reconciliation: rescan source vs. packaged state,
                classify NEW/MODIFIED/MISSING/MOVED, per-extension report.
 privacy.go     ReadMediumManifest: decrypt a private manifest.json.gpg off a
                found medium using the keystore (catalog-loss fallback).
+adopt.go       AdoptMedia: catalog pre-existing *.tar/*.tar.gpg media in place —
+               hash payloads, import manifests, "deep adopt" via tar -tvf,
+               idempotent by payload hash. Never rewrites the medium.
 recoverykit.go Recovery Kit export (README + inventory + QR cards + runbook).
                  │
                  ▼
@@ -78,6 +81,16 @@ trusted transitively — every arrow is a hash you can recompute by hand.
   a verified Copy  (package × volume, with location)
 ```
 
+- **Payload filename mirrors encryption:** the payload is written to the medium
+  as `<name>.tar` (plaintext — the payload *is* the POSIX tar) or `<name>.tar.gpg`
+  (encrypted); the `.par2` set follows that name. `payloadName(c)` in `pipeline.go`
+  is the single source of truth, used everywhere a payload name is built or
+  searched (build, write, verify, burn, span rejoin/sidecars, restore, manifest
+  `payload_file`, RESTORE.txt). **Legacy fallback:** plaintext packages built by
+  earlier versions wrote `<name>.tar.gpg` for code-path uniformity, so every read
+  path (verify, verify-campaign, restore, burn-verify, span rejoin, and the
+  `par2SetFiles` lookup) also accepts that legacy name — previously staged/written
+  media keep verifying and restoring unchanged.
 - **Repair is key-independent:** par2 sits *over the ciphertext*, so a rotted
   tape is repaired with no passphrase — custody of secrets and repair of media
   are separate problems.
@@ -86,6 +99,46 @@ trusted transitively — every arrow is a hash you can recompute by hand.
   it holds exactly its verified slice.
 - **The literal proof** is a restore drill: rejoin → par2 verify → decrypt →
   `tar -xf` → compare extracted files against the catalog's source hashes.
+- **Verification is per-copy, status is derived:** every check writes its result
+  to the specific `Copy` it read (`verify_ok`, `last_verified_at`) plus the
+  chunk's append-only `VerifyEvent` log. `refreshChunkStatus` (writer.go) then
+  derives the package's lifecycle status from the best evidence — a verified
+  copy → `VERIFIED`, else any copy → `WRITTEN`, else a present staged payload →
+  `STAGED`. A bad medium marks only *that* copy failed; `FAILED` is reserved for
+  a corrupt **staged artifact** (write stream-hash mismatch) or a failed
+  **build**. Re-writing a failed copy supersedes the old `Copy` (kept as
+  history, `superseded=true`) and records a fresh one; superseded copies are
+  excluded from `VerifiedCopyCount`/`CurrentCopyCount` and from restore sources.
+
+## Adoption — entering the chain partway
+
+`adopt.go` catalogs media that Mnemosyne did **not** build, so it joins the
+custody chain at whatever link the medium can prove — no more, no less:
+
+```
+  adopted medium
+        │  SHA-256 of the payload as it exists now   ← Chunk.EncHash (ALWAYS known)
+        ▼
+  ADOPTED-VERIFIED package + a verified Copy on the operator's volume
+```
+
+- **Payload hash is the anchor.** Adoption records the payload's current SHA-256
+  as `EncHash` and treats it as truth (`ADOPTED-VERIFIED`). Later verifies and
+  restores compare against exactly this, identical to native packages.
+- **Upward links are imported only if present.** A `manifest.json` (or a
+  `.gpg` one, decrypted by trying keystore passphrases) supplies the *source-file
+  hashes*, `tar_hash`, `key_ref`, and par2 percentage. Without it those links are
+  simply absent — `ListingUnknown` is set and the package is flagged "restore to
+  enumerate contents." **Deep adopt** (`tar -tvf`, streamed, never extracted)
+  recovers the *path list* but not source hashes, so it does not forge chain
+  links it cannot prove.
+- **Idempotent by payload hash.** `AdoptMedia` indexes every existing chunk's
+  `EncHash`; a match is reported as skipped-duplicate. This makes adoption safe to
+  re-run and makes re-discovering a Mnemosyne-written chunk a no-op.
+- **Everything downstream is unchanged.** An adopted chunk is an ordinary
+  `Chunk` with a `Copy`, so volumes, search, redundancy accounting, verify, and
+  restore treat it identically. Drift skips adopted file listings that have no
+  source-folder linkage (they describe bytes on media, not files on disk).
 
 ## The reboot-recovery pattern
 

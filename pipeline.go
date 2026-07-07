@@ -593,7 +593,7 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	}
 
 	tarPath := filepath.Join(work, c.Name+".tar")
-	payloadPath := filepath.Join(work, c.Name+".tar.gpg") // payload written to media: ciphertext, or the tar itself when unencrypted
+	payloadPath := filepath.Join(work, payloadName(c)) // <name>.tar.gpg (ciphertext) when encrypted, <name>.tar (the tar itself) when not
 
 	// Per-stage timing so the operator can see WHERE the build time goes.
 	// Pipeline order and the parity-over-payload rule are unchanged.
@@ -645,13 +645,11 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 		}
 		finish("encrypt", t, 0.72)
 	} else {
-		// No encryption requested: the tar IS the payload. Move it into place
-		// under the .tar.gpg name so the write/verify/media paths stay identical,
-		// and let enc_hash/enc_bytes describe the tar as written to media.
+		// No encryption requested: the tar IS the payload, and payloadName(c) is
+		// <name>.tar, so it already sits at payloadPath (== tarPath) — no rename,
+		// no misleading .gpg suffix on the medium. enc_hash/enc_bytes describe
+		// that tar as written to media.
 		t = time.Now()
-		if err := os.Rename(tarPath, payloadPath); err != nil {
-			return fail(err)
-		}
 		c.EncHash = c.TarHash
 		if st, err := os.Stat(payloadPath); err == nil {
 			c.EncBytes = st.Size()
@@ -662,7 +660,7 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	progress(0.75, strings.Join(summary, " · ")+" · par2…")
 	t = time.Now()
 	if err := runPar2Create(par2Bin, cfg.Par2ExtraArgs, c.Par2,
-		filepath.Join(work, c.Name+".tar.gpg.par2"), payloadPath); err != nil {
+		payloadPath+".par2", payloadPath); err != nil {
 		return fail(err)
 	}
 	finish("par2", t, 0.90)
@@ -747,15 +745,71 @@ func run(bin, stdin string, args ...string) error {
 	return nil
 }
 
+// payloadName is the on-medium filename of a package's payload: <name>.tar for
+// a plaintext package (the payload IS the POSIX tar) and <name>.tar.gpg when the
+// tar is encrypted. This is the SINGLE source of truth for the payload filename —
+// every place that builds or searches for a payload name (build, write, verify,
+// burn, span, restore, manifest, RESTORE.txt) goes through here so a plaintext
+// package is never mislabelled ".tar.gpg" on a 30-year medium. The par2 set names
+// follow the payload name (<payload>.par2, <payload>.volNNN+MM.par2).
+func payloadName(c *Chunk) string {
+	if c.Encrypted {
+		return c.Name + ".tar.gpg"
+	}
+	return c.Name + ".tar"
+}
+
+// legacyPayloadName is the pre-rename uniform name: plaintext packages built
+// before payloadName always wrote <name>.tar.gpg for code-path uniformity. READ
+// paths fall back to this so media staged/written under the old scheme keep
+// verifying and restoring. For encrypted packages it equals payloadName.
+func legacyPayloadName(c *Chunk) string { return c.Name + ".tar.gpg" }
+
+// payloadNameCandidates lists the payload filenames a READ path should try, most
+// current first: the real name, then the legacy .tar.gpg name when it differs
+// (i.e. for plaintext packages). Deduped so encrypted packages get one entry.
+func payloadNameCandidates(c *Chunk) []string {
+	n := payloadName(c)
+	if leg := legacyPayloadName(c); leg != n {
+		return []string{n, leg}
+	}
+	return []string{n}
+}
+
+// payloadPathIn returns the payload's path directly inside dir (current name
+// first, then the legacy name), or "" if neither exists.
+func payloadPathIn(dir string, c *Chunk) string {
+	for _, n := range payloadNameCandidates(c) {
+		p := filepath.Join(dir, n)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// findPayload locates a package's payload under dir, honoring both the current
+// name and the legacy .tar.gpg name, and both flat (dir/<payload>) and boxed
+// (dir/<name>/<payload>) layouts. Returns "" if none is found.
+func findPayload(dir string, c *Chunk) string {
+	if p := payloadPathIn(dir, c); p != "" {
+		return p
+	}
+	return payloadPathIn(filepath.Join(dir, c.Name), c)
+}
+
 func writeManifest(dir string, c *Chunk, keyFpr string) error {
 	m := map[string]any{
 		"mnemosyne_chunk": 1, "name": c.Name, "created_utc": time.Now().UTC().Format(time.RFC3339),
 		"collection_id": c.CollectionID, "source_root": c.SrcRoot,
 		"encrypted": c.Encrypted,
-		"hash_alg":  c.HashAlg, "tar_hash": c.TarHash,
-		// ciphertext_hash/_bytes name the payload file as written to media
-		// (the .tar.gpg). When encrypted:false it is the plain tar under that
-		// same name, so `sha256sum NAME.tar.gpg` still matches this value.
+		// payload_file is the exact on-medium filename of the payload: <name>.tar.gpg
+		// when encrypted, <name>.tar when not. The par2 set is <payload_file>*.par2.
+		"payload_file": payloadName(c),
+		"hash_alg":     c.HashAlg, "tar_hash": c.TarHash,
+		// ciphertext_hash/_bytes name the payload file as written to media. When
+		// encrypted:false the payload is the plain tar (payload_file = <name>.tar),
+		// so `sha256sum <payload_file>` still matches this value.
 		"ciphertext_hash": c.EncHash, "ciphertext_bytes": c.EncBytes,
 		"par2_redundancy_percent": c.Par2, "files": c.Files,
 	}
@@ -777,8 +831,8 @@ func writeManifest(dir string, c *Chunk, keyFpr string) error {
 			segs = append(segs, e)
 		}
 		m["segments"] = segs
-		m["rejoin_windows"] = "copy /b " + segJoinList(c) + " " + c.Name + ".tar.gpg"
-		m["rejoin_unix"] = "cat " + c.Name + ".seg* > " + c.Name + ".tar.gpg"
+		m["rejoin_windows"] = "copy /b " + segJoinList(c) + " " + payloadName(c)
+		m["rejoin_unix"] = "cat " + c.Name + ".seg* > " + payloadName(c)
 	}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(filepath.Join(dir, c.Name+".manifest.json"), b, 0o644)
@@ -803,6 +857,7 @@ func writeRestoreTxt(dir string, c *Chunk) {
 		return
 	}
 	if c.Encrypted {
+		pl := payloadName(c) // <name>.tar.gpg
 		t = fmt.Sprintf(`HOW TO RESTORE %[1]s
 ==========================================================
 You need exactly three ubiquitous open-source programs:
@@ -813,10 +868,10 @@ And the passphrase for key %[2]s (Mnemosyne keystore, or the
 printed key card labelled %[2]s).
 
 1) VERIFY / REPAIR (no passphrase needed):
-     par2 verify %[1]s.tar.gpg.par2
-     par2 repair %[1]s.tar.gpg.par2      (only if verify fails)
+     par2 verify %[6]s.par2
+     par2 repair %[6]s.par2      (only if verify fails)
 2) DECRYPT (prompts for passphrase):
-     gpg -d -o %[1]s.tar %[1]s.tar.gpg
+     gpg -d -o %[1]s.tar %[6]s
 3) EXTRACT all, or one file:
      tar -xf %[1]s.tar
      tar -xf %[1]s.tar path/to/one/file
@@ -825,30 +880,30 @@ Integrity (%[3]s):  ciphertext %[4]s   tar %[5]s
 Full file list: %[1]s.manifest.json
 No compression anywhere — extracted bytes are the originals.
 ==========================================================
-`, c.Name, c.KeyRef, c.HashAlg, c.EncHash, c.TarHash)
+`, c.Name, c.KeyRef, c.HashAlg, c.EncHash, c.TarHash, pl)
 	} else {
+		pl := payloadName(c) // <name>.tar
 		t = fmt.Sprintf(`HOW TO RESTORE %[1]s
 ==========================================================
 This package is stored UNENCRYPTED — no passphrase or key needed.
-The payload file %[1]s.tar.gpg is a plain POSIX tar (the .gpg
-name is kept only so the media layout matches encrypted packages).
+The payload file %[4]s is a plain POSIX tar.
 
 You need exactly two ubiquitous open-source programs:
   par2  (github.com/Parchive/par2cmdline)  - repair
   tar   (POSIX standard, preinstalled)     - extract
 
 1) VERIFY / REPAIR:
-     par2 verify %[1]s.tar.gpg.par2
-     par2 repair %[1]s.tar.gpg.par2      (only if verify fails)
+     par2 verify %[4]s.par2
+     par2 repair %[4]s.par2      (only if verify fails)
 2) EXTRACT all, or one file (tar reads it directly, no gpg step):
-     tar -xf %[1]s.tar.gpg
-     tar -xf %[1]s.tar.gpg path/to/one/file
+     tar -xf %[4]s
+     tar -xf %[4]s path/to/one/file
 
 Integrity (%[2]s):  payload %[3]s
 Full file list: %[1]s.manifest.json
 No compression anywhere — extracted bytes are the originals.
 ==========================================================
-`, c.Name, c.HashAlg, c.EncHash)
+`, c.Name, c.HashAlg, c.EncHash, pl)
 	}
 	t = appendPrivacyNote(t, c)
 	_ = os.WriteFile(filepath.Join(dir, "RESTORE.txt"), []byte(t), 0o644)
@@ -875,9 +930,10 @@ func spannedRestoreTxt(c *Chunk) string {
 	if len(c.Segments) > 0 && c.Segments[len(c.Segments)-1].Par2 {
 		par2Home = "on its OWN final tape (labelled ...-tape-" + fmt.Sprint(len(c.Segments)) + "-of-" + fmt.Sprint(len(c.Segments)) + ")"
 	}
-	decrypt := "2) EXTRACT directly (plaintext — no key needed):\n     tar -xf " + c.Name + ".tar.gpg"
+	pl := payloadName(c) // <name>.tar (plaintext) or <name>.tar.gpg (encrypted)
+	decrypt := "2) EXTRACT directly (plaintext — no key needed):\n     tar -xf " + pl
 	if c.Encrypted {
-		decrypt = "2) DECRYPT (prompts for the passphrase of key " + c.KeyRef + "):\n     gpg -d -o " + c.Name + ".tar " + c.Name + ".tar.gpg\n" +
+		decrypt = "2) DECRYPT (prompts for the passphrase of key " + c.KeyRef + "):\n     gpg -d -o " + c.Name + ".tar " + pl + "\n" +
 			"3) EXTRACT:\n     tar -xf " + c.Name + ".tar"
 	}
 	return fmt.Sprintf(`HOW TO RESTORE %[1]s   (SPANNED across %[2]d media)
@@ -888,14 +944,14 @@ the manifest, and (par2 %[4]s).
 
 STEP 0 — REJOIN the segments into the payload (one universal command).
 Copy every tape's %[1]s.segNNN into ONE folder, then run ONE of:
-     Windows:  copy /b %[5]s %[1]s.tar.gpg
-     Unix/mac: cat %[1]s.seg* > %[1]s.tar.gpg
+     Windows:  copy /b %[5]s %[10]s
+     Unix/mac: cat %[1]s.seg* > %[10]s
 (The zero-padded names sort into the correct order automatically.)
 
 Now the normal restore, exactly as for a single-medium package:
 1) VERIFY / REPAIR (no key needed):
-     par2 verify %[1]s.tar.gpg.par2
-     par2 repair %[1]s.tar.gpg.par2      (only if verify fails)
+     par2 verify %[10]s.par2
+     par2 repair %[10]s.par2      (only if verify fails)
 %[6]s
 
 Integrity (%[7]s): payload %[8]s   tar %[9]s
@@ -904,5 +960,5 @@ per-segment hashes (manifest / catalog) link every tape to the originals.
 Full file list: %[1]s.manifest.json
 No compression anywhere — extracted bytes are the originals.
 ==========================================================
-`, c.Name, n, n, par2Home, segJoinList(c), decrypt, c.HashAlg, c.EncHash, c.TarHash)
+`, c.Name, n, n, par2Home, segJoinList(c), decrypt, c.HashAlg, c.EncHash, c.TarHash, pl)
 }
