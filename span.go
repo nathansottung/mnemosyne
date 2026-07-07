@@ -131,6 +131,9 @@ func (a *App) SpanWriteNext(id int, destDir string, bufferGB float64, blockMB in
 	if strings.TrimSpace(destDir) == "" {
 		return nil, fmt.Errorf("dest_dir (the mounted tape/drive) required")
 	}
+	if err := a.Store.AssertOutsideSources(destDir); err != nil {
+		return nil, err
+	}
 	segIdx := -1
 	for i := range c.Segments {
 		if c.Segments[i].Status == "PENDING" || c.Segments[i].Status == "FAILED" {

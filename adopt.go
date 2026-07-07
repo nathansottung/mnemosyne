@@ -250,6 +250,9 @@ func (a *App) AdoptMedia(mountPath string, collectionID, volumeID int, deep bool
 	skipped := []map[string]any{}
 	unreadable := []map[string]any{}
 
+	// MEDIA READ-ONLY: adoption only READS the medium — os.Stat, hashFileHex
+	// (O_RDONLY), and (deep adopt) `tar -tvf` / `gpg -d` streaming. It never writes
+	// to the mount; only the catalog gains ADOPTED-VERIFIED packages + copies.
 	for i, cand := range cands {
 		progress(float64(i)/float64(len(cands)), "hashing "+cand.name)
 		st, serr := os.Stat(cand.payloadPath)

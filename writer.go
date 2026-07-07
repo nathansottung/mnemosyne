@@ -215,6 +215,9 @@ func (a *App) WriteChunk(id int, destDir string, bufferGB float64, blockMB int, 
 	if c.StagedDir == "" || (c.Status != "STAGED" && c.Status != "WRITTEN" && c.Status != "VERIFIED" && c.Status != "FAILED") {
 		return nil, fmt.Errorf("package %s is %s; build it first", c.Name, c.Status)
 	}
+	if err := a.Store.AssertOutsideSources(destDir); err != nil {
+		return nil, err
+	}
 	enc := payloadPathIn(c.StagedDir, c)
 	if enc == "" {
 		return nil, fmt.Errorf("staged payload missing under %s", c.StagedDir)
@@ -479,6 +482,11 @@ func (a *App) RestoreChunk(id int, sourceDir, outputDir string, members []string
 	}
 	if sourceDir == "" {
 		sourceDir = c.WrittenDest
+	}
+	// Restore WRITES extracted files into outputDir — it must never target source
+	// data (that would overwrite the very originals we exist to protect).
+	if err := a.Store.AssertOutsideSources(outputDir); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, err

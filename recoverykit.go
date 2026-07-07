@@ -32,6 +32,10 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 	if strings.TrimSpace(outputDir) == "" {
 		return nil, fmt.Errorf("output_dir required")
 	}
+	// The kit (with its secret QR cards) is WRITTEN here — never into source data.
+	if err := a.Store.AssertOutsideSources(outputDir); err != nil {
+		return nil, err
+	}
 	kit := filepath.Join(outputDir, "mnemosyne-recovery-kit")
 	keysDir := filepath.Join(kit, "keys")
 	if err := os.MkdirAll(keysDir, 0o755); err != nil {

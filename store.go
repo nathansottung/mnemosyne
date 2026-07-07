@@ -442,6 +442,51 @@ func (s *Store) FoldersOf(collectionID int) []*Folder {
 	return out
 }
 
+// SourceRoots returns every registered Archive source folder (across all
+// collections) — the directories Mnemosyne only ever OPENS FOR READING.
+func (s *Store) SourceRoots() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.c.Folders))
+	for _, f := range s.c.Folders {
+		if strings.TrimSpace(f.Path) != "" {
+			out = append(out, f.Path)
+		}
+	}
+	return out
+}
+
+// AssertOutsideSources enforces Mnemosyne's core invariant — it NEVER writes into
+// source data. Any WRITABLE destination (staging, write/span target, restore or
+// recovery-kit output, keystore path, …) is refused when it resolves to a path
+// at or beneath a registered source root. Empty paths pass (callers do their own
+// required-ness check); resolution is best-effort so a not-yet-created
+// destination is still checked by its intended absolute path.
+func (s *Store) AssertOutsideSources(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	np := normPath(abs)
+	for _, root := range s.SourceRoots() {
+		rabs, err := filepath.Abs(root)
+		if err != nil {
+			rabs = root
+		}
+		rp := normPath(rabs)
+		if rp == "" {
+			continue
+		}
+		if np == rp || strings.HasPrefix(np, rp+"/") {
+			return fmt.Errorf("refusing: %s is inside source root %s; Mnemosyne never writes into source data", path, root)
+		}
+	}
+	return nil
+}
+
 // UpsertFile replaces a prior entry for (collection, folder, rel_path).
 func (s *Store) UpsertFile(f File) *File {
 	s.mu.Lock()

@@ -124,6 +124,9 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 	}
 
 	// Walk + hash the current disk (and refresh the File table).
+	// SOURCE READ-ONLY: the rescan WalkDir-traverses the source folders and hashes
+	// (os.Open O_RDONLY via hashFileHex/parallelHash). Only the catalog's File
+	// table and the drift report are written — never the source files.
 	progress(0.02, "listing files")
 	var paths []string
 	perFolder := map[string]int{}

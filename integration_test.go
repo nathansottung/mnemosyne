@@ -460,6 +460,59 @@ func TestIntegration_Spanning(t *testing.T) {
 	assertTreeMatches(t, src, out)
 }
 
+// ---- source-safety invariant: every writable destination inside a source root is refused
+
+func TestIntegration_SourceSafetyRefusals(t *testing.T) {
+	s := newIT(t)
+	s.setConfig(nil) // staging = temp, outside any source
+	// Scanning registers src as a source root; build a package to write/restore.
+	src := s.makeSource(map[string][]byte{"keep.txt": []byte("precious original\n")})
+	c := s.scanPlanBuild(src, 1, false, 5)
+	pid := int(c["id"].(float64))
+	insideSrc := filepath.Join(src, "danger", "dest")
+	const msg = "Mnemosyne never writes into source data"
+
+	refused := func(label string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s: expected refusal, got nil error", label)
+		}
+		if !strings.Contains(err.Error(), msg) || !strings.Contains(err.Error(), "inside source root") {
+			t.Errorf("%s: refusal message wrong: %v", label, err)
+		}
+	}
+
+	// (1) staging_dir inside a source root — config save refused (HTTP 400).
+	cm := s.obj("PUT", "/api/config", map[string]any{"staging_dir": insideSrc, "tools": s.tools})
+	if s.status(cm) == 200 {
+		t.Fatalf("config with staging inside source should be refused, got: %v", cm)
+	}
+	if em, _ := cm["error"].(string); !strings.Contains(em, msg) {
+		t.Errorf("config refusal message wrong: %v", cm["error"])
+	}
+
+	// (2) keystore path inside a source root — also refused (keystores get rewritten).
+	km := s.obj("PUT", "/api/config", map[string]any{
+		"staging_dir": s.staging, "keystore_paths": []string{filepath.Join(src, "keystore.json")}, "tools": s.tools,
+	})
+	if s.status(km) == 200 {
+		t.Fatalf("config with keystore inside source should be refused, got: %v", km)
+	}
+
+	// (3) write destination inside a source root — refused before any write.
+	_, werr := s.app.WriteChunk(pid, insideSrc, 0, 0, 0, 0, noProg)
+	refused("write dest", werr)
+
+	// (4) restore output inside a source root — refused before extraction.
+	_, rerr := s.app.RestoreChunk(pid, "", insideSrc, nil, noProg)
+	refused("restore output", rerr)
+
+	// Sanity: the source files are untouched (the refusals happened up front).
+	if b, err := os.ReadFile(filepath.Join(src, "keep.txt")); err != nil || string(b) != "precious original\n" {
+		t.Errorf("source file must be pristine, got %q err=%v", b, err)
+	}
+}
+
 // ---- (6) throttle: write_mbps stays at/under the cap while read_mbps exceeds it
 
 func TestIntegration_Throttle(t *testing.T) {

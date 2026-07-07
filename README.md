@@ -23,6 +23,34 @@ in which house — each verified copy lives on.
 
 ---
 
+## Source safety guarantee
+
+**Mnemosyne never modifies your source data. This is an enforced invariant, not a
+promise you have to trust.**
+
+- **Sources are only ever opened for reading.** Scanning, hashing, the `tar`
+  archive step (`tar -c` reads, never writes what it archives), drift rescans,
+  and verification all open source files strictly read-only (`O_RDONLY`). The
+  only things that change are the catalog and the copies you write to *media* —
+  never the originals. Each such read path carries a `SOURCE READ-ONLY:` audit
+  comment in the code.
+- **Every writable destination is validated against your source roots.** Before
+  Mnemosyne writes anything, the target is checked by a single central guard
+  (`AssertOutsideSources`). If a destination resolves to a path *inside* any
+  registered Archive source folder, the operation is refused with:
+
+  > `refusing: <path> is inside source root <root>; Mnemosyne never writes into source data`
+
+  This covers the **staging folder** (set-time and build-time), **write / span /
+  burn destinations**, **restore output**, the **recovery-kit output**, and even
+  **keystore paths** (keystores get rewritten, so they must stay out of source
+  data too).
+- **The only thing that ever changes your originals is you.** Delete or move a
+  source file yourself and drift will report it — but Mnemosyne's own code has no
+  path that writes into a source root.
+
+---
+
 ## Download
 
 Prebuilt, self-contained binaries for every release are on the

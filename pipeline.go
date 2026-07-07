@@ -80,6 +80,16 @@ func (a *App) SaveConfig(in map[string]any) (Config, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return cfg, err
 	}
+	// Source-safety invariant: staging is written into during builds and keystores
+	// are rewritten on key generation — neither may live inside source data.
+	if err := a.Store.AssertOutsideSources(cfg.StagingDir); err != nil {
+		return cfg, err
+	}
+	for _, ks := range cfg.KeystorePaths {
+		if err := a.Store.AssertOutsideSources(ks); err != nil {
+			return cfg, err
+		}
+	}
 	out, _ := json.MarshalIndent(cfg, "", "  ")
 	return cfg, os.WriteFile(a.configPath(), out, 0o644)
 }
@@ -298,6 +308,9 @@ func (a *App) SyncKeystores() (int, error) {
 // ---- scanning --------------------------------------------------------------
 
 func (a *App) ScanFolder(collectionID int, root string, progress func(float64, string)) (int, error) {
+	// SOURCE READ-ONLY: scanning only WalkDir-traverses and hashes (os.Open
+	// O_RDONLY via hashFileHex). It registers `root` as a source root and writes
+	// nothing back into it — the catalog is the only thing mutated.
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
 		return 0, fmt.Errorf("not a readable folder: %s", root)
@@ -371,6 +384,8 @@ func parallelHash(paths []string, progress func(done int), fn func(path, hash st
 }
 
 func hashFileHex(path string) (string, error) {
+	// SOURCE READ-ONLY: os.Open is O_RDONLY. This is the ONLY way source files are
+	// touched by scanning, drift rescan, and verification — read, hash, close.
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -565,6 +580,11 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	if cfg.StagingDir == "" {
 		return fmt.Errorf("staging_dir is not configured (Settings)")
 	}
+	// Re-check at build time (config could have been hand-edited): the staging dir
+	// is written into and must never sit inside source data.
+	if err := a.Store.AssertOutsideSources(cfg.StagingDir); err != nil {
+		return err
+	}
 	work := filepath.Join(cfg.StagingDir, c.Name)
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		return err
@@ -608,6 +628,9 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 
 	progress(0.05, "tar…")
 	t := time.Now()
+	// SOURCE READ-ONLY: `tar -c … -C <SrcRoot> -T list` only READS the source
+	// files; it writes exclusively to tarPath in the (validated) staging dir. tar
+	// -c never modifies the files it archives.
 	if err := run(tarBin, "", "--format=posix", "-cf", tarPath, "-C", c.SrcRoot, "-T", list); err != nil {
 		return fail(err)
 	}
