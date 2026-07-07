@@ -54,6 +54,9 @@ tr:last-child td{border-bottom:none}
   background:#fff;padding:1px 7px;letter-spacing:.04em}
 .chip::before{content:"";display:inline-block;width:3px;height:9px;margin-right:6px;
   background:repeating-linear-gradient(90deg,var(--ink) 0 1px,transparent 1px 3px);vertical-align:-1px}
+.etag{font:10px var(--mono);letter-spacing:.05em;padding:1px 5px;border-radius:2px;vertical-align:1px}
+.etag.enc{background:#2e5e4e1f;color:var(--act)} .etag.plain{background:#9a7a101f;color:#8a6d10}
+.etag.due{background:#9a7a101f;color:#8a6d10}
 .stamp{font:11px var(--mono);letter-spacing:.06em;padding:2px 8px;border-radius:2px;color:#fff;display:inline-block}
 .stamp.VERIFIED{background:var(--ok)} .stamp.FAILED{background:var(--bad)}
 .stamp.PLANNED{background:var(--idle)} .stamp.STAGED,.stamp.WRITTEN{background:#5b7367}
@@ -61,7 +64,7 @@ tr:last-child td{border-bottom:none}
 .err{color:var(--bad);font:12.5px var(--mono)}
 .empty{color:var(--ink-3);padding:26px 10px;text-align:center;font-size:13.5px}
 
-/* ---- signature: chunk lifecycle rail ---- */
+/* ---- signature: package lifecycle rail ---- */
 .rail{display:flex;align-items:center;gap:0;min-width:190px}
 .rail i{width:11px;height:11px;border:1.5px solid var(--idle);border-radius:2px;background:#fff;flex-shrink:0}
 .rail s{flex:1;height:2px;background:var(--line);min-width:10px;text-decoration:none}
@@ -74,6 +77,14 @@ tr:last-child td{border-bottom:none}
 @media (prefers-reduced-motion:reduce){.rail i.now{animation:none}}
 .raillbl{font:10px var(--mono);color:var(--ink-3);letter-spacing:.1em;margin-top:3px}
 
+/* ---- burn queue: one square per disc ---- */
+.discs{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 10px}
+.disc{width:16px;height:16px;border-radius:3px;border:1px solid var(--line);background:var(--line-2)}
+.disc.done{background:var(--ok);border-color:var(--ok)}
+.disc.failed{background:var(--bad);border-color:var(--bad)}
+.disc.pending{background:var(--line-2)}
+.disc.active{background:var(--warn);border-color:var(--warn);animation:tick 1.1s steps(2) infinite}
+
 .bar{height:6px;background:var(--line-2);border-radius:3px;overflow:hidden}
 .bar div{height:100%;background:var(--act)}
 #toast{position:fixed;right:20px;bottom:20px;max-width:420px;display:flex;flex-direction:column;gap:8px;z-index:9}
@@ -84,18 +95,55 @@ dialog::backdrop{background:#1c241f66}
 label{display:block;font:600 12px var(--sans);color:var(--ink-2);margin:12px 0 4px}
 .full{width:100%}
 @media (max-width:760px){body{flex-direction:column}nav{width:100%;min-height:0;display:flex;flex-wrap:wrap;align-items:center}nav a{border-left:none}main{padding:18px}}
+
+/* ---- accessibility: focus + screen-reader-only ---- */
+a:focus-visible,[tabindex]:focus-visible,tr[role="button"]:focus-visible{outline:2px solid var(--act);outline-offset:2px}
+nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+
+/* ---- view header + inline help ---- */
+.hd{display:flex;align-items:center;gap:9px}
+.help{background:transparent;border:1px solid var(--line);color:var(--ink-3);border-radius:50%;
+  width:20px;height:20px;padding:0;font:700 12px var(--sans);line-height:1;flex-shrink:0}
+.help:hover{border-color:var(--act);color:var(--act)}
+
+/* ---- destructive / sensitive actions ---- */
+.btn.danger{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+.btn.danger:hover{background:#a0312312}
+
+/* ---- dashboard: pipeline map ---- */
+.pipemap{display:flex;align-items:stretch;gap:0;margin-bottom:18px;flex-wrap:wrap}
+.stage{flex:1;min-width:128px;background:var(--panel);border:1px solid var(--line);border-radius:5px;
+  padding:12px 14px;text-decoration:none;color:inherit;display:block}
+.stage:hover{border-color:var(--act);background:#fff}
+.stage .k{font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+.stage .v{font:600 24px var(--sans);color:var(--act);margin-top:2px;line-height:1.1}
+.stage .u{font:11px var(--mono);color:var(--ink-3)}
+.stagearrow{align-self:center;color:var(--ink-3);padding:0 7px;font:15px var(--mono)}
+
+/* ---- getting-started checklist ---- */
+.chk{display:flex;align-items:flex-start;gap:12px;padding:13px 0;border-bottom:1px solid var(--line-2)}
+.chk:last-child{border-bottom:none}
+.chk .mk{width:23px;height:23px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  font:600 13px var(--sans);border:1.5px solid var(--line);color:var(--ink-3);background:#fff}
+.chk.done .mk{background:var(--ok);border-color:var(--ok);color:#fff}
+.chk .t{font:600 14px var(--sans)} .chk.done .t{color:var(--ink-3)}
+.chk .d{font-size:12.5px;color:var(--ink-3);margin-top:1px}
 </style>
 </head>
 <body>
 <nav>
   <div class="wordmark">MNEMOSYNE</div>
   <div class="wordsub">archival vault · v2</div>
+  <a href="#home" data-v="home">Home</a>
   <a href="#vault" data-v="vault">Vault</a>
-  <a href="#chunks" data-v="chunks">Chunks</a>
+  <a href="#packages" data-v="packages">Packages</a>
+  <a href="#burn" data-v="burn">Burn</a>
+  <a href="#volumes" data-v="volumes">Volumes</a>
   <a href="#keys" data-v="keys">Keys</a>
   <a href="#jobs" data-v="jobs">Jobs</a>
   <a href="#settings" data-v="settings">Settings</a>
-  <div class="lamp" id="lamp"><b></b><span>checking tools…</span></div>
+  <div class="lamp" id="lamp" role="status" aria-live="polite"><b></b><span>checking tools…</span></div>
 </nav>
 <main id="view"></main>
 <div id="toast"></div>
@@ -106,6 +154,23 @@ const api=async(m,u,b)=>{const r=await fetch(u,{method:m,headers:{'Content-Type'
 const GB=n=>((n||0)/1e9).toFixed(2);
 const toast=(m,bad)=>{const d=document.createElement('div');if(bad)d.className='bad';d.textContent=m;$('#toast').append(d);setTimeout(()=>d.remove(),bad?7000:3500)};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---- inline help: one shared panel, content in one object (easy to edit) ---- */
+const HELP={
+  home:['Home — archive health at a glance','This board shows the state of everything you keep. The strip across the top (Catalog → Package → Write → Verify) shows live totals for each stage of the pipeline and doubles as navigation — click a stage to go there. The table below breaks every archive down by package status, protection (verified copies vs. your goal), unresolved drift, and packages due for re-verification. Every number links straight to the relevant view.'],
+  vault:['Vault — archives & file search','An Archive is a body of work you keep together (e.g. "Personal", "Photography Business"). Scan folders into it — every file is SHA-256 hashed at the source. Plan groups files into media-sized packages; Rescan & compare detects what changed since you backed up. The search box answers the real question: which package and which physical volume holds a given file.'],
+  packages:['Packages — the archival units','A Package is one self-contained, media-sized unit: a tar of files + par2 parity + manifest + RESTORE.txt (an OAIS AIP in plain English). The lifecycle rail reads PLANNED → BUILDING → STAGED → WRITING → WRITTEN → VERIFIED; red means FAILED. Build a package, then Write it to a volume with read-back verification. Packages too big for one medium are spanned across several, one tape at a time.'],
+  burn:['Burn — the optical disc queue','Optical media can\'t stream continuously, so discs are fed one at a time. A burn queue holds one disc per package and survives reboots (a disc caught mid-burn resets to pending — it may be a coaster). Click "Burn next disc", wait, then write the package name on the physical disc. Square colours: green = done, red = failed, amber = in progress, grey = pending.'],
+  volumes:['Volumes — where the bytes physically live','A Volume is a physical medium you can hold: a tape, drive, or disc, with a barcode, kind, and free-text location ("office safe"). Each Copy records which package sits on which volume and when it last verified. Scan a barcode into the lookup box to jump straight to a medium\'s contents — no mounting needed.'],
+  keys:['Keys — encryption secrets','Encrypted packages use per-package random ~288-bit passphrases that live ONLY in keystore files — the catalog stores fingerprints, never the secret. Encrypted builds refuse to run until ≥2 keystores on different devices are registered and in sync. Print a QR card per key, and export a Recovery Kit for the fireproof box.'],
+  jobs:['Jobs — background work','Long operations (scan, build, write, verify, reconcile, recovery kit) run in the background so the UI stays responsive. It is safe to navigate away; this list refreshes automatically while anything is still running.'],
+  settings:['Settings — one config file','Everything lives in one config.json in the data folder: paths to the external tools, the staging folder, keystore locations, redundancy goal, re-verify window, write throttle, and the optical burn command. Preflight at the top shows whether tar/gpg/par2 (and any LTFS tape) are ready.'],
+};
+function helpBtn(k){return `<button class="help" aria-label="Help: what the ${esc(k)} view is for" title="What is this view for?" onclick="showHelp('${k}')">i</button>`}
+function showHelp(k){const e=HELP[k];if(!e)return;dlg(`<h1>${esc(e[0])}</h1><div style="margin-top:8px;line-height:1.62;color:var(--ink-2)">${esc(e[1])}</div>`,async()=>{})}
+function hdr(title,crumb,key){return `<div class="hd"><h1>${title}</h1>${helpBtn(key)}</div><div class="crumb">${esc(crumb)}</div>`}
+function stamp(s){return `<span class="stamp ${esc(s)}">${esc(s)}</span>`}
+function emptyState(msg,actionsHTML){return `<div class="empty">${msg}${actionsHTML?`<div class="row" style="justify-content:center;margin-top:12px">${actionsHTML}</div>`:''}</div>`}
 
 const STAGES=['PLANNED','BUILDING','STAGED','WRITING','WRITTEN','VERIFIED'];
 function rail(c){
@@ -120,42 +185,207 @@ function rail(c){
   return h+'</div><div class="raillbl">'+esc(c.status)+(c.verify_ok===false?' · MEDIA CHECK FAILED':'')+'</div>';
 }
 
+const TORDER=['tar','hash','encrypt','stage','par2'];
+function timingStr(t){if(!t)return '';const parts=[];
+  for(const k of TORDER)if(t[k]!=null)parts.push(`${k} ${(+t[k]).toFixed(1)}s`);
+  for(const k in t)if(!TORDER.includes(k))parts.push(`${k} ${(+t[k]).toFixed(1)}s`);
+  return parts.length?'⏱ '+parts.join(' · '):''}
+
+/* ---- verification history + due tracking ---- */
+function latestOKTime(c){let t=null;
+  for(const e of (c.verify_events||[]))if(e.ok&&(!t||e.at>t))t=e.at;
+  if(!t&&c.verify_ok&&c.verified_at)t=c.verified_at;
+  return t}
+function isVerifyDue(c,months){if(c.status!=='VERIFIED')return false;
+  const t=latestOKTime(c);if(!t)return true;
+  const cut=new Date();cut.setMonth(cut.getMonth()-(months||12));return new Date(t)<cut}
+function dueCount(cs,months){return (cs||[]).filter(c=>isVerifyDue(c,months)).length}
+function ringStr(c){const r=c.ring_stats;if(!r)return '';
+  return `<div class="dim mono" style="font-size:11px" title="ring buffer decouples read from write">⇄ read ${r.read_mbps} MB/s · write ${r.write_mbps} MB/s · min buffer ${r.min_fill}/${r.buffer_blocks} blk · ${r.starved_events} starve${r.starved_events===1?'':'s'}</div>`}
+function verifySummary(c){const ev=c.verify_events||[];if(!ev.length)return '';
+  const last=ev[ev.length-1];const mark=last.ok?'✓':'✗';
+  return `<div class="dim" style="font-size:11px">${mark} last check ${esc((last.at||'').slice(0,10))} · ${ev.length} check${ev.length>1?'s':''} · <a href="#" onclick="verifyHistory(${c.id});return false" style="color:var(--act)">history</a></div>`}
+async function verifyHistory(id){const c=await api('GET','/api/chunks/'+id);const ev=c.verify_events||[];
+  let h=`<h1>Verify history — ${esc(c.name)}</h1>`;
+  if(!ev.length)h+='<div class="empty">No verification events recorded yet.</div>';
+  else{h+='<table><tr><th>When (UTC)</th><th>Result</th><th>Note</th><th>Path</th></tr>';
+    for(const e of [...ev].reverse())h+=`<tr><td class="mono" style="font-size:11px">${esc((e.at||'').replace('T',' ').slice(0,19))}</td>
+      <td>${e.ok?'<span class="stamp VERIFIED">OK</span>':'<span class="stamp FAILED">FAIL</span>'}</td>
+      <td>${esc(e.note||'')}</td><td class="mono dim" style="font-size:10.5px">${esc(e.path||'')}</td></tr>`;
+    h+='</table>'}
+  dlg(h,async()=>{})}
+function verifyCampaignDlg(){dlg(`<h1>Verify a medium</h1>
+  <div class="dim" style="margin-bottom:8px">Insert the tape/disc (or point at an archive folder); every cataloged package found on it is re-checked against its recorded hash. Read-only — nothing is written to the medium.</div>
+  <label>Mounted medium / folder to scan</label><input id="d1" class="full" placeholder="T:\\  or  E:\\  or  /mnt/ltfs">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Verify everything found</button></div>`,
+  async()=>{const d=$('#d1').value.trim();if(!d)return;
+    await api('POST','/api/verify-campaign',{dest_dir:d});toast('Verify campaign started — see Jobs');loc('jobs')})}
+
 async function lamp(){try{const p=await api('GET','/api/preflight');const l=$('#lamp');
   l.className='lamp '+(p.ok?'ok':'bad');
   l.querySelector('span').textContent=p.ok?'tar · gpg · par2 · keys ready':'setup needed — see Settings';
 }catch(e){}}
 
-/* ---------------- Vault (collections) ---------------- */
+/* ---------------- Home / Dashboard ---------------- */
+async function vHome(){
+  const [cs,chunks,cfgr,pre]=await Promise.all([
+    api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/preflight')]);
+  const archives=cs||[]; const pkgs=chunks||[]; const cfg=cfgr.config||{};
+  const required=cfg.required_copies||2; const months=cfg.verify_due_months||12;
+  // Empty catalog → guided first run.
+  if(!archives.length){ $('#view').innerHTML=gettingStarted(cfg,pre,archives,pkgs); return; }
+  const totalFiles=archives.reduce((a,c)=>a+(c.files||0),0);
+  const written=pkgs.filter(c=>(c.copies||[]).length>0).length;
+  const verified=pkgs.filter(c=>verifiedCopies(c)>0).length;
+  const under=pkgs.filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+  const due=dueCount(pkgs,months);
+  const byArch={}; for(const c of pkgs){(byArch[c.collection_id]=byArch[c.collection_id]||[]).push(c)}
+  let h=hdr('Home','archive health at a glance','home');
+  if(under||due)h+=`<div class="row" style="margin-bottom:14px">
+    ${under?`<a class="btn danger" href="#packages">⚠ ${under} under-protected package${under>1?'s':''}</a>`:''}
+    ${due?`<a class="btn ghost" href="#packages">${due} package${due>1?'s':''} verify-due</a>`:''}</div>`;
+  const stage=(k,v,u,href)=>`<a class="stage" href="${href}" aria-label="${esc(k)}: ${v} ${esc(u)}"><div class="k">${esc(k)}</div><div class="v">${v}</div><div class="u">${esc(u)}</div></a>`;
+  h+=`<div class="pipemap" role="navigation" aria-label="pipeline stages">
+    ${stage('Catalog',totalFiles.toLocaleString(),`files · ${archives.length} archive${archives.length===1?'':'s'}`,'#vault')}
+    <div class="stagearrow" aria-hidden="true">→</div>
+    ${stage('Package',pkgs.length,`package${pkgs.length===1?'':'s'} planned`,'#packages')}
+    <div class="stagearrow" aria-hidden="true">→</div>
+    ${stage('Write',written,`on a volume`,'#volumes')}
+    <div class="stagearrow" aria-hidden="true">→</div>
+    ${stage('Verify',verified,`verified copies`,'#packages')}
+  </div>`;
+  h+='<div class="panel"><h2>Archives</h2><table><tr><th>Archive</th><th class="num">Files</th><th>Packages</th><th>Protection</th><th>Drift</th><th class="num">Verify-due</th></tr>';
+  for(const a of archives){
+    const p=byArch[a.id]||[];
+    const sc={}; for(const c of p)sc[c.status]=(sc[c.status]||0)+1;
+    const stamps=[...STAGES,'FAILED'].filter(s=>sc[s]).map(s=>`<span class="stamp ${s}" title="${sc[s]} ${s}">${sc[s]}</span>`).join(' ')||'<span class="dim">none yet</span>';
+    const au=p.filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+    const prot=p.filter(c=>verifiedCopies(c)>=required).length;
+    const ad=dueCount(p,months); const dr=a.drift;
+    h+=`<tr>
+      <td><a href="#vault" style="color:var(--act);text-decoration:none;font-weight:600">${esc(a.name)}</a></td>
+      <td class="num"><a href="#vault" style="color:var(--act);text-decoration:none">${(a.files||0).toLocaleString()}</a></td>
+      <td><a href="#packages" style="text-decoration:none" aria-label="${p.length} packages">${stamps}</a></td>
+      <td>${au?`<a href="#packages" class="etag due" style="text-decoration:none">${au} under-protected</a>`:prot?`<span class="etag enc">${prot} protected</span>`:'<span class="dim">—</span>'}</td>
+      <td>${dr&&dr.changes>0?`<a href="#" onclick="vDrift(${a.id},'${esc(a.name)}');return false" class="etag due" style="text-decoration:none">${dr.changes} changes</a>`:dr?'<span class="etag enc">in sync</span>':'<span class="dim" title="run Rescan &amp; compare in Vault">—</span>'}</td>
+      <td class="num">${ad?`<a href="#packages" class="etag due" style="text-decoration:none">${ad}</a>`:'<span class="dim">0</span>'}</td>
+    </tr>`;
+  }
+  h+='</table></div>';
+  $('#view').innerHTML=h;
+}
+function gettingStarted(cfg,pre,archives,pkgs){
+  const ok=x=>x&&x.ok;
+  const tools=ok(pre.tar)&&ok(pre.gpg)&&ok(pre.par2);
+  const staging=!!(cfg.staging_dir);
+  const keystores=ok(pre.keystores);
+  const hasArchive=archives.length>0;
+  const hasScan=archives.some(a=>(a.files||0)>0);
+  const built=pkgs.some(c=>c.staged_dir||['STAGED','WRITING','WRITTEN','VERIFIED'].includes(c.status));
+  const verified=pkgs.some(c=>verifiedCopies(c)>0);
+  const p6=pkgs.length?['packages','Go to Packages →']:['vault','Go to Vault →'];
+  const items=[
+    ['Install the three tools','tar · gpg · par2 — the entire restore story. Preflight in Settings checks them.',tools,'settings','Open Settings →'],
+    ['Set a staging folder','Big, fast scratch space where packages are built before being written to media.',staging,'settings','Open Settings →'],
+    ['Register 2 keystores','On different devices. Encrypted builds refuse to run without them; secrets never touch the catalog.',keystores,'keys','Open Keys →'],
+    ['Create your first archive','A body of work you keep together — e.g. "Personal" or "Photography Business".',hasArchive,'vault','Go to Vault →'],
+    ['Scan a folder into it','Walks the folder and SHA-256-hashes every file — the root of the custody chain.',hasScan,'vault','Go to Vault →'],
+    ['Plan & build a package','Group files into a media-sized unit, then Build it (tar → encrypt → par2).',built,p6[0],p6[1]],
+    ['Write a verified copy','Stream to a tape/drive/folder with read-back verification, then register the volume.',verified,'packages','Go to Packages →'],
+  ];
+  let h=hdr('Getting started','set up your first archive — the interface will guide you','home');
+  h+=`<div class="panel"><div class="dim" style="margin-bottom:6px">Each step detects its own state. Do them roughly in order; click through to the exact spot.</div>`;
+  let n=0;
+  for(const [t,d,done,target,label] of items){ n++;
+    h+=`<div class="chk${done?' done':''}"><div class="mk" aria-hidden="true">${done?'✓':n}</div>
+      <div class="bd"><div class="t">${t}${done?' <span class="sr">(done)</span>':''}</div><div class="d">${d}</div>
+      ${done?'':`<div style="margin-top:7px"><button class="btn" onclick="loc('${target}')">${label}</button></div>`}</div></div>`;
+  }
+  return h+'</div>';
+}
+
+/* ---------------- Vault (archives) ---------------- */
 async function vVault(){
-  const cs=await api('GET','/api/collections')||[];
-  let h=`<h1>Vault</h1><div class="crumb">catalog · every file hashed at the source</div>
+  const [cs,chunksAll,cfgr]=await Promise.all([api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config')]);
+  const cfg=cfgr.config||{}; const months=cfg.verify_due_months||12; const required=cfg.required_copies||2;
+  const due=dueCount(chunksAll,months);
+  const under=(chunksAll||[]).filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+  let h=`${hdr('Vault','catalog · every file hashed at the source','vault')}
+  ${under?`<div class="panel" style="border-left:3px solid var(--bad)"><b>${under}</b> package${under>1?'s are':' is'} under-protected — fewer than ${required} verified copies. Write another copy to a volume in a different location.</div>`:''}
+  ${due?`<div class="panel" style="border-left:3px solid #9a7a10"><b>${due}</b> verified package${due>1?'s':''} due for re-verification (older than ${months} months). Open <a href="#packages" style="color:var(--act)">Packages → Verify a medium</a> and re-check the tape/disc.</div>`:''}
   <div class="panel"><div class="row">
-    <input id="newname" placeholder="New collection name (e.g. Weddings 2025)" style="flex:1;min-width:220px">
-    <button class="btn" onclick="addColl()">Create collection</button>
+    <input id="newname" placeholder="New archive name (e.g. Photography Business)" style="flex:1;min-width:220px">
+    <button class="btn" onclick="addColl()">Create archive</button>
   </div></div>
-  <div class="panel"><h2>Find a file → which chunk, which medium</h2>
+  <div class="panel"><h2>Find a file → which package, which medium</h2>
     <div class="row"><input id="q" class="full" placeholder="Search cataloged file paths…" oninput="doSearch(this.value)"></div>
     <div id="sres"></div></div>`;
-  h+='<div class="panel"><h2>Collections</h2>';
-  if(!cs.length) h+='<div class="empty">No collections yet. Create one, then scan a folder into it.</div>';
-  else{h+='<table><tr><th>Name</th><th class="num">Files</th><th class="num">Size</th><th class="num">Chunks</th><th></th></tr>';
-    for(const c of cs) h+=`<tr><td>${esc(c.name)}</td><td class="num">${c.files}</td><td class="num">${GB(c.bytes)} GB</td>
+  const drifted=(cs||[]).filter(c=>c.drift&&c.drift.changes>0);
+  if(drifted.length)h=h.replace('<div class="panel"><h2>Find a file',
+    `<div class="panel" style="border-left:3px solid var(--bad)"><b>Unresolved drift:</b> ${drifted.map(c=>`<a href="#" onclick="vDrift(${c.id},'${esc(c.name)}');return false" style="color:var(--act)">${esc(c.name)} (${c.drift.changes})</a>`).join(' · ')} — sources changed since backup.</div>\n  <div class="panel"><h2>Find a file`);
+  h+='<div class="panel"><h2>Archives</h2>';
+  if(!cs.length) h+='<div class="empty">No archives yet. Create one, then scan a folder into it.</div>';
+  else{h+='<table><tr><th>Name</th><th class="num">Files</th><th class="num">Size</th><th class="num">Packages</th><th></th></tr>';
+    for(const c of cs){const dr=c.drift;
+      h+=`<tr><td>${esc(c.name)}${dr&&dr.changes>0?` <a href="#" onclick="vDrift(${c.id},'${esc(c.name)}');return false" class="etag due" style="text-decoration:none">${dr.changes} changes${dr.informational?' · '+dr.informational+' informational':''}</a>`:dr?` <span class="etag enc">in sync</span>`:''}</td>
+      <td class="num">${c.files}</td><td class="num">${GB(c.bytes)} GB</td>
       <td class="num">${c.chunks}</td><td class="row" style="justify-content:flex-end">
       <button class="btn ghost" onclick="scanDlg(${c.id},'${esc(c.name)}')">Scan folder…</button>
-      <button class="btn ghost" onclick="planDlg(${c.id},'${esc(c.name)}')">Plan chunks…</button></td></tr>`;
+      <button class="btn ghost" onclick="planDlg(${c.id},'${esc(c.name)}')">Plan packages…</button>
+      <button class="btn ghost" onclick="doReconcile(${c.id},'${esc(c.name)}')">Rescan & compare</button></td></tr>`}
     h+='</table>'}
   h+='</div>';
   $('#view').innerHTML=h;
 }
+async function doReconcile(id,name){try{await api('POST','/api/collections/'+id+'/reconcile');
+  toast('Rescan & compare started — see Jobs; drift shows on the archive when done');loc('jobs')}catch(e){toast(e.message,1)}}
+async function vDrift(id,name){
+  const d=await api('GET','/api/collections/'+id+'/drift');const c=d.counts||{};const info=d.info_counts||{};
+  const changes=(c.new||0)+(c.modified||0)+(c.missing||0)+(c.moved||0);
+  const infoTotal=(info.new||0)+(info.modified||0)+(info.missing||0)+(info.moved||0);
+  let h=`<h1>Drift — ${esc(name||'')}</h1><div class="crumb">rescanned ${esc((d.at||'').replace('T',' ').slice(0,19))} UTC</div>
+  <div class="row" style="margin-bottom:10px"><button class="btn ghost" onclick="loc('vault')">← Vault</button>
+    <button class="btn" onclick="doReconcile(${id},'${esc(name||'')}')">Rescan again</button></div>
+  <div class="panel"><h2>Summary</h2><div class="row" style="gap:14px">
+    <span class="stamp ${changes?'FAILED':'VERIFIED'}">${changes} changes</span>
+    <span class="dim">unchanged ${c.unchanged||0} · new ${c.new||0} · modified ${c.modified||0} · missing ${c.missing||0} · moved ${c.moved||0}</span>
+    ${infoTotal?`<span class="dim">informational (excluded): ${infoTotal}</span>`:''}</div></div>
+  <div class="panel"><h2>By file type — different types mean different things</h2>`;
+  const rows=(d.by_ext||[]).filter(e=>!e.informational);const inf=(d.by_ext||[]).filter(e=>e.informational);
+  if(!rows.length&&!inf.length)h+='<div class="empty">No differences — sources match the backup.</div>';
+  else{h+='<table><tr><th>Type</th><th class="num">Missing</th><th class="num">Modified</th><th class="num">New</th><th class="num">Moved</th></tr>';
+    for(const e of rows)h+=extRow(e);
+    if(inf.length){h+='<tr><td colspan="5" class="dim" style="padding-top:8px">informational (sidecar churn — excluded from alarm totals)</td></tr>';for(const e of inf)h+=extRow(e,true);}
+    h+='</table>'}
+  h+='</div>';
+  const items=d.items||[];
+  for(const st of ['MISSING','MODIFIED','NEW','MOVED']){const list=items.filter(it=>it.state===st&&!it.informational);
+    if(list.length)h+=`<div class="panel"><h2>${st} (${list.length})</h2>${itemList(list)}</div>`}
+  const infoItems=items.filter(it=>it.informational);
+  if(infoItems.length)h+=`<div class="panel" style="opacity:.65"><h2 class="dim">Informational (${infoItems.length}) — sidecar churn, not counted</h2>${itemList(infoItems)}</div>`;
+  $('#view').innerHTML=h;
+}
+function extRow(e,muted){return `<tr${muted?' class="dim"':''}><td class="mono">${esc(e.ext||'(no ext)')}</td><td class="num">${e.missing||0}</td><td class="num">${e.modified||0}</td><td class="num">${e.new||0}</td><td class="num">${e.moved||0}</td></tr>`}
+function itemList(list){let h='<table>';for(const it of list){
+  h+=`<tr><td class="mono" style="font-size:11.5px">${esc(it.path)}${it.moved_from?' <span class="dim">← '+esc(it.moved_from)+'</span>':''}</td>
+    <td>${it.needs_backup?'<span class="etag due">needs backup</span>':''}</td>
+    <td class="dim" style="font-size:11px">${it.chunk?'restore from '+esc(it.chunk):''}${(it.volumes||[]).length?': '+it.volumes.map(esc).join(', '):''}</td></tr>`}
+  return h+'</table>'}
 async function addColl(){const n=$('#newname').value.trim();if(!n)return;
-  try{await api('POST','/api/collections',{name:n});toast('Collection created');vVault()}catch(e){toast(e.message,1)}}
+  try{await api('POST','/api/collections',{name:n});toast('Archive created');vVault()}catch(e){toast(e.message,1)}}
+function searchCopies(r){const cps=r.copies||[];
+  if(!cps.length)return r.chunk?'<span class="dim">no copies recorded</span>':'<span class="dim">—</span>';
+  const parts=cps.map(cp=>{const mark=cp.verify_ok===true?'✓':cp.verify_ok===false?'✗':'?';
+    const when=cp.last_verified_at?' '+cp.last_verified_at.slice(0,7):'';
+    return `${esc(cp.volume_label||'vol#'+cp.volume_id)}${cp.location?' ('+esc(cp.location)+')':''} ${mark}${when}`});
+  return `<span class="dim" style="font-size:11.5px">${r.verified_copies}/${cps.length} verified · ${parts.join(' · ')}</span>`}
 let sT;function doSearch(q){clearTimeout(sT);sT=setTimeout(async()=>{
   if(!q){$('#sres').innerHTML='';return}
   const rs=await api('GET','/api/search?q='+encodeURIComponent(q));
-  let h='<table><tr><th>File</th><th class="num">Size</th><th>Chunk</th><th>On medium</th></tr>';
+  let h='<table><tr><th>File</th><th class="num">Size</th><th>Package</th><th>Copies / volumes</th></tr>';
   for(const r of rs||[]) h+=`<tr><td class="mono">${esc(r.rel_path)}</td><td class="num">${GB(r.size_bytes)} GB</td>
-    <td>${r.chunk?'<span class="chip">'+esc(r.chunk)+'</span>':'<span class="dim">not chunked</span>'}</td>
-    <td class="mono dim">${esc(r.written_dest||'—')}</td></tr>`;
+    <td>${r.chunk?'<span class="chip">'+esc(r.chunk)+'</span>':'<span class="dim">not packaged</span>'}</td>
+    <td>${searchCopies(r)}</td></tr>`;
   $('#sres').innerHTML=(rs&&rs.length)?h+'</table>':'<div class="empty">No matches.</div>';
 },250)}
 function scanDlg(id,name){dlg(`<h1>Scan into “${esc(name)}”</h1>
@@ -164,28 +394,45 @@ function scanDlg(id,name){dlg(`<h1>Scan into “${esc(name)}”</h1>
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Start scan</button></div>`,
   async()=>{const p=$('#d1').value.trim();if(!p)return;
     await api('POST',`/api/collections/${id}/scan`,{path:p});toast('Scan started — see Jobs');loc('jobs')});}
-function planDlg(id,name){dlg(`<h1>Plan chunks for “${esc(name)}”</h1>
+function planDlg(id,name){dlg(`<h1>Plan packages for “${esc(name)}”</h1>
   <label>Target medium</label><select id="d1" class="full">
     <option value="LTO8">LTO-8 tape (11 TB usable)</option><option value="LTO9">LTO-9 tape (16.5 TB)</option>
     <option value="BD-R25">Blu-ray 25 GB</option><option value="BD-R50">Blu-ray 50 GB</option>
-    <option value="BD-R100">Blu-ray 100 GB</option><option value="CUSTOM">Custom size…</option></select>
+    <option value="BD-R100">Blu-ray 100 GB</option>
+    <option value="DVD-R">DVD-R 4.7 GB</option><option value="DVD-DL">DVD-DL 8.5 GB</option>
+    <option value="CUSTOM">Custom size…</option></select>
   <label>Custom size (GB, only for Custom/HDD)</label><input id="d2" class="full" type="number" step="0.001" placeholder="e.g. 3500">
   <label>par2 redundancy %</label><input id="d3" class="full" type="number" value="10">
+  <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="d4" type="checkbox" checked> Encrypt packages (AES-256)</label>
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Plan</button></div>`,
   async()=>{const r=await api('POST','/api/plan',{collection_id:id,media_kind:$('#d1').value,
-      target_gb:parseFloat($('#d2').value)||0,par2_redundancy:parseInt($('#d3').value)||0});
-    toast(`Planned ${r.chunks_created?.length||0} chunk(s)`+(r.oversized_files_skipped?.length?` · ${r.oversized_files_skipped.length} oversized skipped`:''));
+      target_gb:parseFloat($('#d2').value)||0,par2_redundancy:parseInt($('#d3').value)||0,encrypted:$('#d4').checked});
+    const sp=r.spanned_chunks||[];const spMedia=sp.reduce((a,s)=>a+(s.media_required||0),0);
+    toast(`Planned ${r.chunks_created?.length||0} package(s)`+(sp.length?` · ${sp.length} spanned needing ${spMedia} media`:''),sp.length?1:0);
     if(r.staging&&r.staging.warning)toast(r.staging.warning,1);
-    loc('chunks')});}
+    loc('packages')});}
 
-/* ---------------- Chunks ---------------- */
+/* ---------------- Packages ---------------- */
 async function vChunks(){
-  const cs=await api('GET','/api/chunks')||[];
-  let h=`<h1>Chunks</h1><div class="crumb">tar → AES-256 → par2 · one chunk, one medium</div><div class="panel">`;
-  if(!cs.length){h+='<div class="empty">Nothing planned yet. Plan chunks from the Vault tab.</div>'}
-  else{h+='<table><tr><th>Chunk</th><th>Lifecycle</th><th class="num">Data</th><th class="num">Files</th><th>Key</th><th></th></tr>';
-    for(const c of cs.sort((a,b)=>b.id-a.id)){
-      h+=`<tr><td><div class="mono">${esc(c.name)}</div><div class="dim" style="font-size:11.5px">${esc(c.media_kind)} · ${esc(c.src_root)}</div>
+  const [cs,cfgr,vs]=await Promise.all([api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/volumes')]);
+  const chunks=cs||[]; const cfg=cfgr.config||{}; const months=cfg.verify_due_months||12; const required=cfg.required_copies||2; const due=dueCount(chunks,months);
+  const volmap={}; for(const r of (vs||[])){const v=r.volume;volmap[v.id]=v}
+  const under=chunks.filter(c=>(c.copies||[]).length>0&&verifiedCopies(c)<required).length;
+  let h=`${hdr('Packages','tar → AES-256 → par2 · one package per medium (large packages span several)','packages')}
+  <div class="panel"><div class="row"><button class="btn ghost" onclick="verifyCampaignDlg()">Verify a medium…</button>
+    ${due?`<span class="etag due">${due} verify due</span>`:''}
+    ${under?`<span class="etag due">${under} under-protected</span>`:''}
+    <span class="dim">Re-check every cataloged package on an inserted tape/disc against its hash.</span></div></div>
+  <div class="panel">`;
+  if(!chunks.length){h+='<div class="empty">No packages yet — packages are media-sized units built from an archive&#39;s files.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="loc(&#39;vault&#39;)">Go to an Archive →</button></div></div>'}
+  else{h+='<table><tr><th>Package</th><th>Lifecycle</th><th class="num">Data</th><th class="num">Files</th><th>Key</th><th></th></tr>';
+    for(const c of chunks.sort((a,b)=>b.id-a.id)){
+      h+=`<tr><td><div class="mono">${esc(c.name)} <span class="etag ${c.encrypted?'enc':'plain'}">${c.encrypted?'AES-256':'plaintext'}</span>${isVerifyDue(c,months)?' <span class="etag due">verify due</span>':''}${copyTag(c,required)}</div><div class="dim" style="font-size:11.5px">${esc(c.media_kind)} · ${esc(c.src_root)}</div>
+        ${c.build_timings?`<div class="dim mono" style="font-size:11px">${esc(timingStr(c.build_timings))}</div>`:''}
+        ${ringStr(c)}
+        ${segStr(c)}
+        ${copiesLine(c,volmap)}
+        ${verifySummary(c)}
         ${c.error?`<div class="err">${esc(c.error)}</div>`:''}</td>
       <td>${rail(c)}</td>
       <td class="num">${GB(c.data_bytes)} GB</td><td class="num">${c.file_count}</td>
@@ -194,27 +441,74 @@ async function vChunks(){
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
 }
+const SEG_CLS={VERIFIED:'done',FAILED:'failed',WRITING:'active',WRITTEN:'active',PENDING:'pending'};
+function segStr(c){if(!c.spanned||!c.segments)return '';
+  const done=c.segments.filter(s=>s.status==='VERIFIED').length;const N=c.segments.length;
+  let h=`<div class="dim" style="font-size:11px;margin-top:3px">spanned · ${done}/${N} media verified · custody: source hashes → tar → payload → per-segment hashes</div><div class="discs">`;
+  for(const s of c.segments)h+=`<div class="disc ${SEG_CLS[s.status]||'pending'}" role="img" aria-label="${s.par2?'par2 tape':'segment'} ${s.index} ${esc(s.status)}" title="${s.par2?'par2 tape':'segment'} ${s.index} — ${esc(s.status)}"></div>`;
+  return h+'</div>'}
 function actions(c){
   const b=[];
-  if(c.status==='PLANNED'||c.status==='FAILED')b.push(`<button class="btn" onclick="doBuild(${c.id})">Build</button>`);
-  if(c.staged_dir&&c.status!=='PLANNED'&&c.status!=='BUILDING')b.push(`<button class="btn" onclick="writeDlg(${c.id},'${esc(c.name)}')">Write…</button>`);
-  if(c.written_dest){b.push(`<button class="btn ghost" onclick="doVerify(${c.id})">Verify</button>`);
-    b.push(`<button class="btn ghost" onclick="restoreDlg(${c.id},'${esc(c.name)}')">Restore…</button>`)}
+  if(c.status==='PLANNED'||c.status==='FAILED')b.push(`<button class="btn" onclick="doBuild(${c.id})">Build package</button>`);
+  if(c.spanned){
+    if(c.staged_dir&&c.status==='STAGED')b.push(`<button class="btn" onclick="spanWriteDlg(${c.id},'${esc(c.name)}')">Write next segment →</button>`);
+  }else if(c.staged_dir&&c.status!=='PLANNED'&&c.status!=='BUILDING'){
+    b.push(`<button class="btn" onclick="writeDlg(${c.id},'${esc(c.name)}',${c.enc_bytes||c.data_bytes||0})">Write to volume…</button>`);
+  }
+  if(c.written_dest){
+    if(!c.spanned)b.push(`<button class="btn ghost" onclick="doVerify(${c.id})">Verify medium</button>`);
+    b.push(`<button class="btn ghost" onclick="restoreDlg(${c.id},'${esc(c.name)}')">Restore package…</button>`)}
+  if(c.encrypted&&c.staged_dir)b.push(`<button class="btn ghost" onclick="readMediumDlg(${c.id},'${esc(c.name)}')">Read manifest…</button>`);
   return b.join('');
 }
+async function spanWriteDlg(id,name){
+  const [c,vols]=await Promise.all([api('GET','/api/chunks/'+id),api('GET','/api/volumes')]);
+  const segs=c.segments||[];const N=segs.length;
+  const next=segs.find(s=>s.status==='PENDING'||s.status==='FAILED');
+  if(!next){toast('All segments already written',1);return}
+  const remembered=([...segs].reverse().find(s=>s.dest)||{}).dest||'';
+  dlg(`<h1>Write segment ${next.index}/${N} of ${esc(name)}</h1>
+    <div class="dim" style="margin-bottom:8px">Insert/mount tape <b>${next.index} of ${N}</b>. ${next.par2?'This tape holds the <b>par2 recovery set</b>.':'This tape holds <b>payload segment '+next.index+'</b>.'} Nothing else on the tape is touched.</div>
+    <label>Mounted medium for THIS tape (same drive letter each time is fine)</label>
+    <input id="d1" class="full" value="${esc(remembered)}" placeholder="T:\\ or /mnt/ltfs or E:\\span">
+    ${volPicker(vols)}
+    <label>Throttle MB/s (blank/0 = setting)</label><input id="d5" class="full" type="number" step="1" placeholder="0 = unthrottled">
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Write + verify this segment</button></div>`,
+  async()=>{const d=$('#d1').value.trim();if(!d)return;
+    const body={dest_dir:d,throttle_mbps:parseFloat($('#d5').value)||0};Object.assign(body,volChoice());
+    await api('POST',`/api/chunks/${id}/span-write`,body);
+    toast('Segment write started — see Jobs. When it verifies, eject & label the tape, mount the next, then click again.',1);loc('jobs')})}
 async function doBuild(id){try{await api('POST',`/api/chunks/${id}/build`);toast('Build started — see Jobs');loc('jobs')}catch(e){toast(e.message,1)}}
-function writeDlg(id,name){dlg(`<h1>Write ${esc(name)}</h1>
+async function writeDlg(id,name,payload){
+  const vols=await api('GET','/api/volumes')||[];
+  dlg(`<h1>Write ${esc(name)}</h1>
   <label>Destination (LTFS tape mount, archive drive, burn folder)</label>
-  <input id="d1" class="full" placeholder="T:\\  or  /mnt/ltfs  or  E:\\archive">
-  <label>RAM buffer GB (blank = setting)</label><input id="d2" class="full" type="number" step="0.5" placeholder="16">
+  <input id="d1" class="full" placeholder="T:\\  or  /mnt/ltfs  or  E:\\archive" oninput="checkDest(${payload||0})">
+  <div id="dwarn"></div>
+  ${volPicker(vols)}
+  <div class="row"><div style="flex:1"><label>RAM buffer GB (blank = setting)</label><input id="d2" class="full" type="number" step="0.5" placeholder="16"></div>
+    <div style="flex:1"><label>Block size MB (blank = setting)</label><input id="d4" class="full" type="number" step="1" placeholder="64"></div></div>
+  <label>Throttle MB/s (blank/0 = setting; caps write speed to keep destination drives cool)</label>
+  <input id="d5" class="full" type="number" step="1" placeholder="0 = unthrottled">
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Write + read-back verify</button></div>`,
   async()=>{const d=$('#d1').value.trim();if(!d)return;
-    await api('POST',`/api/chunks/${id}/write`,{dest_dir:d,buffer_gb:parseFloat($('#d2').value)||0});
+    const body={dest_dir:d,buffer_gb:parseFloat($('#d2').value)||0,block_mb:parseInt($('#d4').value)||0,throttle_mbps:parseFloat($('#d5').value)||0};
+    Object.assign(body,volChoice());
+    await api('POST',`/api/chunks/${id}/write`,body);
     toast('Write started — see Jobs');loc('jobs')});}
+let destT;function checkDest(payload){clearTimeout(destT);destT=setTimeout(async()=>{
+  const p=$('#d1')&&$('#d1').value.trim();const el=$('#dwarn');if(!el)return;
+  if(!p||!payload){el.innerHTML='';return}
+  try{const r=await api('GET','/api/pathinfo?path='+encodeURIComponent(p));
+    if(r.free_bytes!=null && r.free_bytes < payload*1.1)
+      el.innerHTML=`<div style="color:#8a6d10;font:12px var(--mono);margin:4px 0">⚠ Low space: ${GB(r.free_bytes)} GB free at destination, need ≥ ${GB(payload*1.1)} GB (110% of payload). Write may fail.</div>`;
+    else el.innerHTML='';
+  }catch(e){el.innerHTML=''}
+},300)}
 async function doVerify(id){try{const r=await api('POST',`/api/chunks/${id}/verify`,{});
   toast(r.verify_ok?'Medium verified ✓':'VERIFY FAILED — medium does not match catalog',!r.verify_ok);vChunks()}catch(e){toast(e.message,1)}}
 function restoreDlg(id,name){dlg(`<h1>Restore ${esc(name)}</h1>
-  <label>Source (chunk folder on the medium; blank = recorded location)</label><input id="d1" class="full">
+  <label>Source (package folder on the medium; blank = recorded location)</label><input id="d1" class="full">
   <label>Restore into</label><input id="d2" class="full" placeholder="D:\\restore">
   <label>Only these paths (optional, one per line)</label><textarea id="d3" class="full" rows="3" style="font:12px var(--mono)"></textarea>
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">par2 → decrypt → extract</button></div>`,
@@ -223,11 +517,168 @@ function restoreDlg(id,name){dlg(`<h1>Restore ${esc(name)}</h1>
     await api('POST',`/api/chunks/${id}/restore`,{source_dir:$('#d1').value.trim(),output_dir:out,members:mem.length?mem:undefined});
     toast('Restore started — see Jobs');loc('jobs')});}
 
+/* ---------------- Burn ---------------- */
+const DISC_CLS={DONE:'done',FAILED:'failed',BURNING:'active',VERIFYING:'active',PENDING:'pending'};
+let burnTimer;
+async function vBurn(){
+  const [qs,cs]=await Promise.all([api('GET','/api/burnqueues'),api('GET','/api/chunks')]);
+  const cmap={};for(const c of (cs||[]))cmap[c.id]=c;
+  const nm=d=>{const c=cmap[d.chunk_id];return c?c.name:'package#'+d.chunk_id};
+  const sz=d=>{const c=cmap[d.chunk_id];return c?GB(c.enc_bytes||c.data_bytes):'?'};
+  let h=`${hdr('Burn','optical discs · one blank at a time · queue survives reboots','burn')}
+  <div class="panel"><div class="row"><button class="btn" onclick="burnQueueDlg()">Create burn queue…</button>
+    <span class="dim">Gathers every staged/written/verified package of one media kind, one disc each.</span></div></div>`;
+  const list=(qs||[]).sort((a,b)=>b.id-a.id);
+  let anyActive=false;
+  if(!list.length)h+='<div class="panel"><div class="empty">No burn queues yet — a queue bundles packages of one media kind, one disc each.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="burnQueueDlg()">Create burn queue…</button></div></div></div>';
+  for(const q of list){
+    const discs=q.discs||[];
+    const done=discs.filter(d=>d.status==='DONE').length;
+    const failed=discs.filter(d=>d.status==='FAILED').length;
+    const active=discs.find(d=>d.status==='BURNING'||d.status==='VERIFYING');
+    const next=discs.find(d=>d.status==='PENDING');
+    if(active)anyActive=true;
+    h+=`<div class="panel"><div class="row" style="justify-content:space-between">
+      <div><b>${esc(q.name)}</b> <span class="chip">${esc(q.media_kind)}</span></div>
+      <div class="dim mono">${done}/${discs.length} burned${failed?` · ${failed} failed`:''}</div></div>`;
+    h+='<div class="discs">';
+    for(const d of discs)h+=`<div class="disc ${DISC_CLS[d.status]||'pending'}" role="img" aria-label="disc ${esc(nm(d))} ${esc(d.status)}" title="${esc(nm(d))} — ${esc(d.status)}${d.detail?': '+esc(d.detail):''}"></div>`;
+    h+='</div>';
+    for(const d of discs.filter(d=>d.status==='FAILED'))h+=`<div class="err">✗ ${esc(nm(d))}: ${esc(d.detail||'failed')}</div>`;
+    if(active){
+      h+=`<div class="dim">Burning <b>${esc(nm(active))}</b> — ${esc(active.status.toLowerCase())}… watch Jobs for progress.</div>`;
+    }else if(next){
+      const pos=discs.indexOf(next)+1;
+      h+=`<div class="dim" style="margin:2px 0 10px">Next: <b>${esc(nm(next))}</b> (${sz(next)} GB). After it burns, <b>write “${esc(nm(next))}” on the disc</b> with a marker before moving on.</div>
+        <button class="btn" onclick="doBurnNext(${q.id})">Insert blank → Burn next disc (${pos}/${discs.length})</button>`;
+    }else{
+      h+=`<div class="dim" style="margin-bottom:8px">All discs burned ✓</div>`;
+    }
+    if(failed)h+=` <button class="btn ghost" onclick="doResetQueue(${q.id})">Retry failed discs (${failed})</button>`;
+    h+='</div>';
+  }
+  $('#view').innerHTML=h;
+  clearTimeout(burnTimer);
+  if(anyActive)burnTimer=setTimeout(()=>{if(location.hash==='#burn')vBurn()},1500);
+}
+async function burnQueueDlg(){
+  const cs=await api('GET','/api/collections')||[];
+  const opts=cs.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  dlg(`<h1>New burn queue</h1>
+    <label>Archive</label><select id="d1" class="full"><option value="0">All archives</option>${opts}</select>
+    <label>Media kind (optical)</label><select id="d2" class="full">
+      <option value="BD-R25">Blu-ray 25 GB</option><option value="BD-R50">Blu-ray 50 GB</option>
+      <option value="BD-R100">Blu-ray 100 GB</option>
+      <option value="DVD-R">DVD-R</option><option value="DVD-DL">DVD-DL</option></select>
+    <label>Queue name (optional)</label><input id="d3" class="full" placeholder="e.g. Weddings BD-R batch 1">
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Gather packages</button></div>`,
+  async()=>{if(!confirm('Create a burn queue? This gathers every eligible package of the chosen media kind into a new queue.'))return;
+    const r=await api('POST','/api/burnqueues',{collection_id:parseInt($('#d1').value)||0,
+      media_kind:$('#d2').value,name:$('#d3').value.trim()});
+    toast(`Queue “${esc(r.name)}” created — ${(r.discs||[]).length} disc(s)`);vBurn()});
+}
+async function doBurnNext(id){try{await api('POST',`/api/burnqueues/${id}/next`);
+  toast('Burn started — see Jobs. Label the disc with the package name once it finishes.',1);vBurn()}catch(e){toast(e.message,1)}}
+async function doResetQueue(id){if(!confirm('Reset all FAILED discs in this queue back to pending for re-burning?'))return;
+  try{const r=await api('POST',`/api/burnqueues/${id}/reset`);
+  toast(`Reset ${r.reset} failed disc(s) to pending`);vBurn()}catch(e){toast(e.message,1)}}
+
+/* ---------------- Volumes + copies ---------------- */
+function ageStr(iso){if(!iso)return 'never';const d=new Date(iso);const days=Math.floor((Date.now()-d)/86400000);
+  const when=iso.slice(0,10);
+  if(days<1)return when+' (today)';if(days<45)return when+` (${days}d ago)`;
+  return when+` (${Math.round(days/30)}mo ago)`}
+function verifiedCopies(c){return (c.copies||[]).filter(x=>x.verify_ok===true).length}
+function copyTag(c,required){const total=(c.copies||[]).length;if(!total)return '';
+  const vc=verifiedCopies(c);
+  if(vc<required)return ` <span class="etag due" title="redundancy goal ${required}">under-protected (${vc} of ${required} copies)</span>`;
+  return ` <span class="etag enc" title="redundancy goal ${required}">${vc} verified copies</span>`}
+function copiesLine(c,volmap){if(!(c.copies||[]).length)return '';
+  const parts=(c.copies||[]).map(cp=>{const v=volmap[cp.volume_id]||{};const mark=cp.verify_ok===true?'✓':cp.verify_ok===false?'✗':'?';
+    return `${esc(v.label||'vol#'+cp.volume_id)}${v.location?' ('+esc(v.location)+')':''} ${mark}`});
+  return `<div class="dim" style="font-size:11px">copies: ${parts.join(' · ')}</div>`}
+
+function volPicker(vols){
+  const opts=(vols||[]).map(r=>{const v=r.volume||r;return `<option value="${v.id}">${esc(v.label)}${v.barcode?' · '+esc(v.barcode):''}${v.location?' · '+esc(v.location):''}</option>`}).join('');
+  return `<label>Volume this copy lands on</label>
+    <select id="vol" class="full" onchange="document.querySelector('#newvol').style.display=this.value==='new'?'block':'none'">
+      ${opts||''}<option value="new">＋ register new volume…</option></select>
+    <div id="newvol" style="display:${opts?'none':'block'};border-left:2px solid var(--line);padding-left:10px;margin-top:6px">
+      <label>Label</label><input id="nvlabel" class="full" placeholder="e.g. NSP-0007">
+      <label>Barcode (scan or type)</label><input id="nvbc" class="full" placeholder="scan…">
+      <div class="row"><div style="flex:1"><label>Kind</label><select id="nvkind" class="full"><option>TAPE</option><option>HDD</option><option>SSD</option><option>OPTICAL</option><option>OTHER</option></select></div>
+      <div style="flex:1"><label>Location</label><input id="nvloc" class="full" placeholder="office safe"></div></div>
+    </div>`}
+function volChoice(){const sel=$('#vol');if(!sel)return {};
+  if(sel.value==='new'){const label=($('#nvlabel').value.trim())||($('#nvbc').value.trim());if(!label)throw new Error('New volume needs a label or barcode');
+    return {new_volume:{label,barcode:$('#nvbc').value.trim(),kind:$('#nvkind').value,location:$('#nvloc').value.trim()}}}
+  return {volume_id:parseInt(sel.value)||0}}
+
+async function vVolumes(){
+  const vols=await api('GET','/api/volumes')||[];
+  let h=`${hdr('Volumes','physical media — where the bytes actually live','volumes')}
+  <div class="panel"><div class="row">
+    <input id="bclookup" placeholder="Scan a barcode → jump to its contents" style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')volLookup()">
+    <button class="btn ghost" onclick="volLookup()">Look up</button>
+    <button class="btn" onclick="newVolumeDlg()">Register volume…</button></div></div>
+  <div class="panel"><h2>Registered media (${vols.length})</h2>`;
+  if(!vols.length)h+='<div class="empty">No volumes yet — a volume is a physical tape/drive/disc with a barcode and location.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="newVolumeDlg()">Register volume…</button></div></div>';
+  else{h+='<table><tr><th>Label</th><th>Barcode</th><th>Kind</th><th>Location</th><th class="num">Packages</th><th class="num">Bytes</th><th>Last verified</th></tr>';
+    for(const r of vols){const v=r.volume;
+      h+=`<tr style="cursor:pointer" tabindex="0" role="button" aria-label="Open volume ${esc(v.label)}" onclick="volDetail(${v.id})" onkeydown="if(event.key==='Enter')volDetail(${v.id})"><td><b>${esc(v.label)}</b></td><td class="mono">${esc(v.barcode||'—')}</td>
+        <td>${esc(v.kind)}</td><td>${esc(v.location||'—')}</td><td class="num">${r.chunk_count}</td>
+        <td class="num">${GB(r.total_bytes)} GB</td><td class="dim" style="font-size:11.5px">${esc(ageStr(r.last_verified_at))}</td></tr>`}
+    h+='</table>'}
+  $('#view').innerHTML=h+'</div>';
+}
+async function volLookup(){const bc=$('#bclookup').value.trim();if(!bc)return;
+  try{const v=await api('GET','/api/volumes/by-barcode?barcode='+encodeURIComponent(bc));volDetail(v.id)}catch(e){toast(e.message,1)}}
+async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v=d.volume;const cs=d.chunks||[];
+  let h=`<h1>${esc(v.label)}</h1><div class="crumb">${esc(v.kind)} · ${esc(v.location||'no location on file')} · barcode ${esc(v.barcode||'—')}</div>
+  <div class="row" style="margin-bottom:10px"><button class="btn ghost" onclick="loc('volumes')">← all volumes</button></div>
+  <div class="panel"><h2>Contents (${cs.length} package${cs.length===1?'':'s'}) — click a package to see its files (from the catalog)</h2>`;
+  if(!cs.length)h+='<div class="empty">Nothing recorded on this volume yet.</div>';
+  else cs.forEach((c,i)=>{
+    h+=`<div style="margin:6px 0;padding-bottom:8px;border-bottom:1px solid var(--line)">
+      <div class="mono" style="cursor:pointer" tabindex="0" role="button" onkeydown="if(event.key==='Enter')this.click()" onclick="const e=document.getElementById('vf${i}');e.style.display=e.style.display==='none'?'block':'none'">▸ ${esc(c.name)} ${c.verify_ok===true?'<span class="stamp VERIFIED">verified</span>':c.verify_ok===false?'<span class="stamp FAILED">unverified</span>':''}${c.spanned?' <span class="etag due">spanned'+(c.holds_segment?' seg'+c.holds_segment:'')+'</span>':''}${c.private_manifest?' <span class="etag enc">private manifest</span>':''}</div>
+      <div class="dim" style="font-size:11.5px">${GB(c.bytes)} GB · ${c.file_count} files · ${c.last_verified_at?'verified '+esc(ageStr(c.last_verified_at)):'not yet verified'}</div>
+      <div id="vf${i}" style="display:none;margin-top:4px">
+        <div class="dim mono" style="font-size:11px;max-height:200px;overflow:auto">${(c.files||[]).slice(0,500).map(esc).join('<br>')||'—'}</div>
+        <button class="btn ghost" style="margin-top:6px" onclick="readMediumDlg(${c.id},'${esc(c.name)}')">Read manifest from mounted medium…</button></div>
+    </div>`});
+  $('#view').innerHTML=h+'</div>';
+}
+function readMediumDlg(id,name){dlg(`<h1>Read manifest from medium — ${esc(name)}</h1>
+  <div class="dim" style="margin-bottom:8px">For a found tape/disc when the catalog is gone. Points at the mount, finds <span class="mono">${esc(name)}.manifest.json(.gpg)</span>, and (if private) decrypts it with the keystore passphrase.</div>
+  <label>Mounted medium path</label><input id="d1" class="full" placeholder="T:\\ or E:\\ or /mnt/tape">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Read listing</button></div>`,
+  async()=>{const m=$('#d1').value.trim();if(!m)return;
+    const res=await api('POST',`/api/chunks/${id}/read-medium-manifest`,{mount:m});showManifest(name,res)});}
+function showManifest(name,m){const files=m.files||[];
+  let h=`<h1>Manifest — ${esc(name)}</h1><div class="crumb">read from ${esc(m._source||'medium')} · ${m._encrypted?'decrypted with keystore key '+esc(m.key_ref||''):'plaintext on medium'}</div>
+  <div class="row" style="margin-bottom:10px"><button class="btn ghost" onclick="loc('volumes')">← Volumes</button></div>
+  <div class="panel"><h2>${files.length} file(s)</h2>
+    <div class="mono" style="font-size:11.5px;max-height:60vh;overflow:auto">${files.map(f=>esc(f.rel_path||f)).join('<br>')||'—'}</div></div>`;
+  $('#view').innerHTML=h;
+}
+function newVolumeDlg(){dlg(`<h1>Register volume</h1>
+  <label>Barcode (scan now — this field is focused; scan+Enter registers)</label><input id="d0" class="full" placeholder="scan or type" onkeydown="if(event.key==='Enter')go()">
+  <label>Label (defaults to the barcode)</label><input id="d1" class="full" placeholder="e.g. NSP-0007">
+  <div class="row"><div style="flex:1"><label>Kind</label><select id="d2" class="full"><option>TAPE</option><option>HDD</option><option>SSD</option><option>OPTICAL</option><option>OTHER</option></select></div>
+    <div style="flex:1"><label>Location</label><input id="d3" class="full" placeholder="office safe / parents' house"></div></div>
+  <label>Notes</label><input id="d4" class="full">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Register</button></div>`,
+  async()=>{const bc=$('#d0').value.trim();const label=$('#d1').value.trim()||bc;if(!label){toast('Scan a barcode or enter a label',1);return}
+    await api('POST','/api/volumes',{barcode:bc,label:label,kind:$('#d2').value,location:$('#d3').value.trim(),notes:$('#d4').value.trim()});
+    toast('Volume registered');vVolumes()});
+  setTimeout(()=>{const e=$('#d0');if(e)e.focus()},60);
+}
+
 /* ---------------- Keys ---------------- */
 async function vKeys(){
   const k=await api('GET','/api/keys');
   const st=k.status||{};
-  let h=`<h1>Keys</h1><div class="crumb">secrets live only in keystore files — never in the catalog</div>`;
+  let h=`${hdr('Keys','secrets live only in keystore files — never in the catalog','keys')}`;
   h+=`<div class="panel"><h2>Keystores (${st.min_required} required, different devices)</h2>`;
   if(!st.ok)h+=`<div class="err" style="margin-bottom:10px">${esc(st.reason||'')}</div>`;
   h+='<table><tr><th>Path</th><th class="num">Keys</th><th>State</th></tr>';
@@ -235,9 +686,10 @@ async function vKeys(){
     <td>${s.reachable?'<span class="stamp VERIFIED">reachable</span>':'<span class="stamp FAILED">unreachable</span>'}</td></tr>`;
   h+=`</table><div class="row" style="margin-top:10px">
     <button class="btn ghost" onclick="api('POST','/api/keys/sync').then(r=>{toast('Synced '+r.key_count+' key(s)');vKeys()}).catch(e=>toast(e.message,1))">Sync keystores</button>
+    <button class="btn danger" onclick="recoveryKitDlg()">Export Recovery Kit…</button>
     <span class="dim">Register paths in Settings.</span></div></div>`;
   h+='<div class="panel"><h2>Key registry (fingerprints only)</h2>';
-  if(!(k.keys||[]).length)h+='<div class="empty">Keys are generated automatically per chunk at build time.</div>';
+  if(!(k.keys||[]).length)h+='<div class="empty">Keys are generated automatically per package at build time.</div>';
   else{h+='<table><tr><th>Ref</th><th>Note</th><th>Fingerprint (SHA-256 of passphrase)</th><th></th></tr>';
     for(const m of k.keys)h+=`<tr><td><span class="chip">${esc(m.key_ref)}</span></td><td>${esc(m.note)}</td>
       <td class="mono dim">${esc((m.fingerprint||'').slice(0,24))}…</td>
@@ -245,13 +697,21 @@ async function vKeys(){
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
 }
+function recoveryKitDlg(){dlg(`<h1>Export Recovery Kit</h1>
+  <div class="err" style="margin-bottom:10px">⚠ The kit includes one QR code per key — each encodes a passphrase in the clear. Store the folder as securely as your keystores.</div>
+  <label>Output folder (a “mnemosyne-recovery-kit” subfolder is created here)</label>
+  <input id="d1" class="full" placeholder="E:\\safe or /mnt/vault/recovery">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Generate</button></div>`,
+  async()=>{const d=$('#d1').value.trim();if(!d)return;
+    const r=await api('POST','/api/recoverykit',{output_dir:d});
+    toast('Recovery Kit generating — see Jobs. '+(r.warning||''),1);loc('jobs')});}
 
 /* ---------------- Jobs ---------------- */
 let jobsTimer;
 async function vJobs(){
   const js=await api('GET','/api/jobs')||[];
-  let h=`<h1>Jobs</h1><div class="crumb">long operations run in the background — safe to navigate away</div><div class="panel">`;
-  if(!js.length)h+='<div class="empty">No jobs yet.</div>';
+  let h=`${hdr('Jobs','long operations run in the background — safe to navigate away','jobs')}<div class="panel">`;
+  if(!js.length)h+='<div class="empty">No jobs yet — scans, builds, writes and verifies report their progress here.</div>';
   else{h+='<table><tr><th style="width:56%">Job</th><th>Progress</th><th>State</th></tr>';
     for(const j of js)h+=`<tr><td>${esc(j.label)}</td>
       <td><div class="bar"><div style="width:${Math.round((j.progress||0)*100)}%"></div></div></td>
@@ -268,27 +728,54 @@ async function vSettings(){
   const cfg=c.config||{};
   const tool=t=>p[t]&&p[t].ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p[t].version||p[t].path||'')}</span>`
     :`<span class="stamp FAILED">missing</span>`;
-  let h=`<h1>Settings</h1><div class="crumb">one config file · ${esc('config.json')} in the data folder</div>
+  const ltfs=p.ltfs||{};
+  const ltfsCell=ltfs.mounted
+    ? `<span class="stamp VERIFIED">LTFS</span> LTFS tape mounted at <span class="mono">${esc((ltfs.mounts||[]).join(', '))}</span> ✓`
+    : `<span class="dim">No LTFS mount detected — to write to LTO tape, install a free LTFS driver: IBM Storage Archive Single Drive Edition, HPE StoreOpen, or open-source LinearTapeFileSystem/ltfs (links in README). Not required for HDD or optical.</span>`;
+  let h=`${hdr('Settings','one config file · config.json in the data folder','settings')}
   <div class="panel"><h2>External tools (the whole restore story)</h2>
     <table><tr><td>tar</td><td>${tool('tar')}</td></tr><tr><td>gpg</td><td>${tool('gpg')}</td></tr>
-    <tr><td>par2</td><td>${tool('par2')}</td></tr></table>
+    <tr><td>par2</td><td>${tool('par2')}</td></tr>
+    <tr><td>LTFS tape</td><td>${ltfsCell}</td></tr></table>
     ${(p.hints||[]).map(x=>`<div class="err" style="margin-top:8px">${esc(x)}</div>`).join('')}</div>
   <div class="panel"><h2>Pipeline</h2>
     <label>Staging folder (big + fast; the NAS itself is ideal)</label>
     <input id="st" class="full" value="${esc(cfg.staging_dir||'')}" placeholder="Y:\\nsottung\\_staging">
     <label>Keystore paths — one per line, minimum 2, different physical devices</label>
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
+    <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Private media — encrypt the file listing (manifest) written to media, so a lost tape reveals no filenames (encrypted packages only; staging &amp; catalog stay plaintext)</label>
     <div class="row"><div style="flex:1"><label>RAM buffer (GB)</label><input id="bg" class="full" type="number" step="0.5" value="${cfg.buffer_gb||8}"></div>
       <div style="flex:1"><label>Block size (MB)</label><input id="bm" class="full" type="number" value="${cfg.block_mb||64}"></div>
       <div style="flex:1"><label>par2 redundancy %</label><input id="pr" class="full" type="number" value="${cfg.par2_redundancy||10}"></div></div>
+    <label>Write throttle (MB/s) — 0 = unthrottled; caps writer-side speed to keep destination drives (e.g. hot SSDs) cool. Overridable per write.</label>
+    <input id="tm" class="full" type="number" min="0" step="1" value="${cfg.throttle_mbps||0}">
+    <label>par2 extra args (default <span class="mono dim">-t0</span> = all threads; auto-retries without them if your par2 rejects the option)</label>
+    <input id="pe" class="full" style="font:12px var(--mono)" value="${esc(cfg.par2_extra_args||'')}" placeholder="-t0">
+    <div class="row"><div style="flex:1"><label>Re-verify due after (months)</label>
+      <input id="vd" class="full" type="number" min="1" value="${cfg.verify_due_months||12}"></div>
+      <div style="flex:1"><label>Required copies (redundancy goal)</label>
+      <input id="rc" class="full" type="number" min="1" value="${cfg.required_copies||2}"></div></div>
+    <label>Drift informational extensions (comma-separated — muted in reconcile, excluded from alarm totals)</label>
+    <input id="di" class="full" style="font:12px var(--mono)" value="${esc((cfg.drift_informational_extensions||[]).join(', '))}" placeholder=".xmp, .thm">
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>
+  <div class="panel"><h2>Optical burning</h2>
+    <label>Burn command — <span class="mono dim">{SRC}</span> = package staged folder, <span class="mono dim">{LABEL}</span> = package name. Exit code 0 = success.</label>
+    <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='ImgBurn: "C:\\Program Files (x86)\\ImgBurn\\ImgBurn.exe" /MODE BUILD /BUILDMODE DISC /SRC "{SRC}" /VOLUMELABEL "{LABEL}" /START /CLOSESUCCESS /NOIMAGEDETAILS'>
+    <label>Verify mount (optional) — after burning, hash <span class="mono dim">&lt;mount&gt;/&lt;name&gt;.tar.gpg</span> and compare to the package's enc_hash. Blank = skip.</label>
+    <input id="bv" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_verify_mount||'')}" placeholder="E:\\ or /mnt/optical">
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>`;
   $('#view').innerHTML=h;
 }
 async function saveCfg(){
   try{await api('PUT','/api/config',{staging_dir:$('#st').value.trim(),
     keystore_paths:$('#ks').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    private_media:$('#pm').checked,
     buffer_gb:parseFloat($('#bg').value)||8,block_mb:parseInt($('#bm').value)||64,
-    par2_redundancy:parseInt($('#pr').value)||10});
+    throttle_mbps:parseFloat($('#tm').value)||0,
+    par2_redundancy:parseInt($('#pr').value)||10,par2_extra_args:$('#pe').value.trim(),
+    verify_due_months:parseInt($('#vd').value)||12,required_copies:parseInt($('#rc').value)||2,
+    drift_informational_extensions:$('#di').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),
+    burn_command:$('#bc').value.trim(),burn_verify_mount:$('#bv').value.trim()});
     toast('Settings saved');lamp();vSettings()}catch(e){toast(e.message,1)}}
 
 /* ---------------- shell ---------------- */
@@ -298,11 +785,11 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={vault:vVault,chunks:vChunks,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,packages:vChunks,burn:vBurn,volumes:vVolumes,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
-function route(){const v=(location.hash||'#vault').slice(1);
+function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));
-  (views[v]||vVault)().catch(e=>toast(e.message,1))}
+  (views[v]||vHome)().catch(e=>toast(e.message,1))}
 window.addEventListener('hashchange',route);
 route();lamp();setInterval(lamp,20000);
 </script>

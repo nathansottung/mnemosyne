@@ -2,7 +2,7 @@
 
 **Audience: anyone, decades from now, with no Mnemosyne installed.**
 
-Every chunk on every medium carries this same information in its own
+Every package on every medium carries this same information in its own
 `RESTORE.txt` and `*.manifest.json`. Mnemosyne is a convenience, never a
 requirement — restoration depends on exactly three ubiquitous,
 open-source, standardized programs:
@@ -17,7 +17,7 @@ There is **no compression layer anywhere** — media files don't compress,
 and removing the layer removes a future dependency. What tar extracts is
 byte-identical to the originals.
 
-## What a chunk looks like on the medium
+## What a package looks like on the medium
 
 ```
 NASA-C0003/
@@ -25,7 +25,7 @@ NASA-C0003/
   NASA-C0003.tar.gpg.par2       parity index (over the CIPHERTEXT)
   NASA-C0003.tar.gpg.vol*.par2  parity blocks (~10% redundancy)
   NASA-C0003.manifest.json      full file list, sizes, hashes, key_ref
-  RESTORE.txt                   these instructions, chunk-specific
+  RESTORE.txt                   these instructions, package-specific
 ```
 
 Parity is computed over the *ciphertext* deliberately: a damaged medium
@@ -60,7 +60,7 @@ Passphrases are **never** in the catalog database. They exist in:
 2. **Printed QR cards** — one per key_ref (`GET /api/pipeline/keys/{ref}/qr`),
    payload `MNEMO1|<key_ref>|<passphrase>`. Print, label, fireproof box.
 
-Losing every copy of a key means that chunk is cryptographically gone.
+Losing every copy of a key means that package is cryptographically gone.
 That is what AES-256 promises. This is why key generation *refuses to
 run* unless two keystores are registered and in sync.
 
@@ -77,9 +77,9 @@ sha256sum NASA-C0003.tar.gpg     # compare to "ciphertext_hash" in the manifest
 ## Media-specific notes
 
 - **LTO/LTFS tape**: mount with any LTFS implementation (IBM Storage
-  Archive, HPE StoreOpen, open-source `ltfs`); the chunk appears as a
+  Archive, HPE StoreOpen, open-source `ltfs`); the package appears as a
   normal folder. LTFS is ISO/IEC 20919.
 - **Hard drives**: plain filesystem; prefer widely-readable filesystems
   (exFAT/NTFS/ext4) and note the choice on the label.
-- **Optical (BD-R)**: chunks planned at 23/46/92 GB burn 1:1 onto
+- **Optical (BD-R)**: packages planned at 23/46/92 GB burn 1:1 onto
   25/50/100 GB discs; the disc filesystem (UDF) is ISO 13346.

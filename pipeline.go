@@ -14,8 +14,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +27,7 @@ const MinKeystores = 2
 var MediaPresets = map[string]int64{
 	"LTO8": 11_000_000_000_000, "LTO9": 16_500_000_000_000,
 	"BD-R25": 23_000_000_000, "BD-R50": 46_000_000_000, "BD-R100": 92_000_000_000,
+	"DVD-R": 4_300_000_000, "DVD-DL": 8_100_000_000,
 	"HDD": 0, "CUSTOM": 0,
 }
 
@@ -32,15 +36,24 @@ var MediaPresets = map[string]int64{
 type Config struct {
 	StagingDir            string            `json:"staging_dir"`
 	KeystorePaths         []string          `json:"keystore_paths"`
+	PrivateMedia          bool              `json:"private_media"` // encrypt the manifest written to media (hide filenames)
 	DeleteTarAfterEncrypt bool              `json:"delete_tar_after_encrypt"`
 	Par2Redundancy        int               `json:"par2_redundancy"`
+	Par2ExtraArgs         string            `json:"par2_extra_args"`
 	BufferGB              float64           `json:"buffer_gb"`
 	BlockMB               int               `json:"block_mb"`
+	ThrottleMbps          float64           `json:"throttle_mbps"` // 0 = unthrottled; caps writer-side MB/s (thermal control)
+	BurnCommand           string            `json:"burn_command"`
+	BurnVerifyMount       string            `json:"burn_verify_mount"`
+	VerifyDueMonths       int               `json:"verify_due_months"`
+	RequiredCopies        int               `json:"required_copies"`                // redundancy goal; fewer verified copies = under-protected
+	DriftInformational    []string          `json:"drift_informational_extensions"` // muted in reconcile, excluded from alarm totals
 	Tools                 map[string]string `json:"tools"`
 }
 
 func defaultConfig() Config {
-	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, BufferGB: 8, BlockMB: 64, Tools: map[string]string{}}
+	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, Par2ExtraArgs: "-t0", BufferGB: 8, BlockMB: 64,
+		VerifyDueMonths: 12, RequiredCopies: 2, DriftInformational: []string{".xmp"}, Tools: map[string]string{}}
 }
 
 type App struct {
@@ -111,6 +124,10 @@ func (a *App) Preflight() map[string]any {
 	}
 	ks := a.KeystoreStatus()
 	out["keystores"] = ks
+	// LTFS tape detection is purely informational — it NEVER affects "ok".
+	// Absence just means "no tape mounted"; HDD and optical need no LTFS.
+	ltfs := detectLTFSMounts()
+	out["ltfs"] = map[string]any{"mounted": len(ltfs) > 0, "mounts": ltfs}
 	out["ok"] = allOK && ks["ok"].(bool)
 	out["hints"] = hints
 	return out
@@ -300,25 +317,57 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 	if err != nil {
 		return 0, err
 	}
-	for i, p := range paths {
-		rel, _ := filepath.Rel(root, p)
-		st, err := os.Stat(p)
-		if err != nil {
-			continue
+	total := len(paths)
+	parallelHash(paths, func(d int) {
+		progress(float64(d)/float64(total), fmt.Sprintf("hashed %d/%d", d, total))
+	}, func(p, h string, size int64) {
+		if rel, e := filepath.Rel(root, p); e == nil {
+			a.Store.UpsertFile(File{CollectionID: collectionID, FolderID: folder.ID,
+				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: h})
 		}
-		h, err := hashFileHex(p)
-		if err != nil {
-			continue
-		}
-		a.Store.UpsertFile(File{CollectionID: collectionID, FolderID: folder.ID,
-			RelPath: filepath.ToSlash(rel), SizeBytes: st.Size(), HashAlg: "SHA256", Hash: h})
-		if i%25 == 0 {
-			progress(float64(i)/float64(len(paths)), fmt.Sprintf("hashed %d/%d", i, len(paths)))
-		}
-	}
+	})
 	a.Store.Flush()
-	a.Store.Log("scan", fmt.Sprintf("collection %d: %s (%d files)", collectionID, root, len(paths)))
+	a.Store.Log("scan", fmt.Sprintf("archive %d: %s (%d files)", collectionID, root, len(paths)))
 	return len(paths), nil
+}
+
+// parallelHash hashes paths across a worker pool sized min(8, NumCPU). fn is
+// called concurrently for each readable file (path, sha256, size) — callers
+// must make fn safe (Store methods already lock). progress(done) fires every 25
+// files and at the end. This is the shared pool used by scan and reconcile.
+func parallelHash(paths []string, progress func(done int), fn func(path, hash string, size int64)) {
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	total := len(paths)
+	jobs := make(chan string)
+	var done int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range jobs {
+				if st, e := os.Stat(p); e == nil && !st.IsDir() {
+					if h, e := hashFileHex(p); e == nil {
+						fn(p, h, st.Size())
+					}
+				}
+				if n := atomic.AddInt64(&done, 1); progress != nil && (n%25 == 0 || int(n) == total) {
+					progress(int(n))
+				}
+			}
+		}()
+	}
+	for _, p := range paths {
+		jobs <- p
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func hashFileHex(path string) (string, error) {
@@ -339,11 +388,12 @@ func hashFileHex(path string) (string, error) {
 type PlanResult struct {
 	Chunks    []*Chunk         `json:"chunks_created"`
 	Oversized []map[string]any `json:"oversized_files_skipped"`
+	Spanned   []map[string]any `json:"spanned_chunks"` // each: chunk, rel_path, size_bytes, media_required
 	Payload   int64            `json:"payload_budget_bytes"`
 	Staging   map[string]any   `json:"staging"`
 }
 
-func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 int) (*PlanResult, error) {
+func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 int, encrypted bool) (*PlanResult, error) {
 	cfg := a.LoadConfig()
 	if par2 <= 0 {
 		par2 = cfg.Par2Redundancy
@@ -359,27 +409,29 @@ func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 in
 
 	coll := a.Store.Collection(collectionID)
 	if coll == nil {
-		return nil, fmt.Errorf("collection %d not found", collectionID)
+		return nil, fmt.Errorf("archive %d not found", collectionID)
 	}
 	files := a.Store.FilesOf(collectionID)
 	if len(files) == 0 {
-		return nil, fmt.Errorf("collection has no cataloged files — scan a folder first")
+		return nil, fmt.Errorf("archive has no cataloged files — scan a folder first")
 	}
-	already := a.Store.ChunkedFileIDs(collectionID)
+	// A file is "already backed up" only if it's chunked AND its current hash
+	// still matches the chunked hash. A changed-hash file counts as unchunked so
+	// this Plan re-backs-up the new version naturally (older chunk stays historical).
+	backedHash := a.Store.ChunkedFileHashes(collectionID)
 	folders := map[int]string{}
 	for _, f := range a.Store.FoldersOf(collectionID) {
 		folders[f.ID] = f.Path
 	}
 
 	byRoot := map[int][]*File{}
-	var oversized []map[string]any
+	var bigFiles []*File // exceed one medium -> each becomes a spanned chunk
 	for _, f := range files {
-		if already[f.ID] {
-			continue
+		if bh, ok := backedHash[f.ID]; ok && (bh == "" || bh == f.Hash) {
+			continue // genuinely backed up (or a legacy chunk with no recorded hash)
 		}
 		if f.SizeBytes > payload {
-			oversized = append(oversized, map[string]any{"rel_path": f.RelPath, "size_bytes": f.SizeBytes,
-				"note": "exceeds one medium's payload budget; spanning is a v2 feature"})
+			bigFiles = append(bigFiles, f)
 			continue
 		}
 		byRoot[f.FolderID] = append(byRoot[f.FolderID], f)
@@ -400,7 +452,7 @@ func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 in
 		safe = "COLL"
 	}
 
-	res := &PlanResult{Payload: payload, Oversized: oversized}
+	res := &PlanResult{Payload: payload}
 	fids := make([]int, 0, len(byRoot))
 	for fid := range byRoot {
 		fids = append(fids, fid)
@@ -419,7 +471,7 @@ func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 in
 			c := a.Store.AddChunk(Chunk{CollectionID: collectionID, Name: fmt.Sprintf("%s-C%04d", safe, seq),
 				Status: "PLANNED", MediaKind: mediaKind, TargetBytes: target, DataBytes: size,
 				FileCount: len(batch), SrcRoot: folders[fid], HashAlg: "SHA256", Par2: par2,
-				Files: append([]ChunkFileRef{}, batch...)})
+				Encrypted: encrypted, Files: append([]ChunkFileRef{}, batch...)})
 			res.Chunks = append(res.Chunks, c)
 			batch, size = nil, 0
 		}
@@ -427,10 +479,28 @@ func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 in
 			if len(batch) > 0 && size+f.SizeBytes > payload {
 				flush()
 			}
-			batch = append(batch, ChunkFileRef{FileID: f.ID, RelPath: f.RelPath, SizeBytes: f.SizeBytes})
+			batch = append(batch, ChunkFileRef{FileID: f.ID, RelPath: f.RelPath, SizeBytes: f.SizeBytes, Hash: f.Hash})
 			size += f.SizeBytes
 		}
 		flush()
+	}
+
+	// Spanned chunks: one oversized file each, byte-split across several media
+	// at write time. Segment plan here is an estimate (based on target_bytes);
+	// BuildChunk finalizes it against the real payload size.
+	sort.Slice(bigFiles, func(i, j int) bool { return bigFiles[i].RelPath < bigFiles[j].RelPath })
+	for _, f := range bigFiles {
+		seq++
+		est := f.SizeBytes + 4096 // ~tar overhead for a single file
+		segs := planSegments(est, target)
+		c := a.Store.AddChunk(Chunk{CollectionID: collectionID, Name: fmt.Sprintf("%s-C%04d", safe, seq),
+			Status: "PLANNED", MediaKind: mediaKind, TargetBytes: target, DataBytes: f.SizeBytes,
+			FileCount: 1, SrcRoot: folders[f.FolderID], HashAlg: "SHA256", Par2: par2,
+			Encrypted: encrypted, Spanned: true, Segments: segs,
+			Files: []ChunkFileRef{{FileID: f.ID, RelPath: f.RelPath, SizeBytes: f.SizeBytes, Hash: f.Hash}}})
+		res.Chunks = append(res.Chunks, c)
+		res.Spanned = append(res.Spanned, map[string]any{"chunk": c.Name, "rel_path": f.RelPath,
+			"size_bytes": f.SizeBytes, "media_required": len(segs)})
 	}
 
 	staging := map[string]any{"staging_dir": cfg.StagingDir}
@@ -453,12 +523,12 @@ func (a *App) Plan(collectionID int, mediaKind string, targetGB float64, par2 in
 				staging["chunks_stageable_concurrently"] = free / peak
 			}
 			if free < peak {
-				staging["warning"] = "Staging free space cannot hold even one chunk build."
+				staging["warning"] = "Staging free space cannot hold even one package build."
 			}
 		}
 	}
 	res.Staging = staging
-	a.Store.Log("plan", fmt.Sprintf("collection %d -> %d chunk(s) on %s", collectionID, len(res.Chunks), mediaKind))
+	a.Store.Log("plan", fmt.Sprintf("archive %d -> %d package(s) on %s", collectionID, len(res.Chunks), mediaKind))
 	return res, nil
 }
 
@@ -468,21 +538,25 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	cfg := a.LoadConfig()
 	c := a.Store.Chunk(id)
 	if c == nil {
-		return fmt.Errorf("chunk %d not found", id)
+		return fmt.Errorf("package %d not found", id)
 	}
 	if c.Status != "PLANNED" && c.Status != "FAILED" {
-		return fmt.Errorf("chunk %s is %s; only PLANNED/FAILED can build", c.Name, c.Status)
+		return fmt.Errorf("package %s is %s; only PLANNED/FAILED can build", c.Name, c.Status)
 	}
-	if st := a.KeystoreStatus(); !st["ok"].(bool) {
-		return fmt.Errorf("refusing to encrypt: %s", st["reason"])
+	if c.Encrypted {
+		if st := a.KeystoreStatus(); !st["ok"].(bool) {
+			return fmt.Errorf("refusing to encrypt: %s", st["reason"])
+		}
 	}
 	tarBin, err := a.tool("tar")
 	if err != nil {
 		return err
 	}
-	gpgBin, err := a.tool("gpg")
-	if err != nil {
-		return err
+	var gpgBin string
+	if c.Encrypted {
+		if gpgBin, err = a.tool("gpg"); err != nil {
+			return err
+		}
 	}
 	par2Bin, err := a.tool("par2")
 	if err != nil {
@@ -519,49 +593,101 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	}
 
 	tarPath := filepath.Join(work, c.Name+".tar")
-	encPath := filepath.Join(work, c.Name+".tar.gpg")
+	payloadPath := filepath.Join(work, c.Name+".tar.gpg") // payload written to media: ciphertext, or the tar itself when unencrypted
 
-	progress(0.05, "tar")
+	// Per-stage timing so the operator can see WHERE the build time goes.
+	// Pipeline order and the parity-over-payload rule are unchanged.
+	timings := map[string]float64{}
+	var summary []string
+	finish := func(name string, since time.Time, frac float64) {
+		secs := time.Since(since).Seconds()
+		timings[name] = round2(secs)
+		summary = append(summary, fmt.Sprintf("%s %.1fs", name, secs))
+		progress(frac, strings.Join(summary, " · "))
+	}
+
+	progress(0.05, "tar…")
+	t := time.Now()
 	if err := run(tarBin, "", "--format=posix", "-cf", tarPath, "-C", c.SrcRoot, "-T", list); err != nil {
 		return fail(err)
 	}
-	progress(0.30, "hash tar")
+	finish("tar", t, 0.30)
+
+	t = time.Now()
 	if c.TarHash, err = hashFileHex(tarPath); err != nil {
 		return fail(err)
 	}
+	finish("hash", t, 0.38)
 
-	progress(0.40, "encrypt")
-	ref, pass, fpr, err := a.GenerateKey("chunk " + c.Name)
-	if err != nil {
-		return fail(err)
-	}
-	c.KeyRef = ref
-	if err := run(gpgBin, pass, "--batch", "--yes", "--pinentry-mode", "loopback",
-		"--passphrase-fd", "0", "--symmetric", "--cipher-algo", "AES256",
-		"--compress-algo", "none", "-o", encPath, tarPath); err != nil {
-		return fail(err)
+	var fpr string
+	var chunkPass string // held to also encrypt the medium manifest when private
+	if c.Encrypted {
+		progress(0.40, strings.Join(summary, " · ")+" · encrypt…")
+		t = time.Now()
+		ref, pass, keyFpr, gerr := a.GenerateKey("package " + c.Name)
+		if gerr != nil {
+			return fail(gerr)
+		}
+		c.KeyRef, fpr, chunkPass = ref, keyFpr, pass
+		if err := run(gpgBin, pass, "--batch", "--yes", "--pinentry-mode", "loopback",
+			"--passphrase-fd", "0", "--symmetric", "--cipher-algo", "AES256",
+			"--compress-algo", "none", "-o", payloadPath, tarPath); err != nil {
+			return fail(err)
+		}
+		if c.EncHash, err = hashFileHex(payloadPath); err != nil {
+			return fail(err)
+		}
+		if st, err := os.Stat(payloadPath); err == nil {
+			c.EncBytes = st.Size()
+		}
+		if cfg.DeleteTarAfterEncrypt {
+			_ = os.Remove(tarPath)
+		}
+		finish("encrypt", t, 0.72)
+	} else {
+		// No encryption requested: the tar IS the payload. Move it into place
+		// under the .tar.gpg name so the write/verify/media paths stay identical,
+		// and let enc_hash/enc_bytes describe the tar as written to media.
+		t = time.Now()
+		if err := os.Rename(tarPath, payloadPath); err != nil {
+			return fail(err)
+		}
+		c.EncHash = c.TarHash
+		if st, err := os.Stat(payloadPath); err == nil {
+			c.EncBytes = st.Size()
+		}
+		finish("stage", t, 0.72)
 	}
 
-	progress(0.65, "hash ciphertext")
-	if c.EncHash, err = hashFileHex(encPath); err != nil {
+	progress(0.75, strings.Join(summary, " · ")+" · par2…")
+	t = time.Now()
+	if err := runPar2Create(par2Bin, cfg.Par2ExtraArgs, c.Par2,
+		filepath.Join(work, c.Name+".tar.gpg.par2"), payloadPath); err != nil {
 		return fail(err)
 	}
-	if st, err := os.Stat(encPath); err == nil {
-		c.EncBytes = st.Size()
-	}
-	if cfg.DeleteTarAfterEncrypt {
-		_ = os.Remove(tarPath)
-	}
-
-	progress(0.75, "par2")
-	if err := run(par2Bin, "", "create", fmt.Sprintf("-r%d", c.Par2), "-n1",
-		filepath.Join(work, c.Name+".tar.gpg.par2"), encPath); err != nil {
-		return fail(err)
+	finish("par2", t, 0.90)
+	c.BuildTimings = timings
+	if c.Spanned {
+		// Finalize the segment plan against the real payload + par2 size now
+		// that both exist, so the manifest/RESTORE.txt written below match.
+		a.finalizeSegments(c, work)
 	}
 
 	progress(0.92, "manifest")
+	// Private media: the medium carries an ENCRYPTED manifest so filenames don't
+	// leak off a lost tape. The staged plaintext manifest stays for local use;
+	// medium-write paths skip it and ship the .gpg instead.
+	c.PrivateManifest = cfg.PrivateMedia && c.Encrypted
 	if err := writeManifest(work, c, fpr); err != nil {
 		return fail(err)
+	}
+	if c.PrivateManifest {
+		manPlain := filepath.Join(work, c.Name+".manifest.json")
+		if err := run(gpgBin, chunkPass, "--batch", "--yes", "--pinentry-mode", "loopback",
+			"--passphrase-fd", "0", "--symmetric", "--cipher-algo", "AES256",
+			"--compress-algo", "none", "-o", manPlain+".gpg", manPlain); err != nil {
+			return fail(fmt.Errorf("encrypting private manifest: %w", err))
+		}
 	}
 	writeRestoreTxt(work, c)
 
@@ -570,6 +696,39 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	a.Store.Log("build", c.Name+" staged")
 	progress(1.0, "staged")
 	return nil
+}
+
+// runPar2Create runs `par2 create` with optional extra args (e.g. "-t0" =
+// use all threads, on par2 builds that support it). If par2 rejects an extra
+// option, it retries once WITHOUT the extras so stock par2cmdline still works.
+func runPar2Create(par2Bin, extraArgs string, redundancy int, par2File, payload string) error {
+	base := []string{"create", fmt.Sprintf("-r%d", redundancy), "-n1"}
+	extra := strings.Fields(extraArgs)
+	args := append(append(append([]string{}, base...), extra...), par2File, payload)
+	err := run(par2Bin, "", args...)
+	if err != nil && len(extra) > 0 && isUnknownOptionErr(err) {
+		fallback := append(append([]string{}, base...), par2File, payload)
+		return run(par2Bin, "", fallback...)
+	}
+	return err
+}
+
+func isUnknownOptionErr(err error) bool {
+	s := strings.ToLower(err.Error())
+	// e.g. stock par2cmdline: "Invalid option specified: -t0" or
+	// "Invalid thread option: -t0". Match "option" alongside a reject word so
+	// the intervening word ("thread", "specified") doesn't defeat detection.
+	if strings.Contains(s, "option") &&
+		(strings.Contains(s, "invalid") || strings.Contains(s, "unknown") ||
+			strings.Contains(s, "unrecogni") || strings.Contains(s, "unsupported")) {
+		return true
+	}
+	for _, k := range []string{"invalid command line", "usage:"} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func run(bin, stdin string, args ...string) error {
@@ -592,18 +751,59 @@ func writeManifest(dir string, c *Chunk, keyFpr string) error {
 	m := map[string]any{
 		"mnemosyne_chunk": 1, "name": c.Name, "created_utc": time.Now().UTC().Format(time.RFC3339),
 		"collection_id": c.CollectionID, "source_root": c.SrcRoot,
-		"cipher": "GnuPG symmetric AES-256, compression none",
-		"key_ref": c.KeyRef, "key_fingerprint_sha256": keyFpr,
-		"hash_alg": c.HashAlg, "tar_hash": c.TarHash,
+		"encrypted": c.Encrypted,
+		"hash_alg":  c.HashAlg, "tar_hash": c.TarHash,
+		// ciphertext_hash/_bytes name the payload file as written to media
+		// (the .tar.gpg). When encrypted:false it is the plain tar under that
+		// same name, so `sha256sum NAME.tar.gpg` still matches this value.
 		"ciphertext_hash": c.EncHash, "ciphertext_bytes": c.EncBytes,
 		"par2_redundancy_percent": c.Par2, "files": c.Files,
+	}
+	if c.Encrypted {
+		m["cipher"] = "GnuPG symmetric AES-256, compression none"
+		m["key_ref"] = c.KeyRef
+		m["key_fingerprint_sha256"] = keyFpr
+	} else {
+		m["cipher"] = "none — payload is a plain POSIX tar"
+	}
+	if c.Spanned {
+		m["spanned"] = true
+		segs := make([]map[string]any, 0, len(c.Segments))
+		for _, sg := range c.Segments {
+			e := map[string]any{"index": sg.Index, "bytes": sg.Bytes}
+			if sg.Par2 {
+				e["par2_tape"] = true
+			}
+			segs = append(segs, e)
+		}
+		m["segments"] = segs
+		m["rejoin_windows"] = "copy /b " + segJoinList(c) + " " + c.Name + ".tar.gpg"
+		m["rejoin_unix"] = "cat " + c.Name + ".seg* > " + c.Name + ".tar.gpg"
 	}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(filepath.Join(dir, c.Name+".manifest.json"), b, 0o644)
 }
 
+// segJoinList builds "NAME.seg001+NAME.seg002+..." for the Windows copy /b rejoin.
+func segJoinList(c *Chunk) string {
+	n := dataSegmentCount(c.Segments)
+	parts := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		parts = append(parts, fmt.Sprintf("%s.seg%03d", c.Name, i))
+	}
+	return strings.Join(parts, "+")
+}
+
 func writeRestoreTxt(dir string, c *Chunk) {
-	t := fmt.Sprintf(`HOW TO RESTORE %[1]s
+	var t string
+	if c.Spanned {
+		t = spannedRestoreTxt(c)
+		t = appendPrivacyNote(t, c)
+		_ = os.WriteFile(filepath.Join(dir, "RESTORE.txt"), []byte(t), 0o644)
+		return
+	}
+	if c.Encrypted {
+		t = fmt.Sprintf(`HOW TO RESTORE %[1]s
 ==========================================================
 You need exactly three ubiquitous open-source programs:
   par2  (github.com/Parchive/par2cmdline)  - repair
@@ -626,5 +826,83 @@ Full file list: %[1]s.manifest.json
 No compression anywhere — extracted bytes are the originals.
 ==========================================================
 `, c.Name, c.KeyRef, c.HashAlg, c.EncHash, c.TarHash)
+	} else {
+		t = fmt.Sprintf(`HOW TO RESTORE %[1]s
+==========================================================
+This package is stored UNENCRYPTED — no passphrase or key needed.
+The payload file %[1]s.tar.gpg is a plain POSIX tar (the .gpg
+name is kept only so the media layout matches encrypted packages).
+
+You need exactly two ubiquitous open-source programs:
+  par2  (github.com/Parchive/par2cmdline)  - repair
+  tar   (POSIX standard, preinstalled)     - extract
+
+1) VERIFY / REPAIR:
+     par2 verify %[1]s.tar.gpg.par2
+     par2 repair %[1]s.tar.gpg.par2      (only if verify fails)
+2) EXTRACT all, or one file (tar reads it directly, no gpg step):
+     tar -xf %[1]s.tar.gpg
+     tar -xf %[1]s.tar.gpg path/to/one/file
+
+Integrity (%[2]s):  payload %[3]s
+Full file list: %[1]s.manifest.json
+No compression anywhere — extracted bytes are the originals.
+==========================================================
+`, c.Name, c.HashAlg, c.EncHash)
+	}
+	t = appendPrivacyNote(t, c)
 	_ = os.WriteFile(filepath.Join(dir, "RESTORE.txt"), []byte(t), 0o644)
+}
+
+// appendPrivacyNote adds the one paragraph RESTORE.txt needs when this medium's
+// file listing is encrypted. RESTORE.txt itself contains no filenames.
+func appendPrivacyNote(t string, c *Chunk) string {
+	if !c.PrivateManifest {
+		return t
+	}
+	return t + fmt.Sprintf(`
+PRIVACY — this medium's file listing is ENCRYPTED (%[1]s.manifest.json.gpg),
+so a lost tape reveals no filenames. To read it:
+     gpg -d %[1]s.manifest.json.gpg      (passphrase for key %[2]s)
+`, c.Name, c.KeyRef)
+}
+
+// spannedRestoreTxt documents the rejoin step (universal one-liner) BEFORE the
+// usual par2 -> gpg -> tar, and is copied verbatim onto every tape in the set.
+func spannedRestoreTxt(c *Chunk) string {
+	n := dataSegmentCount(c.Segments)
+	par2Home := "on the LAST tape, alongside the last segment"
+	if len(c.Segments) > 0 && c.Segments[len(c.Segments)-1].Par2 {
+		par2Home = "on its OWN final tape (labelled ...-tape-" + fmt.Sprint(len(c.Segments)) + "-of-" + fmt.Sprint(len(c.Segments)) + ")"
+	}
+	decrypt := "2) EXTRACT directly (plaintext — no key needed):\n     tar -xf " + c.Name + ".tar.gpg"
+	if c.Encrypted {
+		decrypt = "2) DECRYPT (prompts for the passphrase of key " + c.KeyRef + "):\n     gpg -d -o " + c.Name + ".tar " + c.Name + ".tar.gpg\n" +
+			"3) EXTRACT:\n     tar -xf " + c.Name + ".tar"
+	}
+	return fmt.Sprintf(`HOW TO RESTORE %[1]s   (SPANNED across %[2]d media)
+==========================================================
+This package's payload was byte-split across %[2]d tapes/drives as
+%[1]s.seg001 … %[1]s.seg%[3]03d. Every tape also carries this file,
+the manifest, and (par2 %[4]s).
+
+STEP 0 — REJOIN the segments into the payload (one universal command).
+Copy every tape's %[1]s.segNNN into ONE folder, then run ONE of:
+     Windows:  copy /b %[5]s %[1]s.tar.gpg
+     Unix/mac: cat %[1]s.seg* > %[1]s.tar.gpg
+(The zero-padded names sort into the correct order automatically.)
+
+Now the normal restore, exactly as for a single-medium package:
+1) VERIFY / REPAIR (no key needed):
+     par2 verify %[1]s.tar.gpg.par2
+     par2 repair %[1]s.tar.gpg.par2      (only if verify fails)
+%[6]s
+
+Integrity (%[7]s): payload %[8]s   tar %[9]s
+Custody chain: source file SHA-256s -> tar hash -> payload hash ->
+per-segment hashes (manifest / catalog) link every tape to the originals.
+Full file list: %[1]s.manifest.json
+No compression anywhere — extracted bytes are the originals.
+==========================================================
+`, c.Name, n, n, par2Home, segJoinList(c), decrypt, c.HashAlg, c.EncHash, c.TarHash)
 }
