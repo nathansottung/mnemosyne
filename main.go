@@ -908,6 +908,45 @@ func api(mux *http.ServeMux, app *App) {
 			"template_proposal": app.ProposeTemplateFromInference(inf, s(b, "template_name"))})
 	})
 
+	// ---- Conflicts (same logical file, different bytes) -------------------
+	// The review queue: true content conflicts with both versions side by side.
+	// open=1 (default) filters to unresolved; collection_id scopes to an archive.
+	mux.HandleFunc("GET /api/conflicts", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		cid, _ := strconv.Atoi(q.Get("collection_id"))
+		openOnly := q.Get("open") != "0"
+		jsonOut(w, map[string]any{"conflicts": app.Store.ConflictViews(cid, openOnly),
+			"open_total": app.Store.OpenConflictCount(cid)})
+	})
+	// Re-run detection for an archive (usually automatic at ingest; this is a manual
+	// refresh, e.g. after editing metadata).
+	mux.HandleFunc("POST /api/conflicts/detect", func(w http.ResponseWriter, r *http.Request) {
+		cid := int(f(body(r), "collection_id"))
+		if cid == 0 {
+			jsonErr(w, 400, fmt.Errorf("collection_id required"))
+			return
+		}
+		jsonOut(w, app.DetectConflicts(cid))
+	})
+	// Record a human decision: {"resolution":"CANONICAL","canonical_file_id":N} keeps
+	// one version and folds the rest into its retained history; {"resolution":
+	// "KEEP-BOTH"} keeps both as independent files (renamed on plan).
+	mux.HandleFunc("POST /api/conflicts/{id}/resolve", func(w http.ResponseWriter, r *http.Request) {
+		c := app.Store.Conflict(pathID(r))
+		if c == nil {
+			jsonErr(w, 404, fmt.Errorf("conflict not found"))
+			return
+		}
+		b := body(r)
+		if err := app.Store.ResolveConflict(c.ID, strings.ToUpper(strings.TrimSpace(s(b, "resolution"))), int(f(b, "canonical_file_id"))); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		app.Store.Log("conflict", fmt.Sprintf("conflict %d resolved: %s", c.ID, s(b, "resolution")))
+		jsonOut(w, map[string]any{"ok": true, "conflict": app.Store.Conflict(c.ID),
+			"open_total": app.Store.OpenConflictCount(c.CollectionID)})
+	})
+
 	// format sustainability — the registry and the per-archive census (0 = all).
 	mux.HandleFunc("GET /api/formats", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, app.formatRegistry())

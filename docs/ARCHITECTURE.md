@@ -61,6 +61,10 @@ templates.go   Routing templates: token expansion ({year} {date} {event_type}
 inference.go   InferStructure: point at an organized {year}/{event_type}/{event}
                tree, detect the pattern, propose a template, and HARVEST an Event per
                leaf folder (capture range from member EXIF). Read-only walk.
+conflicts.go   Same-logical-file/different-bytes review queue: DetectConflicts
+               classifies collisions (second-shooter auto-pass vs true conflict),
+               ReconcileConflicts keeps the queue idempotent, ResolveConflict folds a
+               decision into File.Versions. Nothing auto-preferred; nothing discarded.
 mirror.go      MirrorToVolume: native mirror backup — copy an archive's files to a
                volume as PLAIN FILES (copy-then-verify via .mnemo_tmp → atomic
                rename), recorded as verified file-level copies (same Chunk.Mirror
@@ -534,12 +538,46 @@ events, and defines **Templates** that say where files *should* live.
   document: one destination pattern per role, from a fixed six-token set (`{year}
   {date} {event_type} {event} {camera_serial} {orig_name}`). `RoutePreview`
   (`templates.go`) expands those tokens against the real catalog and returns the
-  editor's **live consequence preview** — *places N · match no route · await
-  conflict review* (a file is unrouted when its role has no route or a token can't
-  be filled; a conflict is two sources landing on one destination). Nothing is ever
-  moved — exceptions are a future drag-in-tree, not more knobs. The built-in
-  **Photographer Standard** template is seeded like the built-in profiles (present
-  in a fresh catalog; re-seeded only when none exist).
+  editor's **live consequence preview** — *places N · match no route · auto-
+  disambiguated K* (a file is unrouted when its role has no route or a token can't
+  be filled; a destination collision is auto-disambiguated so two legitimate files
+  compile to two placements). Nothing is ever moved — exceptions are a future
+  drag-in-tree, not more knobs. The built-in **Photographer Standard** template is
+  seeded like the built-in profiles (present in a fresh catalog; re-seeded only when
+  none exist).
+
+## Conflicts — same logical file, different bytes, no source of truth
+
+A sourceless archive's union is the deduped-by-hash union of everything adopted
+into it. When two adopted drives carry *the same logical file with different
+bytes*, there is no "newer" to prefer — so the disagreement goes to a human.
+
+- **Classification** (`DetectConflicts`, run automatically at `AdoptFolder`) groups
+  the union by logical identity — EXIF files by *filename + capture-time*
+  (partitioned by camera body serial), the rest by *path/name* — and labels each
+  collision:
+  - *(a) second shooter* — same name+timestamp, **different** camera body → NOT a
+    conflict. Both are legitimate; they're kept and the plan disambiguates their
+    destination names. Counted in the ingest report, never queued.
+  - *(b) same-meta* — same capture metadata **and** the same body, different hash →
+    a **true conflict**.
+  - *(c) no-EXIF* — same path/name, nothing to arbitrate, different hash → a **true
+    conflict**.
+  A RAW original among the disagreeing files raises the alert *"RAW files should
+  never legitimately differ — one of these may be corrupted."*
+
+- **The review queue** (`Conflict`, schema v5) lists each true conflict with both
+  versions side by side (drive/location, size, mtime, hash prefix, EXIF). Three
+  decisions, all of which **retain** the loser (nothing is discarded):
+  *mark A canonical* / *mark B canonical* fold the other version into the winner's
+  `File.Versions` history; *keep both* leaves them as independent files. A
+  `Signature` (collection|key|sorted hashes) makes detection **idempotent** — a
+  resolved conflict is never re-opened when the same bytes are re-scanned.
+
+- **The plan is gated on it.** `RoutePreview` sets `Blocked` while any unresolved
+  conflict sits in scope (count + one click to the queue). A *keep-both* resolution
+  leaves two files that compile to **two** disambiguated placements. Search and the
+  Event view badge files that carry retained alternate versions.
 
 ## Dependencies
 

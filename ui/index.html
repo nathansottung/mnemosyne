@@ -185,6 +185,7 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <a href="#dock" data-v="dock">Dock</a>
   <a href="#events" data-v="events">Events</a>
   <a href="#templates" data-v="templates">Templates</a>
+  <a href="#conflicts" data-v="conflicts">Conflicts</a>
   <a href="#keys" data-v="keys">Keys</a>
   <a href="#jobs" data-v="jobs">Jobs</a>
   <a href="#settings" data-v="settings">Settings</a>
@@ -2308,7 +2309,7 @@ async function vEventDetail(id){if(location.hash!=='#events')location.hash='#eve
     <div class="panel"><h2>Files (${files.length})</h2>`;
   if(!files.length)h+='<div class="empty">No files in this event yet.</div>';
   else{h+='<table><tr><th>File</th><th>Role / shot</th><th>Protection</th><th>Copies / volumes</th></tr>';
-    for(const r of files)h+=`<tr><td class="mono">${esc(r.rel_path)}</td><td class="dim" style="font-size:11px">${esc(r.role||'')}${r.shot_at?'<div>'+esc((r.shot_at||'').slice(0,10))+'</div>':''}</td>
+    for(const r of files)h+=`<tr><td class="mono">${esc(r.rel_path)}${r.version_count>1?` <span class="chip" style="font-size:10px" title="retained alternate version(s) from a conflict decision or rescan">📑 ${r.version_count} versions</span>`:''}</td><td class="dim" style="font-size:11px">${esc(r.role||'')}${r.shot_at?'<div>'+esc((r.shot_at||'').slice(0,10))+'</div>':''}</td>
       <td>${protBadge(r.protection_status,r.protection_detail)}</td><td>${searchCopies(r)}</td></tr>`;
     h+='</table>'}
   h+='</div>';
@@ -2434,8 +2435,10 @@ function tplPreview(){clearTimeout(_tplPrevT);_tplPrevT=setTimeout(async()=>{
   const box=$('#tpl_preview');if(!box)return;const t=templateFromEditor();const cid=parseInt(($('#tpl_arch')||{}).value||'0');
   if(!Object.keys(t.routes).length){box.innerHTML='<div class="dim">Add at least one route to preview.</div>';return}
   try{const p=await api('POST','/api/templates/preview',{template:t,collection_id:cid});
-    let h=`<div style="font-size:14px;font-weight:600">places ${commaN(p.placed)} file(s) · ${commaN(p.no_route)} match no route · ${commaN(p.conflicts)} await conflict review</div>`;
-    h+=`<div class="dim" style="font-size:11.5px;margin:4px 0 8px">of ${commaN(p.total)} file(s) in scope</div>`;
+    let h='';
+    if(p.blocked)h+=`<div class="err" style="margin-bottom:8px">⛔ Plan blocked — ${commaN(p.unresolved_conflicts)} unresolved content conflict(s) in scope. <a href="#conflicts" style="color:var(--act)">Resolve them in the Conflicts queue →</a></div>`;
+    h+=`<div style="font-size:14px;font-weight:600">places ${commaN(p.placed)} file(s) · ${commaN(p.no_route)} match no route${p.disambiguated?` · ${commaN(p.disambiguated)} auto-disambiguated`:''}</div>`;
+    h+=`<div class="dim" style="font-size:11.5px;margin:4px 0 8px">of ${commaN(p.total)} file(s) in scope${p.blocked?' · plan will not compile until conflicts are resolved':''}</div>`;
     if((p.examples||[]).length){h+='<div class="dim" style="font-size:11px;margin-bottom:3px">Example placements:</div>';
       for(const e of p.examples)h+=`<div class="mono" style="font-size:10.5px">${esc(e.src)} <span class="dim">→</span> ${esc(e.dest)}</div>`}
     if((p.no_route_examples||[]).length){h+='<div class="dim" style="font-size:11px;margin:8px 0 3px">Unrouted (no matching route or missing token — assign an event):</div>';
@@ -2447,6 +2450,42 @@ async function saveTemplateEditor(id){const t=templateFromEditor();if(!t.name.tr
   try{if(id)await api('POST','/api/templates/'+id+'/update',t);else await api('POST','/api/templates',t);
     toast('Template saved');loc('templates')}catch(e){toast(e.message,1)}}
 
+/* ================= Conflicts ================= */
+function conflictVersion(cid,v,role,isRaw){
+  const bits=[];
+  if(v.shot_at)bits.push('shot '+esc((v.shot_at||'').slice(0,16).replace('T',' ')));
+  if(v.camera_serial)bits.push('body '+esc(v.camera_serial));
+  return `<div style="flex:1;min-width:220px;border:1px solid ${isRaw?'var(--bad)':'var(--line)'};border-radius:6px;padding:8px">
+    <div class="mono" style="font-size:11px;word-break:break-all">${esc(v.rel_path)}</div>
+    <div class="dim" style="font-size:11px;margin-top:4px">${GB(v.size_bytes)} GB · ${esc((v.mtime||'').slice(0,10))} · hash <span class="mono">${esc(v.hash_prefix||'')}</span></div>
+    ${bits.length?`<div class="dim" style="font-size:11px">${bits.join(' · ')}</div>`:''}
+    <div class="dim" style="font-size:11px;margin-top:4px">📍 ${(v.locations||[]).map(esc).join(', ')||'no copy recorded'}</div>
+    <div style="margin-top:8px"><button class="btn ghost" style="font-size:11px" onclick="resolveConflict(${cid},'CANONICAL',${v.file_id})">Mark this canonical</button></div>
+  </div>`;
+}
+async function vConflicts(){
+  const d=await api('GET','/api/conflicts');const cs=d.conflicts||[];
+  let h=`${hdr('Conflicts','same logical file, different bytes — resolved without a source of truth','conflicts')}`;
+  if(!cs.length){h+='<div class="panel"><div class="empty">✓ No conflicts to review. When two versions of the same file disagree during ingest, they land here for a human decision.</div></div>';$('#view').innerHTML=h;return}
+  h+=`<div class="panel"><div class="dim" style="font-size:12px">${cs.length} conflict(s) awaiting a decision. Neither version is auto-preferred; nothing is ever discarded — the version you don't keep is retained in the file's history.</div></div>`;
+  for(const c of cs){const raw=c.raw_alert;const vs=c.versions||[];
+    h+=`<div class="panel" style="border-left:3px solid ${raw?'var(--bad)':'var(--warn)'}">
+      <div class="row" style="align-items:baseline"><h2 style="flex:1">${esc(c.rel_path)} <span class="etag" style="font-size:9.5px">${c.class==='NO-EXIF'?'no EXIF':'same capture + body'}</span></h2>
+        <span class="dim" style="font-size:11px">conflict #${c.id}</span></div>`;
+    if(raw)h+=`<div class="err" style="margin:4px 0 8px">⛔ RAW files should never legitimately differ — one of these may be corrupted.</div>`;
+    h+=`<div class="row" style="gap:10px;align-items:stretch;flex-wrap:wrap">`;
+    vs.forEach((v,i)=>{h+=conflictVersion(c.id,v,c.role,raw);if(i<vs.length-1)h+=`<div style="align-self:center;font-weight:700" class="dim">vs</div>`});
+    h+=`</div>
+      <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="resolveConflict(${c.id},'KEEP-BOTH',0)">Keep both as independent files (rename on plan)</button></div></div>`;
+  }
+  $('#view').innerHTML=h;
+}
+async function resolveConflict(id,resolution,canonicalFileId){
+  const msg=resolution==='KEEP-BOTH'?'Keep both versions as independent files?':'Mark this version canonical? The other is retained in the file\'s version history.';
+  if(!confirm(msg))return;
+  try{await api('POST','/api/conflicts/'+id+'/resolve',{resolution,canonical_file_id:canonicalFileId});toast('Conflict resolved');vConflicts()}catch(e){toast(e.message,1)}
+}
+
 /* ---------------- shell ---------------- */
 let dlgGo=null;
 function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog');d.id='dlg';document.body.append(d)}
@@ -2454,7 +2493,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,conflicts:vConflicts,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
 function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));

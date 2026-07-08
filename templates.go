@@ -89,20 +89,28 @@ type RoutePlacement struct {
 
 // RoutePreview is the template editor's live consequence summary against the real
 // catalog: how many files the template places, how many match no route, how many
-// collide (two sources → one destination) and await conflict review, plus a few
-// example placements.
+// destination collisions were auto-disambiguated (second-shooter / keep-both →
+// distinct placements), and — the compile gate — how many UNRESOLVED true content
+// conflicts sit in scope. Blocked is true whenever such conflicts exist: the plan
+// refuses to compile until they are resolved in the Conflicts queue.
 type RoutePreview struct {
-	TemplateID      int              `json:"template_id"`
-	Total           int              `json:"total"`
-	Placed          int              `json:"placed"`
-	NoRoute         int              `json:"no_route"`
-	Conflicts       int              `json:"conflicts"`
-	Examples        []RoutePlacement `json:"examples"`
-	NoRouteExamples []string         `json:"no_route_examples,omitempty"`
+	TemplateID          int              `json:"template_id"`
+	Total               int              `json:"total"`
+	Placed              int              `json:"placed"`
+	NoRoute             int              `json:"no_route"`
+	Disambiguated       int              `json:"disambiguated"`
+	Blocked             bool             `json:"blocked"`
+	UnresolvedConflicts int              `json:"unresolved_conflicts"`
+	CollectionID        int              `json:"collection_id"`
+	Examples            []RoutePlacement `json:"examples"`
+	NoRouteExamples     []string         `json:"no_route_examples,omitempty"`
 }
 
 // RoutePreview computes the consequence preview for a template over a collection
-// (0 = every archive). Pure planning — no file is touched.
+// (0 = every archive). Pure planning — no file is touched. It REFUSES (Blocked) to
+// compile while unresolved true conflicts exist in scope, and auto-disambiguates
+// two files that would land on one destination so keep-both/second-shooter files
+// compile to two distinct placements rather than a naming collision.
 func (a *App) RoutePreview(t *Template, collectionID int) RoutePreview {
 	reg := a.formatRegistry()
 	events := map[int]*Event{}
@@ -117,15 +125,19 @@ func (a *App) RoutePreview(t *Template, collectionID int) RoutePreview {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 
-	res := RoutePreview{TemplateID: t.ID, Total: len(files)}
-	destCount := map[string]int{}
+	res := RoutePreview{TemplateID: t.ID, Total: len(files), CollectionID: collectionID}
+	res.UnresolvedConflicts = a.Store.OpenConflictCount(collectionID)
+	res.Blocked = res.UnresolvedConflicts > 0
+
 	type pending struct {
-		fid  int
-		src  string
-		dest string
-		role string
+		fid    int
+		src    string
+		dest   string
+		role   string
+		serial string
 	}
-	var placements []pending
+	byDest := map[string][]*pending{}
+	var placements []*pending
 	for _, f := range files {
 		role := f.Role
 		if role == "" {
@@ -140,18 +152,50 @@ func (a *App) RoutePreview(t *Template, collectionID int) RoutePreview {
 			continue
 		}
 		res.Placed++
-		destCount[normPath(dest)]++
-		placements = append(placements, pending{f.ID, f.RelPath, dest, role})
+		p := &pending{f.ID, f.RelPath, dest, role, f.CameraSerial}
+		placements = append(placements, p)
+		byDest[normPath(dest)] = append(byDest[normPath(dest)], p)
 	}
-	for _, p := range placements {
-		if destCount[normPath(p.dest)] > 1 {
-			res.Conflicts++
+
+	// Disambiguate destination collisions: the first keeps the name; each subsequent
+	// gets {camera_serial} (when distinct) or an ordinal appended before the
+	// extension — so two legitimate files compile to two placements, not a collision.
+	for _, group := range byDest {
+		if len(group) < 2 {
+			continue
 		}
+		usedSerial := map[string]bool{}
+		for i, p := range group {
+			if i == 0 {
+				if p.serial != "" {
+					usedSerial[p.serial] = true
+				}
+				continue
+			}
+			var suffix string
+			if p.serial != "" && !usedSerial[p.serial] {
+				suffix, usedSerial[p.serial] = safePathSeg(p.serial), true
+			} else {
+				suffix = itoaSafe(i + 1)
+			}
+			p.dest = disambiguateDest(p.dest, suffix)
+			res.Disambiguated++
+		}
+	}
+
+	for _, p := range placements {
 		if len(res.Examples) < 5 {
 			res.Examples = append(res.Examples, RoutePlacement{FileID: p.fid, Src: p.src, Dest: p.dest, Role: p.role})
 		}
 	}
 	return res
+}
+
+// disambiguateDest appends a suffix before the file extension: a/b/DSC1.jpg +
+// "CAM-2" → a/b/DSC1-CAM-2.jpg.
+func disambiguateDest(dest, suffix string) string {
+	ext := path.Ext(dest)
+	return strings.TrimSuffix(dest, ext) + "-" + suffix + ext
 }
 
 // safePathSeg keeps a token value legible as a path segment: trims, collapses

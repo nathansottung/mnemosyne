@@ -476,6 +476,43 @@ type Template struct {
 	CreatedAt  time.Time         `json:"created_at"`
 }
 
+// Conflict statuses and classes. A conflict is two (or more) catalog files that
+// are the SAME logical file but hold DIFFERENT bytes, with no source of truth to
+// arbitrate — surfaced for a human decision, never auto-preferred.
+const (
+	ConflictOpen     = "OPEN"
+	ConflictResolved = "RESOLVED"
+	// ClassSameMeta (b): identical capture metadata AND camera serial, different hash.
+	ClassSameMeta = "SAME-META"
+	// ClassNoEXIF (c): same path/name, no EXIF to arbitrate, different hash.
+	ClassNoEXIF = "NO-EXIF"
+	// Resolutions.
+	ResolveCanonical = "CANONICAL" // one version wins; the other(s) fold into its retained history
+	ResolveKeepBoth  = "KEEP-BOTH" // both stay as independent files; the plan renames on placement
+)
+
+// Conflict is one true, human-arbitrated disagreement: N catalog files sharing a
+// logical identity but differing in content hash. Signature (collection|key|sorted
+// hashes) makes detection idempotent — a resolved conflict is never re-opened when
+// the same bytes are re-scanned. Resolution feeds the per-file version-retention
+// history (File.Versions); nothing is ever discarded.
+type Conflict struct {
+	ID           int        `json:"id"`
+	CollectionID int        `json:"collection_id"`
+	Class        string     `json:"class"` // SAME-META | NO-EXIF
+	Key          string     `json:"key"`   // logical grouping key (display)
+	RelPath      string     `json:"rel_path"`
+	Role         string     `json:"role,omitempty"`
+	RawAlert     bool       `json:"raw_alert,omitempty"` // any involved file is a RAW original
+	Signature    string     `json:"signature"`
+	FileIDs      []int      `json:"file_ids"`
+	Status       string     `json:"status"`               // OPEN | RESOLVED
+	Resolution   string     `json:"resolution,omitempty"` // CANONICAL | KEEP-BOTH
+	Canonical    int        `json:"canonical_file_id,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
+}
+
 // TapeAlertFlag is one active TapeAlert bit reported by a tape drive, rendered
 // in plain language. Severity is one of: clean, warn, error (info flags are
 // dropped). TapeAlert is the drive's own self-report — a diagnostic SIGNAL, like
@@ -628,7 +665,7 @@ func (r *DriftReport) Changes() int {
 // Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
 // ("Schema versioning"): persisted fields are append-only, removal needs a
 // migration + a major bump, and every field must tolerate being absent.
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 // schemaMigration transforms the in-memory catalog UP TO the version named by To.
 // Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
@@ -662,6 +699,10 @@ var schemaMigrations = []schemaMigration{
 	// builds refuse to write (they'd drop events/templates/media-metadata). Empty
 	// body — nothing to transform.
 	{To: 4, Fn: func(c *catalog) {}},
+	// 4 → 5: Conflicts (same-logical-file/different-bytes review queue) became a
+	// first-class record. Additive; the bump makes older builds refuse to write (they
+	// would drop pending/resolved conflict decisions). Empty body.
+	{To: 5, Fn: func(c *catalog) {}},
 }
 
 // migrateLocations is the 1→2 step: fold every volume's free-text Location + Offsite
@@ -726,8 +767,11 @@ type catalog struct {
 	Snapshots []*VolumeSnapshot `json:"volume_snapshots,omitempty"`
 	// Events (named happenings files belong to) and Templates (role→destination
 	// routing documents). Additive in schema v4. See Event / Template.
-	Events     []*Event     `json:"events,omitempty"`
-	Templates  []*Template  `json:"templates,omitempty"`
+	Events    []*Event    `json:"events,omitempty"`
+	Templates []*Template `json:"templates,omitempty"`
+	// Conflicts: true same-logical-file/different-bytes disagreements awaiting (or
+	// carrying) a human decision. Additive in schema v5. See Conflict.
+	Conflicts  []*Conflict  `json:"conflicts_review,omitempty"`
 	TapeChecks []TapeHealth `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
 	// Protection profiles (the 3-2-1 model), their per-archive/per-folder
 	// assignments, and the latest recomputed status summary per collection.

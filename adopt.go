@@ -473,15 +473,27 @@ func (a *App) AdoptFolder(mountPath string, collectionID, volumeID int, progress
 	progress(0.92, "recording copies")
 	a.upsertMirrorChunk(collectionID, vol, mountPath, refs, "mirror-adopt")
 
+	// Collision pass: same-logical-file/different-bytes across the union. Class-(a)
+	// second-shooter frames auto-pass (noted); true conflicts (b/c) open a review item.
+	progress(0.96, "checking for content conflicts")
+	scan := a.DetectConflicts(collectionID)
+
 	union := a.Store.CollectionFileCount(collectionID)
 	summary := fmt.Sprintf("adopted %d file(s) from %s — %d new to the union, %d already present · union now %d",
 		len(refs), vol.Label, added, dupInUnion, union)
+	if scan.SecondShooter > 0 {
+		summary += fmt.Sprintf(" · %d second-shooter group(s) kept (different camera bodies)", scan.SecondShooter)
+	}
+	if scan.Open > 0 {
+		summary += fmt.Sprintf(" · ⚠ %d content conflict(s) need review", scan.Open)
+	}
 	a.Store.Log("adopt", coll.Name+": "+summary)
 	progress(1.0, summary)
 	return map[string]any{
 		"archive": coll.Name, "volume_id": vol.ID, "volume": vol.Label,
 		"files_on_drive": len(refs), "new_to_union": added, "duplicate_in_union": dupInUnion,
 		"union_files": union, "unreadable": unreadable, "summary": summary,
+		"conflicts": scan.Open, "new_conflicts": scan.New, "second_shooter": scan.SecondShooter,
 	}, nil
 }
 
