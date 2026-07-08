@@ -1,0 +1,140 @@
+{
+ "schema_version": 1,
+ "next_id": {
+  "chunk": 1,
+  "collection": 1,
+  "volume": 1
+ },
+ "collections": [
+  {
+   "id": 1,
+   "name": "Wedding Photos 2024",
+   "created_at": "2026-07-08T01:23:04.0487972Z"
+  }
+ ],
+ "folders": null,
+ "files": null,
+ "chunks": [
+  {
+   "id": 1,
+   "collection_id": 1,
+   "name": "PKG-C0001",
+   "status": "VERIFIED",
+   "media_kind": "TAPE",
+   "target_bytes": 0,
+   "data_bytes": 1000,
+   "enc_bytes": 1234,
+   "file_count": 2,
+   "src_root": "/mnt/photos",
+   "hash_alg": "SHA256",
+   "tar_hash": "aaa",
+   "enc_hash": "bbb",
+   "encrypted": true,
+   "key_ref": "K-AB12CD34",
+   "par2_redundancy": 10,
+   "staged_dir": "",
+   "written_dest": "",
+   "verify_ok": null,
+   "error": "",
+   "files": [
+    {
+     "file_id": 1,
+     "rel_path": "a.nef",
+     "size_bytes": 500,
+     "hash": "h1"
+    },
+    {
+     "file_id": 2,
+     "rel_path": "b/c.nef",
+     "size_bytes": 500,
+     "hash": "h2"
+    }
+   ],
+   "spanned": false,
+   "copies": [
+    {
+     "volume_id": 1,
+     "path": "T:/PKG-C0001",
+     "written_at": "2026-07-08T01:23:04.0529067Z",
+     "last_verified_at": "2026-07-08T01:23:04.0529067Z",
+     "verify_ok": true
+    }
+   ],
+   "created_at": "2026-07-08T01:23:04.0518813Z"
+  }
+ ],
+ "keys": [
+  {
+   "key_ref": "K-AB12CD34",
+   "fingerprint": "deadbeef",
+   "note": "package PKG",
+   "created_at": "0001-01-01T00:00:00Z"
+  }
+ ],
+ "burn_queues": null,
+ "volumes": [
+  {
+   "id": 1,
+   "label": "LTO-0007",
+   "barcode": "NSP-0007",
+   "kind": "TAPE",
+   "location": "Shelf A",
+   "notes": "",
+   "created_at": "2026-07-08T01:23:04.0508506Z",
+   "serial": "SN123"
+  }
+ ],
+ "drift": null,
+ "dock_sessions": null,
+ "tape_checks": null,
+ "profiles": [
+  {
+   "id": "single-copy",
+   "name": "Single Copy",
+   "description": "low-value / re-creatable data",
+   "required_copies": 1,
+   "required_distinct_media_kinds": 1,
+   "required_offsite_copies": 0,
+   "media_kinds_allowed": null,
+   "verify_due_months": 12,
+   "builtin": true
+  },
+  {
+   "id": "3-2-1-standard",
+   "name": "3-2-1 Standard",
+   "description": "the canonical rule; default for new Archives",
+   "required_copies": 3,
+   "required_distinct_media_kinds": 2,
+   "required_offsite_copies": 1,
+   "media_kinds_allowed": null,
+   "verify_due_months": 12,
+   "builtin": true
+  },
+  {
+   "id": "pre-deletion-hold",
+   "name": "Pre-Deletion Hold",
+   "description": "over-protect data whose SOURCE is about to be deleted",
+   "required_copies": 4,
+   "required_distinct_media_kinds": 2,
+   "required_offsite_copies": 1,
+   "media_kinds_allowed": null,
+   "verify_due_months": 6,
+   "builtin": true
+  }
+ ],
+ "assignments": [
+  {
+   "collection_id": 1,
+   "path": "",
+   "profile_id": "3-2-1-standard"
+  }
+ ],
+ "protection": null,
+ "audit": [
+  {
+   "at": "2026-07-08T01:23:04.0539349Z",
+   "action": "build",
+   "detail": "fixture built"
+  }
+ ]
+}

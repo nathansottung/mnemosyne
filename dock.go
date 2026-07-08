@@ -586,8 +586,9 @@ func (a *App) writeDriveSidecar(mountPath string, ds *DockSession, vol *Volume, 
 		snapArchives = append(snapArchives, map[string]any{"archive_id": aid, "archive": name, "matched_files": files})
 	}
 	snap := map[string]any{
-		"mnemosyne_dock_snapshot": 1, "generated_utc": now.Format(time.RFC3339),
-		"session_id": ds.ID, "volume": vol, "mode": d.Mode,
+		"mnemosyne_dock_snapshot": 1, "schema_version": currentSchemaVersion, "mnemosyne_version": appVersion,
+		"generated_utc": now.Format(time.RFC3339),
+		"session_id":    ds.ID, "volume": vol, "mode": d.Mode,
 		"matched": d.Matched, "matched_bytes": d.MatchedBytes,
 		"historical": d.Historical, "unreadable": d.Unreadable, "other": d.Other,
 		"archives": snapArchives,

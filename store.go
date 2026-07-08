@@ -489,18 +489,50 @@ func (r *DriftReport) Changes() int {
 	return r.Counts["new"] + r.Counts["modified"] + r.Counts["missing"] + r.Counts["moved"]
 }
 
+// currentSchemaVersion is THE catalog schema version this build understands. It is
+// stamped into catalog.json on every save. The forward-compatibility contract:
+//   - file version  == current → proceed normally
+//   - file version  <  current → run ordered, idempotent migrations (backup first)
+//   - file version  >  current → REFUSE TO WRITE (a newer app wrote it); reads only
+//
+// Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
+// ("Schema versioning"): persisted fields are append-only, removal needs a
+// migration + a major bump, and every field must tolerate being absent.
+const currentSchemaVersion = 1
+
+// schemaMigration transforms the in-memory catalog UP TO the version named by To.
+// Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
+type schemaMigration struct {
+	To int
+	Fn func(c *catalog)
+}
+
+// schemaMigrations is the ordered registry. To evolve the schema: bump
+// currentSchemaVersion, APPEND a migration whose To equals the new version, and
+// NEVER edit or remove an existing entry (old catalogs still replay it).
+var schemaMigrations = []schemaMigration{
+	// 0 → 1: the first versioned schema. Catalogs written before schema versioning
+	// have no schema_version field (reads as 0) but are STRUCTURALLY identical to v1
+	// — every field was already append-only and absent-tolerant — so this only
+	// stamps the version. Idempotent by construction (empty body).
+	{To: 1, Fn: func(c *catalog) {}},
+}
+
 type catalog struct {
-	NextID       map[string]int `json:"next_id"`
-	Collections  []*Collection  `json:"collections"`
-	Folders      []*Folder      `json:"folders"`
-	Files        []*File        `json:"files"`
-	Chunks       []*Chunk       `json:"chunks"`
-	Keys         []*KeyMeta     `json:"keys"`
-	BurnQueues   []*BurnQueue   `json:"burn_queues"`
-	Volumes      []*Volume      `json:"volumes"`
-	Drift        []*DriftReport `json:"drift"` // latest reconcile report per collection
-	DockSessions []*DockSession `json:"dock_sessions"`
-	TapeChecks   []TapeHealth   `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
+	// SchemaVersion MUST stay the first field. Absent (0) on pre-versioning catalogs;
+	// migrated up to currentSchemaVersion on load. See currentSchemaVersion.
+	SchemaVersion int            `json:"schema_version"`
+	NextID        map[string]int `json:"next_id"`
+	Collections   []*Collection  `json:"collections"`
+	Folders       []*Folder      `json:"folders"`
+	Files         []*File        `json:"files"`
+	Chunks        []*Chunk       `json:"chunks"`
+	Keys          []*KeyMeta     `json:"keys"`
+	BurnQueues    []*BurnQueue   `json:"burn_queues"`
+	Volumes       []*Volume      `json:"volumes"`
+	Drift         []*DriftReport `json:"drift"` // latest reconcile report per collection
+	DockSessions  []*DockSession `json:"dock_sessions"`
+	TapeChecks    []TapeHealth   `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
 	// Protection profiles (the 3-2-1 model), their per-archive/per-folder
 	// assignments, and the latest recomputed status summary per collection.
 	Profiles    []*Profile           `json:"profiles"`
@@ -519,6 +551,11 @@ type Store struct {
 	path    string
 	c       catalog
 	lastBak string // YYYYMMDD of the most recent daily backup written
+	// readOnly latches when catalog.json was written by a NEWER schema than this
+	// build understands. Every write is then refused (silently dropping fields the
+	// newer app added would be data loss); reads/viewing still work. See OpenStore.
+	readOnly       bool
+	readOnlyReason string
 	// fileIdx indexes Files by (collection|folder|relpath) so UpsertFile is O(1)
 	// instead of a linear scan — the difference between an O(n) and an O(n²) scan
 	// at a million files. Rebuilt from the catalog on open; kept in sync by
@@ -567,13 +604,37 @@ func OpenStore(dataDir string) (*Store, error) {
 	}
 	s := &Store{path: filepath.Join(dataDir, "catalog.json")}
 	s.c.NextID = map[string]int{}
+	existed := false
+	var raw []byte
 	if b, err := os.ReadFile(s.path); err == nil {
+		existed = len(b) > 0
+		raw = b
 		if err := json.Unmarshal(b, &s.c); err != nil {
 			return nil, fmt.Errorf("catalog.json is damaged: %w", err)
 		}
 	}
 	if s.c.NextID == nil {
 		s.c.NextID = map[string]int{}
+	}
+	// Schema-version gate — the forward-compatibility guarantee (see
+	// currentSchemaVersion). A brand-new catalog is simply stamped at current on its
+	// first save; only an EXISTING file gets migrated or read-only-latched.
+	if existed {
+		switch {
+		case s.c.SchemaVersion > currentSchemaVersion:
+			// A newer app wrote this. Refuse to save: we'd silently drop fields we
+			// don't understand. Viewing is fine; every write is blocked in writeCatalog.
+			s.readOnly = true
+			s.readOnlyReason = fmt.Sprintf(
+				"catalog.json was created by a newer version of Mnemosyne (catalog schema v%d; this build understands v%d). "+
+					"Upgrade the app to write to it — refusing to save so newer fields aren't silently dropped. Read-only viewing is allowed.",
+				s.c.SchemaVersion, currentSchemaVersion)
+		case s.c.SchemaVersion < currentSchemaVersion:
+			// Older schema: back up the exact on-disk bytes, then replay migrations.
+			from := s.c.SchemaVersion
+			s.backupBeforeMigrate(raw, from)
+			s.runMigrations(from)
+		}
 	}
 	// Reboot recovery: a disc caught mid-burn/mid-verify when the process
 	// died is unknowable — the physical disc may be a coaster. Send it back
@@ -660,6 +721,40 @@ func (s *Store) seedBuiltinProfilesLocked() bool {
 	return changed
 }
 
+// ReadOnly reports whether the store refuses writes because catalog.json was
+// created by a newer schema, and why. Callers (startup banner, preflight, the UI)
+// surface the reason so the operator knows to upgrade rather than lose data.
+func (s *Store) ReadOnly() (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readOnly, s.readOnlyReason
+}
+
+// runMigrations replays every registered migration whose target version is above
+// the file's version and at/below what this build supports, in ascending order,
+// then stamps the catalog at the current version. Each migration is idempotent, so
+// a re-run (e.g. after a crash mid-migration) reproduces the same result.
+func (s *Store) runMigrations(from int) {
+	for _, m := range schemaMigrations {
+		if m.To > from && m.To <= currentSchemaVersion {
+			m.Fn(&s.c)
+		}
+	}
+	s.c.SchemaVersion = currentSchemaVersion
+}
+
+// backupBeforeMigrate writes the EXACT pre-migration bytes to a timestamped sidecar
+// so a schema upgrade is always reversible. Best-effort: a failed backup logs but
+// never blocks the migration (the daily .bak also exists), though a successful one
+// is the safety net we want before rewriting the catalog in a new shape.
+func (s *Store) backupBeforeMigrate(raw []byte, from int) {
+	if len(raw) == 0 {
+		return
+	}
+	name := fmt.Sprintf("%s.pre-schema-v%d-%s", s.path, from, time.Now().Format("20060102-150405"))
+	_ = os.WriteFile(name, raw, 0o644)
+}
+
 // save persists the catalog. During a batched job it COALESCES writes: it marks
 // the catalog dirty and skips the write if one happened within batchInterval,
 // so a scan/adoption that mutates thousands of times pays a handful of full-file
@@ -681,6 +776,13 @@ func (s *Store) save() error {
 }
 
 func (s *Store) writeCatalog() error {
+	// Forward-compatibility gate: never overwrite a catalog a newer app created.
+	if s.readOnly {
+		return fmt.Errorf("%s", s.readOnlyReason)
+	}
+	// Stamp the schema version on every write — this is what makes the file
+	// self-describing and lets a future build know how to read it.
+	s.c.SchemaVersion = currentSchemaVersion
 	// Pretty-print small catalogs (human-inspectable with any text editor — the
 	// whole point of the JSON store) but switch to COMPACT JSON once the catalog
 	// gets large: at 1M files the indentation alone is ~90 MB of whitespace, and

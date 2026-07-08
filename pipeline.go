@@ -261,8 +261,11 @@ func (a *App) computePreflight() map[string]any {
 // ---- keystores -----------------------------------------------------------
 
 type keystoreFile struct {
-	Marker int              `json:"mnemosyne_keystore"`
-	Keys   []map[string]any `json:"keys"`
+	Marker int `json:"mnemosyne_keystore"`
+	// SchemaVersion is stamped on every write (absent/0 on legacy keystores, which
+	// are structurally identical). Keys is append-only; entries tolerate being absent.
+	SchemaVersion int              `json:"schema_version"`
+	Keys          []map[string]any `json:"keys"`
 }
 
 func readStore(path string) (*keystoreFile, error) {
@@ -277,6 +280,9 @@ func readStore(path string) (*keystoreFile, error) {
 	if err := json.Unmarshal(b, &ks); err != nil || ks.Marker != 1 {
 		return nil, fmt.Errorf("not a Mnemosyne keystore: %s", path)
 	}
+	if ks.SchemaVersion > currentSchemaVersion {
+		return nil, fmt.Errorf("keystore %s was written by a newer Mnemosyne (schema v%d > v%d) — upgrade the app before writing keys", path, ks.SchemaVersion, currentSchemaVersion)
+	}
 	return &ks, nil
 }
 
@@ -284,6 +290,7 @@ func writeStore(path string, ks *keystoreFile) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	ks.Marker, ks.SchemaVersion = 1, currentSchemaVersion
 	b, _ := json.MarshalIndent(ks, "", "  ")
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
@@ -711,6 +718,9 @@ func verifyTarContents(tarPath string, files []ChunkFileRef) error {
 			continue // directories, symlinks, etc. carry no cataloged source hash
 		}
 		name := path.Clean(strings.TrimPrefix(filepath.ToSlash(hdr.Name), "./"))
+		if name == bagPayloadManifestName {
+			continue // the BagIt payload manifest is the first tar member, not a source file
+		}
 		exp, ok := want[name]
 		if !ok {
 			return fmt.Errorf("stage verification: package contains %q, which is not a cataloged member of this package (unexpected extra member)", name)
@@ -857,12 +867,26 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 	doContents := mode == BuildVerifyFull || mode == BuildVerifyContents
 	doRoundtrip := mode == BuildVerifyFull
 
+	// BagIt payload manifest, written to staging and made the FIRST member of the tar
+	// (and, by writeBagItTags below, an identical sidecar on media). It lists the
+	// source files as "sha256  relpath" over the ORIGINAL tree — so a reader can
+	// stream-verify each member as it extracts, and the tree that comes out is
+	// unchanged: this is one added description file at the tar root, never a restructure.
+	manifestPath := filepath.Join(work, bagPayloadManifestName)
+	if err := os.WriteFile(manifestPath, []byte(bagPayloadManifest(c.Files)), 0o644); err != nil {
+		return fail(err)
+	}
+
 	progress(0.05, "tar…")
 	t := time.Now()
 	// SOURCE READ-ONLY: `tar -c … -C <SrcRoot> -T list` only READS the source
 	// files; it writes exclusively to tarPath in the (validated) staging dir. tar
-	// -c never modifies the files it archives.
-	if err := run(tarBin, "", "--format=posix", "-cf", tarPath, "-C", c.SrcRoot, "-T", list); err != nil {
+	// -c never modifies the files it archives. First member: the manifest (from
+	// staging); then APPEND the source tree so the manifest leads the archive.
+	if err := run(tarBin, "", "--format=posix", "-cf", tarPath, "-C", work, bagPayloadManifestName); err != nil {
+		return fail(err)
+	}
+	if err := run(tarBin, "", "--format=posix", "-rf", tarPath, "-C", c.SrcRoot, "-T", list); err != nil {
 		return fail(err)
 	}
 	finish("tar", t, 0.28)
@@ -1103,7 +1127,8 @@ func findPayload(dir string, c *Chunk) string {
 
 func writeManifest(dir string, c *Chunk, keyFpr string) error {
 	m := map[string]any{
-		"mnemosyne_chunk": 1, "name": c.Name, "created_utc": time.Now().UTC().Format(time.RFC3339),
+		"mnemosyne_chunk": 1, "schema_version": currentSchemaVersion, "mnemosyne_version": appVersion,
+		"name": c.Name, "created_utc": time.Now().UTC().Format(time.RFC3339),
 		"collection_id": c.CollectionID, "source_root": c.SrcRoot,
 		"encrypted": c.Encrypted,
 		// payload_file is the exact on-medium filename of the payload: <name>.tar.gpg

@@ -27,9 +27,13 @@ func TestWriteBagItTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Manifest lists source files under data/, with their SHA-256.
-	if !strings.Contains(string(man), "aa  data/trip/a.nef") || !strings.Contains(string(man), "bb  data/trip/b.nef") {
-		t.Fatalf("manifest should list data/<relpath> with sha256:\n%s", man)
+	// Manifest lists source files by their ORIGINAL tree paths (no data/ prefix — the
+	// sidecar/in-tar manifest describes the tree the payload tar yields), with SHA-256.
+	if !strings.Contains(string(man), "aa  trip/a.nef") || !strings.Contains(string(man), "bb  trip/b.nef") {
+		t.Fatalf("manifest should list tree-relative <relpath> with sha256:\n%s", man)
+	}
+	if strings.Contains(string(man), "data/") {
+		t.Errorf("the per-package manifest must NOT use a data/ prefix (that is export-only):\n%s", man)
 	}
 	info, _ := os.ReadFile(filepath.Join(dir, "bag-info.txt"))
 	if !strings.Contains(string(info), "Payload-Oxum: 150.2") {
@@ -86,6 +90,47 @@ func TestExportBagConformant(t *testing.T) {
 	verifyBagManifest(t, bag)
 	if conf, _ := res["conformant"].(bool); !conf {
 		t.Error("a fully-staged archive should export a conformant bag")
+	}
+}
+
+// TestExportPackageBag proves the per-package "Export as BagIt" action produces a
+// conformant single-package bag whose payload manifest matches the data/ files.
+func TestExportPackageBag(t *testing.T) {
+	a := versApp(t)
+	coll := a.Store.AddCollection("Arch")
+	staged := t.TempDir()
+	for name, content := range map[string]string{
+		"PKG-9.tar": "PAYLOAD", "PKG-9.tar.par2": "PAR2", "PKG-9.manifest.json": `{"name":"PKG-9"}`,
+		"RESTORE.txt": "how", "manifest-sha256.txt": "aa  a.nef\n", // per-package tag must not nest in data/
+	} {
+		if err := os.WriteFile(filepath.Join(staged, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := a.Store.AddChunk(Chunk{CollectionID: coll.ID, Name: "PKG-9", Status: "STAGED", StagedDir: staged, MediaKind: "HDD",
+		Files: []ChunkFileRef{{FileID: 1, RelPath: "a.nef", SizeBytes: 5, Hash: "aa"}}})
+
+	out := t.TempDir()
+	res, err := a.ExportPackageBag(c.ID, out, func(float64, string) {})
+	if err != nil {
+		t.Fatalf("ExportPackageBag: %v", err)
+	}
+	bag := res["bag"].(string)
+	if _, err := os.Stat(filepath.Join(bag, "data", "PKG-9", "PKG-9.tar")); err != nil {
+		t.Errorf("data/PKG-9/PKG-9.tar should exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(bag, "data", "PKG-9", "manifest-sha256.txt")); !os.IsNotExist(err) {
+		t.Error("the per-package manifest tag file must not nest inside data/")
+	}
+	if pkgs, _ := res["packages"].(int); pkgs != 1 {
+		t.Errorf("a single-package bag should report 1 package, got %d", pkgs)
+	}
+	verifyBagManifest(t, bag)
+
+	// A package that isn't staged locally can't be bagged — clear error, no panic.
+	unstaged := a.Store.AddChunk(Chunk{CollectionID: coll.ID, Name: "PKG-10", Status: "PLANNED", MediaKind: "HDD"})
+	if _, err := a.ExportPackageBag(unstaged.ID, out, nil); err == nil {
+		t.Error("exporting an unstaged package should error")
 	}
 }
 

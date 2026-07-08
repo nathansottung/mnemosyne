@@ -1,4 +1,4 @@
-module github.com/nsottung/mnemosyne
+module github.com/nathansottung/mnemosyne
 
 go 1.22.2
 

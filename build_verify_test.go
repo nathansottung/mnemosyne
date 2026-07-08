@@ -60,9 +60,12 @@ func corruptFirstTarMember(t *testing.T, tarPath string) string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if corrupted == "" && (hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA) && len(data) > 0 {
+		name := path.Clean(strings.TrimPrefix(filepath.ToSlash(hdr.Name), "./"))
+		// The first tar member is now the BagIt payload manifest (skipped by stage
+		// verification), so corrupt the first SOURCE member to exercise the check.
+		if corrupted == "" && name != bagPayloadManifestName && (hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA) && len(data) > 0 {
 			data[0] ^= 0xFF // flip a content byte — size unchanged, header stays valid
-			corrupted = path.Clean(strings.TrimPrefix(filepath.ToSlash(hdr.Name), "./"))
+			corrupted = name
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatal(err)

@@ -78,6 +78,39 @@ Match the surrounding code — it is intentional, not accidental:
   correctly). Don't commit CRLF into source or docs; if a clone shows spurious
   whole-file diffs, run `git add --renormalize .` once.
 
+## Schema versioning (the forward-compatibility guarantee)
+
+Every persisted file (`catalog.json`, keystores, package manifests, dock inventory
+sidecars) carries a `schema_version`. `store.go` defines `currentSchemaVersion` and
+enforces one contract on load:
+
+- **`version == current`** → proceed.
+- **`version < current`** → run the ordered, idempotent `schemaMigrations` (one
+  function per step), after writing a `catalog.json.pre-schema-vN-<timestamp>`
+  backup of the exact old bytes.
+- **`version > current`** → **refuse to write** (a newer app created it; silently
+  dropping fields we don't understand would be data loss). Read-only viewing is
+  allowed; the reason is surfaced in the startup log and `GET /api/health`.
+
+These are **hard rules** — a broken one can silently corrupt a decade-old archive:
+
+1. **Persisted fields are append-only.** Never rename a `json:"..."` tag, never
+   repurpose a field, never change what an existing field *means*. Add a new field
+   instead. (A rename is a remove + an add; see rule 3.)
+2. **Every new field must tolerate being absent.** Old files won't have it, so its
+   Go zero value must be a correct, safe default — and that meaning must be
+   documented in a comment at the struct field. If zero-value isn't safe, backfill
+   it in a migration, not with special-casing scattered across the code.
+3. **Removing or re-meaning a field requires a migration and a major schema bump.**
+   Append a `schemaMigration{To: N, Fn: …}` (idempotent), bump
+   `currentSchemaVersion` to `N`, and never edit an existing migration — old files
+   still replay it.
+4. **Only `store.go` migrates.** Migrations are ordered, idempotent, and registered
+   in one place. Don't scatter ad-hoc "if field missing…" fixups through the code.
+5. **Add a fixture test for any schema change.** `schema_test.go` loads a checked-in
+   `testdata/catalog_schema*.json`, saves, reloads, and asserts nothing is lost; a
+   new schema version gets its own fixture and a migration round-trip.
+
 ## Writing the User Handbook (`docs/handbook/`)
 
 The handbook is the **novice-first, task-based** user guide — written for a
@@ -158,7 +191,7 @@ The version is baked into the binary via `-ldflags "-X main.appVersion=<tag>"`.
 
 ```bash
 # from a clean main that builds + vets + tests green:
-git tag v2.1.0
+git tag v0.9.0
 git push --tags
 ```
 

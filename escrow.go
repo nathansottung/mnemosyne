@@ -53,10 +53,11 @@ import (
 // Recovery Kit or a volume's seal sidecar.
 const escrowBundleDir = "escrow-bundle"
 
-// escrowRepo is the GitHub "owner/repo" the release artifacts are fetched from.
-// It matches the module path so the download-and-cache path finds the binaries
-// built by .github/workflows/release.yml.
-const escrowRepo = "nsottung/mnemosyne"
+// escrowRepo is the GitHub "owner/repo" the release artifacts are fetched from —
+// it MUST match the repository that .github/workflows/release.yml publishes to, or
+// the download-and-cache path 404s. This is the release repo, not the Go module
+// path (which is an internal import identifier).
+const escrowRepo = "nathansottung/mnemosyne"
 
 // escrowBinTargets are the platforms whose static binaries make up the practical
 // escrow. Kept to the three OS families named in the spec (amd64 + Apple-silicon
@@ -556,7 +557,7 @@ func fetchEscrowArtifact(url, dest, want string) error {
 }
 
 // looksLikeReleaseTag reports whether v is a vMAJOR… tag we can build release URLs
-// from (dev builds default to "2.0.0" with no leading v).
+// from (dev builds default to "0.9.0-dev" with no leading v).
 func looksLikeReleaseTag(v string) bool {
 	v = strings.TrimSpace(v)
 	return strings.HasPrefix(v, "v") && len(v) > 1

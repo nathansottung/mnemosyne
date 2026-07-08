@@ -1123,8 +1123,18 @@ function actions(c){
     if(!c.spanned)b.push(`<button class="btn ghost" onclick="doVerify(${c.id})">Verify medium</button>`);
     b.push(`<button class="btn ghost" onclick="restoreDlg(${c.id},'${esc(c.name)}')">Restore package…</button>`)}
   if(c.encrypted&&c.staged_dir)b.push(`<button class="btn ghost" onclick="readMediumDlg(${c.id},'${esc(c.name)}')">Read manifest…</button>`);
+  if(c.staged_dir)b.push(`<button class="btn ghost" onclick="bagPackageDlg(${c.id},'${esc(c.name)}')">Export as BagIt…</button>`);
   return b.join('');
 }
+/* Per-package conformant bag for institutional handoff. Storage is untouched —
+   an export, never the storage layout; any data/…/<pkg>.tar still opens with tar. */
+function bagPackageDlg(id,name){dlg(`<h1>Export “${esc(name)}” as a BagIt bag</h1>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Writes a <b>conformant BagIt bag</b> (RFC 8493) for this one package: a <span class="mono">data/</span> payload with its artifacts, <span class="mono">manifest-sha256.txt</span>, <span class="mono">bag-info.txt</span>, a tagmanifest, and <span class="mono">COMPARISON.md</span>. This is an <b>export</b>, not the storage format — your package on media is unchanged, and any <span class="mono">data/…/&lt;pkg&gt;.tar</span> still extracts your original tree with plain tar. The package must be <b>staged locally</b>.</div>
+  <label>Output folder (must be OUTSIDE any source root)</label>
+  <input id="d1" class="full" placeholder="Y:\\exports or /mnt/handoff">${browseBtn('d1')}
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Export bag</button></div>`,
+  async()=>{const p=$('#d1').value.trim();if(!p)return;
+    await api('POST',`/api/chunks/${id}/bagit-export`,{output_dir:p});toast('BagIt export started — see Jobs');loc('jobs')});}
 async function spanWriteDlg(id,name){
   const [c,vols]=await Promise.all([api('GET','/api/chunks/'+id),api('GET','/api/volumes')]);
   const segs=c.segments||[];const N=segs.length;

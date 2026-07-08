@@ -1,7 +1,7 @@
 # Mnemosyne — Archival Vault
 
-[![CI](https://github.com/nsottung/mnemosyne/actions/workflows/ci.yml/badge.svg)](https://github.com/nsottung/mnemosyne/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/nsottung/mnemosyne?logo=github&color=2e5e4e)](https://github.com/nsottung/mnemosyne/releases/latest)
+[![CI](https://github.com/nathansottung/mnemosyne/actions/workflows/ci.yml/badge.svg)](https://github.com/nathansottung/mnemosyne/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nathansottung/mnemosyne?logo=github&color=2e5e4e)](https://github.com/nathansottung/mnemosyne/releases/latest)
 [![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Single binary](https://img.shields.io/badge/deploy-single%20binary-2e5e4e)](#quickstart)
@@ -41,6 +41,11 @@ or family archivist). It walks you through
 [troubleshooting](docs/handbook/troubleshooting.md). The rest of this README is
 the technical/maintainer reference.
 
+> **Why not restic / borg / Bacula / dar / Canister?** — the honest,
+> one-paragraph-each answer (plus how Mnemosyne relates to git-annex, LTFS, BagIt /
+> Archivematica, the commercial media-archive tools, and complements like
+> dvdisaster and rclone) lives in **[docs/COMPARISON.md](docs/COMPARISON.md)**.
+
 ---
 
 ## Source safety guarantee
@@ -74,7 +79,7 @@ promise you have to trust.**
 ## Download
 
 Prebuilt, self-contained binaries for every release are on the
-**[Releases page](https://github.com/nsottung/mnemosyne/releases/latest)** —
+**[Releases page](https://github.com/nathansottung/mnemosyne/releases/latest)** —
 pick the zip for your OS/architecture:
 
 | Zip | Platform |
@@ -104,7 +109,7 @@ Mnemosyne also ships as a small multi-arch container image on GHCR, built by the
 same release tag:
 
 ```
-ghcr.io/nsottung/mnemosyne:latest      # or pin a version, e.g. :2.1.0
+ghcr.io/nathansottung/mnemosyne:latest   # or pin a release tag from the Releases page
 ```
 
 The image is multi-stage: a static, CGO-free binary on top of Alpine with the
@@ -142,7 +147,7 @@ docker run -d --name mnemosyne -p 7821:7821 \
   -e MNEMO_AUTH_TOKEN="$(openssl rand -hex 32)" \
   -v mnemo-data:/data -v mnemo-staging:/staging \
   -v /mnt/tank/photos:/sources/photos:ro \
-  ghcr.io/nsottung/mnemosyne:latest
+  ghcr.io/nathansottung/mnemosyne:latest
 ```
 
 Or use the committed **[`docker-compose.yml`](docker-compose.yml)** (put the token
@@ -169,7 +174,7 @@ brain:
 
 1. **Apps → Discover Apps → Custom App** (or *Install via YAML* and paste the
    compose above).
-2. **Image:** `ghcr.io/nsottung/mnemosyne:latest`.
+2. **Image:** `ghcr.io/nathansottung/mnemosyne:latest`.
 3. **Environment:** add `MNEMO_AUTH_TOKEN` = a long random secret.
 4. **Storage / host-path volumes:**
    - a dataset → **`/data`** (read-write; this is your catalog — snapshot it),
@@ -765,6 +770,39 @@ or accidentally adopting a Mnemosyne-written chunk, changes nothing. Adopted
 packages behave like native ones everywhere else: they count toward redundancy,
 show in search and on volumes, and can be verified and restored with the same
 `par2`/`gpg`/`tar` doctrine.
+
+---
+
+## BagIt compatibility
+
+Mnemosyne speaks [BagIt](https://datatracker.ietf.org/doc/html/rfc8493) for
+institutional legibility **without adopting BagIt's storage layout** — because the
+doctrine is immovable: *extraction always yields your original tree*. The split is
+deliberate and exact:
+
+- **Every package carries a BagIt payload manifest.** `manifest-sha256.txt` (plain
+  `sha256␣␣relative/path` lines over the original tree) is written **both as the
+  first member inside the package's `tar`** — so a reader can stream-verify each
+  file as it extracts — **and as a sidecar on the media**. A
+  `bag-info.txt`-style metadata sidecar rides along too (source organization,
+  bagging date, package name, byte/file counts, Mnemosyne version). These are a
+  **description layer**: the payload is still a plain `tar` that extracts to your
+  original folders, no bag tooling required.
+- **The storage format is never a bag.** Mnemosyne does **not** restructure
+  packages into a BagIt `data/` tree. The manifest describes the tree; it doesn't
+  relocate it. Extraction yields exactly your files (plus that one manifest file at
+  the root), forever readable with plain `tar`.
+- **A conformant bag is an explicit export, never the storage.** *Export as BagIt*
+  (per package, or per archive) materializes a fully conformant bag — `data/`
+  payload, `bagit.txt`, `manifest-sha256.txt` + `tagmanifest-sha256.txt`, and
+  `COMPARISON.md` — into a directory you choose, for handoff to institutional
+  tooling (Archivematica and friends). It's a copy for ingest; your archive on
+  media is untouched.
+
+In short: **BagIt manifests travel with every package for free; the fully
+conformant bag is a handoff export you ask for.** See
+[docs/COMPARISON.md](docs/COMPARISON.md) for how this sits next to BagIt /
+Archivematica as institutional endpoints.
 
 ---
 

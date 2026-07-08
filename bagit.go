@@ -39,6 +39,11 @@ var comparisonMD []byte
 
 const bagItDeclaration = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n"
 
+// bagPayloadManifestName is the BagIt manifest filename. It is written as the FIRST
+// member INSIDE each package's tar and, identically, as a sidecar beside the payload
+// on media — a description layer, never a restructuring of the payload.
+const bagPayloadManifestName = "manifest-sha256.txt"
+
 // bagOxum returns the BagIt Payload-Oxum "octetstream sum": total bytes "." file
 // count over the source files a package preserves.
 func bagOxum(files []ChunkFileRef) (bytes int64, count int) {
@@ -49,21 +54,26 @@ func bagOxum(files []ChunkFileRef) (bytes int64, count int) {
 	return
 }
 
-// bagManifestLines renders BagIt manifest lines ("<sha256>  data/<relpath>") for
-// a package's source files, sorted by path for a stable, diffable manifest. Files
-// with no recorded SHA-256 (legacy/adopted-without-manifest) are skipped and
-// reported so the manifest never lists an unverifiable entry.
-func bagManifestLines(files []ChunkFileRef) (manifest string, skipped int) {
+// bagPayloadManifest renders BagIt manifest lines ("<sha256>  <relpath>") over a
+// package's source files, sorted by path for a stable, diffable manifest. The paths
+// are the ORIGINAL tree-relative paths — exactly what the payload tar yields on
+// extraction (no data/ prefix), because this manifest lives inside that tar and
+// beside it on media, describing the tree as it comes out. Files with no recorded
+// SHA-256 (legacy/adopted-without-hash) are skipped so no unverifiable entry is
+// listed; the conformant EXPORT rehashes every byte and is always complete.
+func bagPayloadManifest(files []ChunkFileRef) string {
 	rows := make([]string, 0, len(files))
 	for _, f := range files {
 		if f.Hash == "" {
-			skipped++
 			continue
 		}
-		rows = append(rows, fmt.Sprintf("%s  data/%s", f.Hash, filepath.ToSlash(f.RelPath)))
+		rows = append(rows, fmt.Sprintf("%s  %s", f.Hash, filepath.ToSlash(f.RelPath)))
 	}
 	sort.Strings(rows)
-	return strings.Join(rows, "\n") + "\n", skipped
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.Join(rows, "\n") + "\n"
 }
 
 // bagInfo builds a bag-info.txt describing what the package preserves. The
@@ -72,8 +82,10 @@ func bagManifestLines(files []ChunkFileRef) (manifest string, skipped int) {
 // never misled into treating the beside-the-package tags as a validatable bag.
 func bagInfo(c *Chunk, oxumBytes int64, oxumCount int, conformant bool) string {
 	desc := "Mnemosyne package. The payload lives in " + payloadName(c) +
-		" (a plain POSIX tar); this manifest describes the original files it preserves. " +
-		"For a fully conformant BagIt bag with a data/ payload tree, use Mnemosyne's bag export."
+		" (a plain POSIX tar); manifest-sha256.txt lists the original files it preserves, " +
+		"by their tree-relative paths — exactly what the tar yields on extraction, and it " +
+		"is also the FIRST member inside the tar. For a fully conformant BagIt bag with a " +
+		"data/ payload tree, use Mnemosyne's bag export."
 	if conformant {
 		desc = "Conformant BagIt bag exported by Mnemosyne. data/ holds this package's " +
 			"artifacts (the tar payload, par2 parity, package manifest, and RESTORE.txt). " +
@@ -103,12 +115,12 @@ func sha256Hex(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToStri
 // preserves (as data/<relpath>), matching what the conformant export materializes.
 func writeBagItTags(dir string, c *Chunk) {
 	oxB, oxN := bagOxum(c.Files)
-	manifest, _ := bagManifestLines(c.Files)
+	manifest := bagPayloadManifest(c.Files)
 	info := bagInfo(c, oxB, oxN, false)
 	tags := map[string]string{
-		"bagit.txt":           bagItDeclaration,
-		"bag-info.txt":        info,
-		"manifest-sha256.txt": manifest,
+		"bagit.txt":            bagItDeclaration,
+		"bag-info.txt":         info,
+		bagPayloadManifestName: manifest,
 	}
 	// tagmanifest over the tag files, for bag tooling that expects it.
 	names := make([]string, 0, len(tags))
@@ -135,26 +147,46 @@ func writeBagItTags(dir string, c *Chunk) {
 // are copied from each chunk's staged folder; packages not staged locally are
 // recorded as skipped (their bytes live only on media). Never writes into a source.
 func (a *App) ExportBag(collectionID int, outputDir string, progress func(float64, string)) (map[string]any, error) {
+	coll := a.Store.Collection(collectionID)
+	if coll == nil {
+		return nil, fmt.Errorf("archive %d not found", collectionID)
+	}
+	return a.exportBagForChunks(coll.Name, a.Store.Chunks(collectionID), outputDir, progress)
+}
+
+// ExportPackageBag is the per-package "Export as BagIt" action: a fully conformant
+// bag holding just this one package's artifacts, for handoff to institutional
+// tooling. Same format as the archive-level export; the storage the package was
+// built into is untouched — this is an export, never the storage layout.
+func (a *App) ExportPackageBag(chunkID int, outputDir string, progress func(float64, string)) (map[string]any, error) {
+	c := a.Store.Chunk(chunkID)
+	if c == nil {
+		return nil, fmt.Errorf("package %d not found", chunkID)
+	}
+	if c.StagedDir == "" {
+		return nil, fmt.Errorf("package %s is not staged locally — its artifacts live only on media, so there is nothing to bag here", c.Name)
+	}
+	return a.exportBagForChunks(c.Name, []*Chunk{c}, outputDir, progress)
+}
+
+// exportBagForChunks materializes a conformant BagIt bag for a set of packages
+// (one archive, or a single package) into outputDir/<name>-bag.
+func (a *App) exportBagForChunks(bagBaseName string, chunks []*Chunk, outputDir string, progress func(float64, string)) (map[string]any, error) {
 	if strings.TrimSpace(outputDir) == "" {
 		return nil, fmt.Errorf("output_dir required")
 	}
 	if err := a.Store.AssertOutsideSources(outputDir); err != nil {
 		return nil, err
 	}
-	coll := a.Store.Collection(collectionID)
-	if coll == nil {
-		return nil, fmt.Errorf("archive %d not found", collectionID)
-	}
 	if progress == nil {
 		progress = func(float64, string) {}
 	}
-	bagRoot := filepath.Join(outputDir, fsSafe(coll.Name)+"-bag")
+	bagRoot := filepath.Join(outputDir, fsSafe(bagBaseName)+"-bag")
 	dataDir := filepath.Join(bagRoot, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, err
 	}
 
-	chunks := a.Store.Chunks(collectionID)
 	var manifestLines []string
 	var skipped []string
 	var payloadBytes int64
@@ -216,12 +248,12 @@ func (a *App) ExportBag(collectionID int, outputDir string, progress func(float6
 	}
 
 	progress(0.85, "bag tags")
-	info := exportBagInfo(coll.Name, payloadBytes, payloadCount, len(chunks), len(skipped))
+	info := exportBagInfo(bagBaseName, payloadBytes, payloadCount, len(chunks), len(skipped))
 	tagFiles := map[string]string{
-		"bagit.txt":           bagItDeclaration,
-		"bag-info.txt":        info,
-		"manifest-sha256.txt": manifest,
-		"COMPARISON.md":       string(comparisonMD),
+		"bagit.txt":            bagItDeclaration,
+		"bag-info.txt":         info,
+		bagPayloadManifestName: manifest,
+		"COMPARISON.md":        string(comparisonMD),
 	}
 	names := make([]string, 0, len(tagFiles))
 	for n := range tagFiles {
@@ -239,7 +271,7 @@ func (a *App) ExportBag(collectionID int, outputDir string, progress func(float6
 		return nil, err
 	}
 
-	a.Store.Log("bagit", fmt.Sprintf("%s: exported bag (%d file(s), %d package(s), %d skipped)", coll.Name, payloadCount, len(chunks), len(skipped)))
+	a.Store.Log("bagit", fmt.Sprintf("%s: exported bag (%d file(s), %d package(s), %d skipped)", bagBaseName, payloadCount, len(chunks), len(skipped)))
 	progress(1.0, "done")
 	return map[string]any{
 		"bag": bagRoot, "payload_files": payloadCount, "payload_bytes": payloadBytes,

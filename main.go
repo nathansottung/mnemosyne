@@ -28,10 +28,14 @@ import (
 //go:embed ui
 var uiFS embed.FS
 
-// appVersion is overridden at release time via the linker flag
-// -ldflags "-X main.appVersion=v2.1.0". It must stay a var (not a const) for the
-// -X override to take effect. See .github/workflows/release.yml.
-var appVersion = "2.0.0"
+// appVersion is the SINGLE SOURCE OF TRUTH for the version, surfaced everywhere
+// (startup banner, /api/health, About/escrow status, BagIt Bag-Software-Agent,
+// package manifests, Recovery Kit). It is injected at release time from the git tag
+// via the linker flag -ldflags "-X main.appVersion=v0.9.0" (see
+// .github/workflows/release.yml and the Dockerfile). It MUST stay a var (not a
+// const) for the -X override to take effect. The in-repo default marks any
+// non-release build as a development build of the upcoming release.
+var appVersion = "0.9.0-dev"
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:7821", "listen address host:port. Default is localhost-only; use 0.0.0.0:7821 in a container (which then REQUIRES an auth token).")
@@ -53,6 +57,9 @@ func main() {
 		log.Fatalf("open catalog: %v", err)
 	}
 	app := &App{DataDir: *dataDir, Store: store}
+	if ro, why := store.ReadOnly(); ro {
+		log.Printf("⚠ READ-ONLY: %s", why)
+	}
 
 	// The bearer token: env MNEMO_AUTH_TOKEN wins (container-friendly), else the
 	// config's auth_token. A non-localhost bind without a token is REFUSED — the
@@ -349,7 +356,11 @@ func register(mux *http.ServeMux, pattern string, h http.HandlerFunc) {
 
 func api(mux *http.ServeMux, app *App) {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
-		jsonOut(w, map[string]any{"ok": true, "version": appVersion})
+		out := map[string]any{"ok": true, "version": appVersion, "schema_version": currentSchemaVersion}
+		if ro, why := app.Store.ReadOnly(); ro {
+			out["read_only"], out["read_only_reason"] = true, why
+		}
+		jsonOut(w, out)
 	})
 	mux.HandleFunc("GET /api/preflight", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, app.Preflight())
@@ -637,6 +648,22 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, runJob(app, "bagit-export", "BagIt export → "+out, func(p func(float64, string)) (map[string]any, error) {
 			return app.ExportBag(id, out, p)
+		}))
+	})
+	// Per-package "Export as BagIt" — a conformant bag for a single package.
+	register(mux, "POST /api/chunks/{id}/bagit-export", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		if app.Store.Chunk(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("package not found"))
+			return
+		}
+		out := s(body(r), "output_dir")
+		if out == "" {
+			jsonErr(w, 400, fmt.Errorf("output_dir required"))
+			return
+		}
+		jsonOut(w, runJob(app, "bagit-export", "BagIt export → "+out, func(p func(float64, string)) (map[string]any, error) {
+			return app.ExportPackageBag(id, out, p)
 		}))
 	})
 

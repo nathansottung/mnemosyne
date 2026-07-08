@@ -27,7 +27,7 @@ that serves a web page only to you. Nothing is exposed to the internet.
 - **Windows:** double-click `mnemosyne.exe`. If Windows shows a blue "Windows
   protected your PC" box (because the file is new and unsigned), click **More
   info → Run anyway**. You should now see a small black window with a line like:
-  `Mnemosyne 2.x — http://127.0.0.1:7821`. Leave that window open — it *is* the
+  `Mnemosyne <version> — http://127.0.0.1:7821`. Leave that window open — it *is* the
   app. Closing it stops the app.
 - **Mac / Linux:** it is usually easiest to run it from the **Terminal** (the text
   window where you type commands — on Mac, open the app called "Terminal"). Type
