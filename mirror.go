@@ -187,19 +187,20 @@ func (a *App) MirrorToVolume(collectionID int, folderIDs []int, destDir string, 
 
 	res := &MirrorResult{VolumeID: vol.ID, Volume: vol.Label, Dest: destDir}
 	th := &throttler{bps: throttleMbps * 1e6, start: time.Now()}
-	var doneBytes int64
+	var doneBytes, doneFiles int64
 	report := func(msg string) {
 		frac := 0.0
 		if totalBytes > 0 {
 			frac = float64(doneBytes) / float64(totalBytes)
 		}
-		progress(0.02+frac*0.92, progBytes(doneBytes, totalBytes, msg))
+		progress(0.02+frac*0.92, progStats(doneBytes, totalBytes, doneFiles, int64(len(files)), msg))
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 	refs := make([]ChunkFileRef, 0, len(files))
 	lastTick := time.Now() // paces mid-file progress so live MB/s updates on big files too
 	for i, f := range files {
+		doneFiles = int64(i + 1) // file currently being mirrored (matches the "i+1/len" message)
 		srcPath := filepath.Join(folderPath[f.FolderID], filepath.FromSlash(f.RelPath))
 		mrel := f.RelPath
 		if multi {

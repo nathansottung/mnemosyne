@@ -430,7 +430,9 @@ type Job struct {
 	ETASeconds float64        `json:"eta_seconds,omitempty"`
 	BytesDone  int64          `json:"bytes_done,omitempty"`
 	BytesTotal int64          `json:"bytes_total,omitempty"`
-	Result     map[string]any `json:"result,omitempty"` // the finished job's artifact/summary (path, counts, …)
+	FilesDone  int64          `json:"files_done,omitempty"`  // count-based progress (scan/drift/dock/mirror)
+	FilesTotal int64          `json:"files_total,omitempty"` // total files this job will touch (0 = unknown)
+	Result     map[string]any `json:"result,omitempty"`      // the finished job's artifact/summary (path, counts, …)
 }
 
 type Audit struct {
@@ -1931,12 +1933,13 @@ func (s *Store) SetJob(id int, progress float64, label, status string) {
 }
 
 // SetJobTelemetry updates a running job's live throughput/ETA (0s clear it).
-func (s *Store) SetJobTelemetry(id int, rateMBps, etaSeconds float64, bytesDone, bytesTotal int64) {
+func (s *Store) SetJobTelemetry(id int, rateMBps, etaSeconds float64, bytesDone, bytesTotal, filesDone, filesTotal int64) {
 	s.jobs.mu.Lock()
 	defer s.jobs.mu.Unlock()
 	for _, j := range s.jobs.rows {
 		if j.ID == id {
 			j.RateMBps, j.ETASeconds, j.BytesDone, j.BytesTotal = rateMBps, etaSeconds, bytesDone, bytesTotal
+			j.FilesDone, j.FilesTotal = filesDone, filesTotal
 		}
 	}
 }

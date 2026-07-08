@@ -153,7 +153,7 @@ func (a *App) ReconcileCollection(collectionID int, progress func(float64, strin
 	var mu sync.Mutex
 	parallelHash(paths, func(dd int) {
 		if total > 0 {
-			progress(0.05+0.7*float64(dd)/float64(total), fmt.Sprintf("hashed %d/%d", dd, total))
+			progress(0.05+0.7*float64(dd)/float64(total), progStats(0, 0, int64(dd), int64(total), "hashing changed files"))
 		}
 	}, func(p, sha, b3 string, size int64, mtime time.Time) {
 		mu.Lock()

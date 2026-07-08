@@ -280,8 +280,17 @@ func pathFree(p string) (int64, error) {
 // telemetry: runJob parses the "\x1f<done>\x1f<total>\x1f<human>" prefix into
 // MB/s + ETA and displays only the human tail. Byte-moving jobs (write/mirror/
 // span) emit this so the job row shows throughput, not just a percent.
+// progStats encodes structured live telemetry into a progress message: byte
+// counters (for throughput/ETA), file counters (for "X / Y files"), and a human
+// step label — delimited by the unit-separator control char so runJob can parse
+// them out. A plain (unencoded) message is shown verbatim. progBytes is the
+// byte-only wrapper; count-based jobs pass 0 bytes and real file counts.
+func progStats(bytesDone, bytesTotal, filesDone, filesTotal int64, human string) string {
+	return fmt.Sprintf("\x1f%d\x1f%d\x1f%d\x1f%d\x1f%s", bytesDone, bytesTotal, filesDone, filesTotal, human)
+}
+
 func progBytes(done, total int64, human string) string {
-	return fmt.Sprintf("\x1f%d\x1f%d\x1f%s", done, total, human)
+	return progStats(done, total, 0, 0, human)
 }
 
 // runJob executes fn in a goroutine bound to a Job row the UI can poll. fn's
@@ -294,12 +303,20 @@ func runJob(app *App, kind, label string, fn func(progress func(float64, string)
 		var lastT time.Time
 		var lastRate float64
 		prog := func(p float64, msg string) {
-			done, total, human := int64(0), int64(0), msg
+			done, total := int64(0), int64(0) // bytes → throughput + ETA
+			var filesDone, filesTotal int64
+			human := msg
 			if strings.HasPrefix(msg, "\x1f") {
-				if parts := strings.SplitN(msg, "\x1f", 4); len(parts) == 4 {
+				if parts := strings.SplitN(msg, "\x1f", 6); len(parts) == 6 {
 					done, _ = strconv.ParseInt(parts[1], 10, 64)
 					total, _ = strconv.ParseInt(parts[2], 10, 64)
-					human = parts[3]
+					filesDone, _ = strconv.ParseInt(parts[3], 10, 64)
+					filesTotal, _ = strconv.ParseInt(parts[4], 10, 64)
+					human = parts[5]
+				} else if p2 := strings.SplitN(msg, "\x1f", 4); len(p2) == 4 { // legacy bytes-only
+					done, _ = strconv.ParseInt(p2[1], 10, 64)
+					total, _ = strconv.ParseInt(p2[2], 10, 64)
+					human = p2[3]
 				}
 			}
 			l := label
@@ -326,12 +343,12 @@ func runJob(app *App, kind, label string, fn func(progress func(float64, string)
 			} else if p > 0.01 && p < 1 {
 				eta = time.Since(start).Seconds() * (1 - p) / p
 			}
-			app.Store.SetJobTelemetry(j.ID, rate, eta, done, total)
+			app.Store.SetJobTelemetry(j.ID, rate, eta, done, total, filesDone, filesTotal)
 		}
 		res, err := fn(prog)
 		if err != nil {
 			app.Store.SetJob(j.ID, -1, label+" — ERROR: "+err.Error(), "FAILED")
-			app.Store.SetJobTelemetry(j.ID, 0, 0, 0, 0)
+			app.Store.SetJobTelemetry(j.ID, 0, 0, 0, 0, 0, 0)
 			return
 		}
 		app.Store.SetJob(j.ID, 1, "", "COMPLETED")

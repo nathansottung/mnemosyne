@@ -93,6 +93,26 @@ tr:last-child td{border-bottom:none}
 #toast{position:fixed;right:20px;bottom:20px;max-width:420px;display:flex;flex-direction:column;gap:8px;z-index:9}
 #toast div{background:var(--ink);color:#eef2ee;padding:10px 14px;border-radius:4px;font-size:13px}
 #toast div.bad{background:var(--bad)}
+/* Live Activity panel — a global "what's running right now" window, fixed above
+   the toast stack, visible on every tab while any job runs. */
+#activity{position:fixed;right:20px;bottom:20px;width:340px;max-width:calc(100vw - 40px);z-index:8;
+  background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 22px #0003;
+  font-size:12px;overflow:hidden}
+#activity.hide{display:none}
+#activity .ahead{display:flex;align-items:center;gap:8px;padding:8px 11px;background:var(--act);color:var(--act-ink);cursor:pointer;user-select:none}
+#activity .ahead b{flex:1;font-size:12px;font-weight:600}
+#activity .ahead .spin{width:11px;height:11px;border:2px solid #ffffff66;border-top-color:#fff;border-radius:50%;animation:aspin .8s linear infinite}
+@keyframes aspin{to{transform:rotate(360deg)}}
+#activity .ahead .abtn{background:#ffffff26;border:none;color:inherit;border-radius:3px;padding:1px 7px;font-size:11px;cursor:pointer}
+#activity .abody{max-height:46vh;overflow:auto}
+#activity.collapsed .abody{display:none}
+#activity .ajob{padding:9px 11px;border-top:1px solid var(--line-2)}
+#activity .ajob:first-child{border-top:none}
+#activity .astep{color:var(--ink);word-break:break-word}
+#activity .astep .k{color:var(--idle)}
+#activity .ameta{margin-top:5px;color:var(--idle);font:11px var(--mono);display:flex;flex-wrap:wrap;gap:4px 10px}
+#activity .ameta b{color:var(--act)}
+#activity .adbg{margin-top:5px;color:var(--idle);font:10.5px var(--mono);white-space:pre-wrap;word-break:break-all;border-top:1px dashed var(--line-2);padding-top:4px}
 dialog{border:1px solid var(--line);border-radius:6px;padding:20px 22px;max-width:520px;width:92%}
 dialog::backdrop{background:#1c241f66}
 label{display:block;font:600 12px var(--sans);color:var(--ink-2);margin:12px 0 4px}
@@ -153,7 +173,7 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 <body>
 <nav>
   <div class="wordmark">MNEMOSYNE</div>
-  <div class="wordsub">archival vault · v2</div>
+  <div class="wordsub" id="wordsub">archival vault</div>
   <a href="#home" data-v="home">Home</a>
   <a href="#vault" data-v="vault">Vault</a>
   <a href="#protection" data-v="protection">Protection</a>
@@ -168,6 +188,7 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <div class="lamp" id="lamp" role="status" aria-live="polite"><b></b><span>checking tools…</span></div>
 </nav>
 <main id="view"></main>
+<div id="activity" class="hide" aria-live="polite"></div>
 <div id="toast"></div>
 
 <script>
@@ -1742,12 +1763,48 @@ let jobsTimer;
 function fmtETA(s){s=Math.round(s||0);if(s<=0)return '';if(s<60)return s+'s';
   const m=Math.floor(s/60),ss=s%60;if(m<60)return m+'m'+(ss?' '+ss+'s':'');
   const hh=Math.floor(m/60);return hh+'h '+(m%60)+'m'}
-// Live telemetry for byte-moving jobs — MB/s + ETA, not just a bar.
+// Live telemetry for a job — file counts, MB/s, ETA, bytes; not just a bar.
 function jobTelemetry(j){if(j.status!=='RUNNING')return '';const bits=[];
+  if(j.files_total)bits.push(`${(j.files_done||0).toLocaleString()}/${j.files_total.toLocaleString()} files`);
   if(j.rate_mbps)bits.push(`<b>${j.rate_mbps} MB/s</b>`);
   if(j.eta_seconds)bits.push('ETA '+fmtETA(j.eta_seconds));
   if(j.bytes_total)bits.push(`${GB(j.bytes_done)}/${GB(j.bytes_total)} GB`);
   return bits.length?`<div class="dim mono" style="font-size:10.5px;margin-top:2px">⚡ ${bits.join(' · ')}</div>`:''}
+/* ---- global live Activity panel: what's running right now, on every tab ---- */
+let activityTimer=null,_activityCollapsed=false,_activityDebug=false;
+const fmtN=n=>(n||0).toLocaleString();
+function activityMeta(j){const b=[];
+  if(j.files_total)b.push(`📄 <b>${fmtN(j.files_done)}</b>/${fmtN(j.files_total)} files`);
+  if(j.rate_mbps)b.push(`⚡ <b>${j.rate_mbps}</b> MB/s`);
+  if(j.bytes_total)b.push(`${GB(j.bytes_done)}/${GB(j.bytes_total)} GB`);
+  if(j.eta_seconds)b.push('⏳ '+fmtETA(j.eta_seconds));
+  return b.join(' · ');}
+async function activity(){
+  const el=$('#activity');if(!el)return;
+  let js;try{js=await api('GET','/api/jobs')||[]}catch(e){js=[]}
+  const running=js.filter(j=>j.status==='RUNNING');
+  // Hide when idle, or on the Jobs tab (which already shows everything); keep a
+  // slow tick when idle and a fast one while work is live.
+  if(!running.length||location.hash==='#jobs'){el.className='hide';
+    clearTimeout(activityTimer);activityTimer=setTimeout(activity,running.length?1000:4000);return;}
+  const head=`<div class="ahead" onclick="toggleActivity()">
+    <span class="spin"></span><b>${running.length} task${running.length>1?'s':''} running</b>
+    <button class="abtn" onclick="event.stopPropagation();toggleActivityDebug()">${_activityDebug?'hide debug':'debug'}</button>
+    <button class="abtn" onclick="event.stopPropagation();loc('jobs')">Jobs</button>
+    <span class="abtn">${_activityCollapsed?'▸':'▾'}</span></div>`;
+  const rows=running.map(j=>{
+    const pct=Math.round((j.progress||0)*100),meta=activityMeta(j);
+    const dbg=_activityDebug?`<div class="adbg">id ${j.id} · ${esc(j.kind)} · p=${(j.progress||0).toFixed(3)}
+files ${fmtN(j.files_done)}/${fmtN(j.files_total)} · bytes ${j.bytes_done||0}/${j.bytes_total||0}
+rate ${j.rate_mbps||0} MB/s · eta ${Math.round(j.eta_seconds||0)}s</div>`:'';
+    return `<div class="ajob"><div class="astep">${esc(j.label||j.kind)}</div>
+      <div class="bar" style="margin-top:5px"><div style="width:${pct}%"></div></div>
+      <div class="ameta">${meta?meta+' · ':''}${pct}%</div>${dbg}</div>`;}).join('');
+  el.className=_activityCollapsed?'collapsed':'';
+  el.innerHTML=head+`<div class="abody">${rows}</div>`;
+  clearTimeout(activityTimer);activityTimer=setTimeout(activity,900);}
+function toggleActivity(){_activityCollapsed=!_activityCollapsed;activity()}
+function toggleActivityDebug(){_activityDebug=!_activityDebug;activity()}
 // Show-the-artifact backstop on the Jobs row: a finished job that produced an
 // artifact offers to show/open it (kit summary, mirror sidecar, drift, …).
 function jobArtifact(j){if(j.status!=='COMPLETED'||!j.result)return '';const r=j.result;
@@ -2068,7 +2125,9 @@ function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));
   (views[v]||vHome)().catch(e=>toast(e.message,1))}
 window.addEventListener('hashchange',route);
-route();lamp();setInterval(lamp,20000);
+route();lamp();setInterval(lamp,20000);activity();
+// Sidebar version comes from the one source of truth (/api/health), never hardcoded.
+api('GET','/api/health').then(h=>{const w=$('#wordsub');if(w&&h&&h.version)w.textContent='archival vault · '+h.version}).catch(()=>{});
 </script>
 </body>
 </html>

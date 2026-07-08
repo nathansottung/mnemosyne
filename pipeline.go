@@ -458,7 +458,7 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 	}
 	total := len(paths)
 	parallelHash(paths, func(d int) {
-		progress(float64(d)/float64(total), fmt.Sprintf("hashed %d/%d", d, total))
+		progress(float64(d)/float64(total), progStats(0, 0, int64(d), int64(total), "hashing source files"))
 	}, func(p, sha, b3 string, size int64, mtime time.Time) {
 		if rel, e := filepath.Rel(root, p); e == nil {
 			a.Store.UpsertFile(File{CollectionID: collectionID, FolderID: folder.ID,

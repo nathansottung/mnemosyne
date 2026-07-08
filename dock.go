@@ -299,7 +299,7 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 	}
 	parallelHash(paths,
 		func(done int) {
-			progress(0.06+float64(done)/float64(total)*0.74, fmt.Sprintf("hashed %d/%d", done, len(paths)))
+			progress(0.06+float64(done)/float64(total)*0.74, progStats(0, 0, int64(done), int64(len(paths)), "hashing drive files"))
 		},
 		func(p, sha, b3 string, size int64, _ time.Time) {
 			atomic.AddInt64(&hashed, 1)
