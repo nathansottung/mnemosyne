@@ -10,7 +10,7 @@
 services:
   mnemosyne:
     # Pull the released multi-arch image…
-    image: ghcr.io/nsottung/mnemosyne:latest
+    image: ghcr.io/nathansottung/mnemosyne:latest
     # …or build locally instead:
     # build: .
     container_name: mnemosyne

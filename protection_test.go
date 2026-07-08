@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// buildPhotographyArchive sets up Nathan's canonical example: an Archive
+// buildPhotographyArchive sets up the canonical example: an Archive
 // "Photography" on 3-2-1 Standard (the auto-assigned default), a subfolder
 // "To-Delete-2020" explicitly on Pre-Deletion Hold, and one package holding a
 // file in each, copied to three verified volumes across two media kinds with one

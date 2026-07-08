@@ -1036,13 +1036,13 @@ async function restoreFileVersion(fileId,index,label){
 function bagExportDlg(id,name){dlg(`<h1>Export a BagIt bag — “${esc(name)}”</h1>
   <div class="dim" style="font-size:11.5px;margin-bottom:8px">Writes a <b>conformant BagIt bag</b> (RFC 8493) for institutional handoff: a <span class="mono">data/</span> payload with each package's artifacts, <span class="mono">manifest-sha256.txt</span>, <span class="mono">bag-info.txt</span>, a tagmanifest, and <span class="mono">COMPARISON.md</span>. Your storage format is unchanged — the bag just <i>describes</i> it, and any <span class="mono">data/…/&lt;pkg&gt;.tar</span> still extracts your original tree with plain tar. Packages must be <b>staged locally</b> to be bagged (others are listed as skipped).</div>
   <label>Output folder (must be OUTSIDE any source root)</label>
-  <input id="d1" class="full" placeholder="Y:\\exports or /mnt/handoff">${browseBtn('d1')}
+  <input id="d1" class="full" placeholder="D:\\exports or /mnt/handoff">${browseBtn('d1')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Export bag</button></div>`,
   async()=>{const p=$('#d1').value.trim();if(!p)return;
     await api('POST',`/api/collections/${id}/bagit-export`,{output_dir:p});toast('BagIt export started — see Jobs');loc('jobs')});}
 function scanDlg(id,name){dlg(`<h1>Scan into “${esc(name)}”</h1>
   <label>Folder to catalog (walked recursively; every file SHA-256 hashed)</label>
-  <input id="d1" class="full" placeholder="Y:\\nsottung\\Photos\\TARs or /mnt/pool/photos">${browseBtn('d1')}
+  <input id="d1" class="full" placeholder="C:\\Users\\you\\Photos or /mnt/pool/photos">${browseBtn('d1')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Start scan</button></div>`,
   async()=>{const p=$('#d1').value.trim();if(!p)return;
     await api('POST',`/api/collections/${id}/scan`,{path:p});toast('Scan started — see Jobs');loc('jobs')});}
@@ -1131,7 +1131,7 @@ function actions(c){
 function bagPackageDlg(id,name){dlg(`<h1>Export “${esc(name)}” as a BagIt bag</h1>
   <div class="dim" style="font-size:11.5px;margin-bottom:8px">Writes a <b>conformant BagIt bag</b> (RFC 8493) for this one package: a <span class="mono">data/</span> payload with its artifacts, <span class="mono">manifest-sha256.txt</span>, <span class="mono">bag-info.txt</span>, a tagmanifest, and <span class="mono">COMPARISON.md</span>. This is an <b>export</b>, not the storage format — your package on media is unchanged, and any <span class="mono">data/…/&lt;pkg&gt;.tar</span> still extracts your original tree with plain tar. The package must be <b>staged locally</b>.</div>
   <label>Output folder (must be OUTSIDE any source root)</label>
-  <input id="d1" class="full" placeholder="Y:\\exports or /mnt/handoff">${browseBtn('d1')}
+  <input id="d1" class="full" placeholder="D:\\exports or /mnt/handoff">${browseBtn('d1')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Export bag</button></div>`,
   async()=>{const p=$('#d1').value.trim();if(!p)return;
     await api('POST',`/api/chunks/${id}/bagit-export`,{output_dir:p});toast('BagIt export started — see Jobs');loc('jobs')});}
@@ -1916,7 +1916,7 @@ async function vSettings(){
     ${(p.hints||[]).map(x=>`<div class="err" style="margin-top:8px">${esc(x)}</div>`).join('')}</div>
   <div class="panel"><h2>Pipeline</h2>
     <label>Staging folder (big + fast; the NAS itself is ideal)</label>
-    <input id="st" class="full" value="${esc(cfg.staging_dir||'')}" placeholder="Y:\\nsottung\\_staging">${browseBtn('st')}
+    <input id="st" class="full" value="${esc(cfg.staging_dir||'')}" placeholder="D:\\mnemo-staging or /mnt/pool/staging">${browseBtn('st')}
     <label>Keystore paths — one per line, minimum 2, different physical devices</label>
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
     <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Private media — encrypt the file listing (manifest) written to media, so a lost tape reveals no filenames (encrypted packages only; staging &amp; catalog stay plaintext)</label>
