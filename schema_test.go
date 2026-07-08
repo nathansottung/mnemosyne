@@ -49,8 +49,11 @@ func TestCatalogSchema1RoundTrip(t *testing.T) {
 	if werr != nil {
 		t.Fatalf("save: %v", werr)
 	}
-	// Byte-identical persistence proves the struct captured every field — nothing dropped.
-	if after, _ := os.ReadFile(catPath); !bytes.Equal(fixture, after) {
+	// Persistence must lose nothing. Compare normalized for line endings so the check
+	// holds whether the fixture checked out LF (Unix/CI) or CRLF (Windows) — JSON
+	// whitespace is insignificant, and writeCatalog always emits LF.
+	lf := func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")) }
+	if after, _ := os.ReadFile(catPath); !bytes.Equal(lf(fixture), lf(after)) {
 		t.Errorf("catalog.json changed across load→save — a field may have been lost or reshaped")
 	}
 
