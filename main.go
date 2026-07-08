@@ -955,9 +955,9 @@ func api(mux *http.ServeMux, app *App) {
 	})
 
 	// key sheet verify — "prove they typed it right". Reconstructs the passphrase
-	// from a retyped key sheet, checks each line's SHA-256 code, and (when a key_ref
-	// is given) confirms the reconstructed fingerprint matches that key. The secret
-	// itself is NEVER returned.
+	// from a retyped key sheet, checks each line's CRC-16 code, and (when a key_ref
+	// is given) confirms the reconstructed SHA-256 fingerprint matches that key. The
+	// secret itself is NEVER returned.
 	mux.HandleFunc("POST /api/keysheet/verify", func(w http.ResponseWriter, r *http.Request) {
 		b := body(r)
 		sheet := s(b, "sheet")

@@ -896,8 +896,15 @@ and links each unchecked step to the exact spot.
   is ciphertext; par2 is computed over it so a scratched tape can be *repaired
   without any key present* — repair and custody are independent problems.
 - **Where secrets live.** Per-package random ~288-bit passphrases live **only**
-  in keystore JSON files; the catalog stores fingerprints, never secrets. Print
-  a QR card per key for the fireproof box.
+  in keystore JSON files; the catalog stores fingerprints, never secrets. The
+  Recovery Kit prints each key as a **one-per-page key page** for the fireproof
+  box: a QR to scan *and* a retypable character grid (groups of 4, a **CRC-16**
+  per line, and the whole passphrase proven by its SHA-256 fingerprint) so a
+  human with only a keyboard can still key it in and confirm it's right. QR and
+  typed forms are the **same secret** — and *Keys ▸ Enter key from sheet* verifies
+  a retyped passphrase against the catalog without ever revealing it. (These are
+  symmetric AES-256 passphrases, not GPG keypairs, so `paperkey` doesn't apply —
+  the printable backup is the passphrase itself.)
 - **The enforced 2-keystore rule.** Encrypted builds **refuse to run** until
   ≥2 keystore paths (on different physical devices) are registered and in sync
   — because a single copy of a key is a single point of total loss.

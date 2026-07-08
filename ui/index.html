@@ -1692,15 +1692,15 @@ async function vKeys(){
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
 }
-/* Retype a paper key sheet and prove it's right — each line self-checks (SHA-256),
-   and the whole passphrase's fingerprint confirms the key. The secret is never
-   shown or returned; only pass/fail comes back. */
+/* Retype a paper key sheet and prove it's right — each line self-checks (CRC-16),
+   and the whole passphrase's SHA-256 fingerprint confirms the key. The secret is
+   never shown or returned; only pass/fail comes back. */
 function keySheetDlg(){dlg(`<h1>Enter a key from its sheet</h1>
-  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Paste the <span class="mono">L01/L02/…</span> PAYLOAD lines from a <span class="mono">&lt;key_ref&gt;.sheet.txt</span>. Each line's <span class="mono">[xx]</span> code (first two hex of its SHA-256) is checked, so a single mistyped character is pinpointed. The secret is never displayed.</div>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Paste the <span class="mono">L01/L02/…</span> PAYLOAD lines from a <span class="mono">&lt;key_ref&gt;.sheet.txt</span> or <span class="mono">KEYS.html</span> page. Each line's <span class="mono">[XXXX]</span> CRC-16 is checked, so a single mistyped character is pinpointed, and the reconstructed passphrase's SHA-256 confirms the whole key. The secret is never displayed.</div>
   <label>key_ref (optional — confirms the sheet reconstructs this exact key)</label>
   <input id="ksref" class="full mono" placeholder="e.g. K-ab12cd">
   <label style="margin-top:8px">Paste the sheet's PAYLOAD lines</label>
-  <textarea id="kstext" class="full" rows="8" style="font:12px var(--mono)" placeholder="  L01  A7f2 9KpQ mZ3x k4Rt 8wLp  [c9]&#10;  L02  ..."></textarea>
+  <textarea id="kstext" class="full" rows="8" style="font:12px var(--mono)" placeholder="  L01  A7f2 9KpQ mZ3x k4Rt 8wLp  [C9A1]&#10;  L02  ..."></textarea>
   <div id="ksout" style="margin-top:8px"></div>
   <div class="row" style="margin-top:12px"><button class="btn" onclick="keySheetCheck()">Check</button></div>`,
   async()=>{});}

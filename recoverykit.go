@@ -10,6 +10,7 @@ package main
 
 import (
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,13 +92,17 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 
 	progress(0.7, "key QR cards")
 	qrWritten := 0
+	var keyPages []string // printable one-key-per-page HTML sections (QR + typable grid)
 	for i, k := range keys {
 		// The .txt card never carries the passphrase — only ref + fingerprint. The
-		// secret lives in the QR (.png) and the typable key sheet (.sheet.txt).
+		// secret lives in the QR (.png), the typable key sheet (.sheet.txt), and the
+		// printable page (KEYS.html) — all the SAME secret, in scan- and type-able form.
 		card := fmt.Sprintf("Mnemosyne key card\nkey_ref:      %s\nfingerprint:  %s (SHA-256 of the passphrase)\nnote:         %s\n\n"+
 			"The passphrase itself is NOT written here in plaintext. It lives inside\n"+
 			"%[4]s.png (QR payload  MNEMO1|<key_ref>|<passphrase>), the typable\n"+
-			"%[4]s.sheet.txt (retype it — each line self-checks), and your keystore files.\n",
+			"%[4]s.sheet.txt (retype it — each line self-checks with CRC-16), the printable\n"+
+			"KEYS.html key page (QR + typable grid, one key per printed page), and your\n"+
+			"keystore files. QR and typed forms carry the SAME secret.\n",
 			k.Ref, k.Fingerprint, k.Note, k.Ref)
 		if err := os.WriteFile(filepath.Join(keysDir, k.Ref+".txt"), []byte(card), 0o644); err != nil {
 			return nil, err
@@ -120,8 +125,18 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 			[]byte(keySheet(k.Ref, k.Note, k.Fingerprint, pass)), 0o644); err != nil {
 			return nil, err
 		}
+		// Printable page — QR and the typable grid together, one key per page.
+		dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+		keyPages = append(keyPages, keyPageHTML(k.Ref, k.Note, k.Fingerprint, pass, dataURI))
 		qrWritten++
 		progress(0.7+0.28*float64(i+1)/float64(len(keys)), "key QR cards")
+	}
+	// One printable document, one key per page: open in a browser and print.
+	if len(keyPages) > 0 {
+		if err := os.WriteFile(filepath.Join(keysDir, "KEYS.html"),
+			[]byte(keyPagesDocument(strings.Join(keyPages, "\n"))), 0o644); err != nil {
+			return nil, err
+		}
 	}
 
 	a.Store.Log("recoverykit", fmt.Sprintf("%s (%d packages, %d keys, %d QR cards)", kit, len(chunks), len(keys), qrWritten))
@@ -392,11 +407,14 @@ single project going dark can strand your data.
 > ⚠️ **SECURITY WARNING**
 > %s
 >
-> The `+"`keys/`"+` folder holds one QR code per key. **Each QR image encodes a
-> passphrase in the clear** (payload `+"`MNEMO1|<key_ref>|<passphrase>`"+`). Treat
-> this entire kit like a keystore: same locked, off-site, access-controlled
-> storage. The `+"`.txt`"+` card beside each QR lists only the key_ref and
-> fingerprint — never the passphrase in readable text.
+> The `+"`keys/`"+` folder holds, per key, a QR code and a **typable** backup of
+> the SAME secret. **Each QR image encodes a passphrase in the clear** (payload
+> `+"`MNEMO1|<key_ref>|<passphrase>`"+`); the `+"`.sheet.txt`"+` and the printable
+> `+"`KEYS.html`"+` (one key per page) print those characters for retyping, each
+> line self-checking with a CRC-16 and the whole passphrase proven by its SHA-256
+> fingerprint. Treat this entire kit like a keystore: same locked, off-site,
+> access-controlled storage. The `+"`.txt`"+` card beside each QR lists only the
+> key_ref and fingerprint — never the passphrase in readable text.
 
 This kit describes %d package(s) and %d key(s). See `+"`MEDIA_INVENTORY.md`"+` for
 the full per-package table and `+"`RESTORE_RUNBOOK.md`"+` for the deep-dive.
@@ -515,6 +533,14 @@ Never in the catalog database. They exist only in:
 1. **Keystore files** (`+"`keystore.json`"+`) — plain JSON, kept on ≥2 different
    physical devices.
 2. **The QR cards in this kit's `+"`keys/`"+` folder** — one PNG per key_ref.
+3. **The typable backups beside each QR** — `+"`<key_ref>.sheet.txt`"+` and the
+   printable `+"`KEYS.html`"+` (one key per page) print the passphrase as grouped
+   characters you can retype without any scanner; each line self-checks with a
+   CRC-16, and the whole passphrase is proven by its SHA-256 fingerprint. The QR
+   and typed forms are the **same secret** — either recovers the key.
+
+Because these are symmetric AES-256 passphrases (not GPG keypairs), the `+"`paperkey`"+`
+tool does not apply — the typable backup here is the passphrase itself.
 
 Losing every copy of a key means that package's encrypted data is gone for good —
 that is exactly what AES-256 guarantees. Guard this kit accordingly.
