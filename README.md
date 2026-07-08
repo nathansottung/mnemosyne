@@ -1110,6 +1110,6 @@ Suggested **topics** (Settings → Topics): `archival`, `lto`, `tape`, `ltfs`,
 decades from now with three stock open-source tools."*
 
 ## License
-[MIT](LICENSE) © 2026 Nathan Sottung. The three restore tools and any LTFS
+[MIT](LICENSE) © 2026 The Mnemosyne Authors. The three restore tools and any LTFS
 driver are separate software under their own licenses; this repo references but
 never bundles them.
