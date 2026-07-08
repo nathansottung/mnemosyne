@@ -749,6 +749,30 @@ pretending otherwise.
 
 ---
 
+### 🗑 Quarantine — never delete, made usable
+
+Mnemosyne has no delete button and never will — but "you can't remove anything" is
+only livable if there's *some* way to get a stray or superseded file out of the way.
+Quarantine is that pressure valve, built to be **regret-proof**: the strongest action
+the tool offers isn't deletion, it's a reversible **move**. Marking a file or folder
+"quarantine" relocates it (bytes intact, structure preserved) to
+`<destination_root>/_deleted/<original relative path>`, records *who* asked (implicitly
+you), *when*, and an optional reason in the catalog and audit log, and stops counting it
+toward protection — and it shows you that protection **consequence before you confirm**
+(*"this drops Henderson Wedding RAWs to 1 copy — proceed?"*). Because the original path
+is preserved verbatim under `_deleted`, **un-quarantine is a plain reverse move** that
+also re-credits the copy. Crucially, quarantine exists **only inside managed territory**
+— the destination roots Mnemosyne itself populated via Plans — enforced by the very same
+read-only guard that keeps the tool out of your source data: on adopted media and source
+roots the action simply does not appear, because there is nothing there the tool created.
+The Quarantine view lists everything staged (contents, age, total bytes) under one
+standing promise: *removing these permanently is a manual act you perform in your file
+manager — this tool has no delete button and never will.* The tool **never empties
+`_deleted`**; if you clear it by hand, the next scan reconciles gracefully, marking those
+entries *human-removed* while keeping their history.
+
+---
+
 ## Adopting existing media
 
 You almost certainly have data on disks and tapes from before Mnemosyne. The

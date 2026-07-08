@@ -954,6 +954,51 @@ func api(mux *http.ServeMux, app *App) {
 			"open_total": app.Store.OpenConflictCount(c.CollectionID)})
 	})
 
+	// ---- Quarantine (never delete, made usable) ---------------------------
+	// The staging view: everything moved into <destination_root>/_deleted, its age and
+	// bytes, plus the standing promise that the tool never empties it. Reconciles a
+	// hand-emptied _deleted before returning.
+	mux.HandleFunc("GET /api/quarantine", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.QuarantineViewData())
+	})
+	// Preview the protection consequence of quarantining a path — shown BEFORE the
+	// user confirms ("this drops Henderson Wedding RAWs to 1 copy"). Also the
+	// eligibility gate: a non-managed/source path returns an error, so the UI knows
+	// the action does not apply there.
+	mux.HandleFunc("GET /api/quarantine/consequence", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimSpace(r.URL.Query().Get("path"))
+		cons, err := app.QuarantineConsequence(path)
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, cons)
+	})
+	// Stage a path into quarantine: {"path":"...","reason":"..."}. Moves the bytes into
+	// _deleted (never deletes), pulls the copy from protection accounting, audit-logs.
+	mux.HandleFunc("POST /api/quarantine", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		e, err := app.Quarantine(strings.TrimSpace(s(b, "path")), "user", s(b, "reason"))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"ok": true, "entry": e})
+	})
+	// Un-quarantine: reverse the move and re-credit the copy. Refuses to clobber.
+	mux.HandleFunc("POST /api/quarantine/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
+		e, err := app.UnQuarantine(pathID(r))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"ok": true, "entry": e})
+	})
+	// Manual reconcile of a hand-emptied _deleted (also runs on every GET).
+	mux.HandleFunc("POST /api/quarantine/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, map[string]any{"ok": true, "reconciled": app.ReconcileQuarantine()})
+	})
+
 	// ---- Plans (cold-drive reorganization) --------------------------------
 	mux.HandleFunc("GET /api/plans", func(w http.ResponseWriter, r *http.Request) {
 		plans := app.Store.Plans()

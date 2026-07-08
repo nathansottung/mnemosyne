@@ -706,7 +706,7 @@ func (r *DriftReport) Changes() int {
 // Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
 // ("Schema versioning"): persisted fields are append-only, removal needs a
 // migration + a major bump, and every field must tolerate being absent.
-const currentSchemaVersion = 6
+const currentSchemaVersion = 7
 
 // schemaMigration transforms the in-memory catalog UP TO the version named by To.
 // Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
@@ -748,6 +748,11 @@ var schemaMigrations = []schemaMigration{
 	// Additive; the bump makes older builds refuse to write (they'd drop plans and
 	// their execution progress). Empty body.
 	{To: 6, Fn: func(c *catalog) {}},
+	// 6 → 7: managed-territory Quarantine (staged, reversible, never-completable
+	// isolation of files inside destinations Mnemosyne populated) became first-class.
+	// Additive; the bump makes older builds refuse to write (they'd drop the
+	// _deleted staging records and their restore/history state). Empty body.
+	{To: 7, Fn: func(c *catalog) {}},
 }
 
 // migrateLocations is the 1→2 step: fold every volume's free-text Location + Offsite
@@ -827,6 +832,10 @@ type catalog struct {
 	Assignments []*Assignment        `json:"assignments"`
 	Protection  []*ProtectionSummary `json:"protection"`
 	Audit       []Audit              `json:"audit"`
+	// Quarantine: files/folders staged into <destination_root>/_deleted inside managed
+	// territory — never deleted by the tool, reversible via un-quarantine. Additive in
+	// schema v7. See QuarantineEntry / quarantine.go.
+	Quarantine []*QuarantineEntry `json:"quarantine,omitempty"`
 }
 
 // compactThreshold is the file count above which the catalog is saved as compact

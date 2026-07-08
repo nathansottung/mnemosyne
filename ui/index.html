@@ -187,6 +187,7 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <a href="#templates" data-v="templates">Templates</a>
   <a href="#plans" data-v="plans">Plans</a>
   <a href="#conflicts" data-v="conflicts">Conflicts</a>
+  <a href="#quarantine" data-v="quarantine">Quarantine</a>
   <a href="#keys" data-v="keys">Keys</a>
   <a href="#jobs" data-v="jobs">Jobs</a>
   <a href="#settings" data-v="settings">Settings</a>
@@ -2499,6 +2500,58 @@ async function resolveConflict(id,resolution,canonicalFileId){
   try{await api('POST','/api/conflicts/'+id+'/resolve',{resolution,canonical_file_id:canonicalFileId});toast('Conflict resolved');vConflicts()}catch(e){toast(e.message,1)}
 }
 
+/* ================= Quarantine (never delete, made usable) ================= */
+const Q_STATUS={QUARANTINED:['staged','var(--warn)'],RESTORED:['restored','var(--ok)'],'HUMAN-REMOVED':['removed by hand','var(--ink-3)']};
+function qStatusBadge(st){const[t,c]=Q_STATUS[st]||[st,'var(--ink-3)'];return `<span class="etag" style="color:${c};border-color:${c}">${t}</span>`}
+async function vQuarantine(){
+  const d=await api('GET','/api/quarantine');const es=d.entries||[];
+  let h=hdr('Quarantine','never delete, made usable — staged, reversible, never emptied by the tool','quarantine');
+  h+=`<div class="panel" style="border-left:3px solid var(--act)">
+    <div style="font-size:12.5px">🛡️ <b>${esc(d.standing_note)}</b></div>
+    <div class="dim" style="font-size:11.5px;margin-top:6px">Quarantine only exists inside <b>managed territory</b> — the destinations Mnemosyne itself populated. Marking a file or folder "quarantine" moves it (bytes intact, structure preserved) into <span class="mono">${esc('_deleted')}</span> under its destination root and stops counting it toward protection. Un-quarantine is a straight reverse move. On adopted media and source drives the action does not exist.</div>
+    ${(d.roots||[]).length?`<div class="dim" style="font-size:11px;margin-top:6px">Managed roots: ${(d.roots||[]).map(r=>`<span class="mono">${esc(r)}</span>`).join(' · ')}</div>`:`<div class="dim" style="font-size:11px;margin-top:6px">No managed territory yet — execute a plan to populate a destination, and its files become quarantine-eligible.</div>`}
+    <div class="row" style="margin-top:10px"><button class="btn" onclick="quarantineDlg()">Quarantine a path…</button></div></div>`;
+  const active=es.filter(e=>e.status==='QUARANTINED');
+  h+=`<div class="panel"><h2>Staged in _deleted (${active.length} active · ${GB(d.active_bytes)} GB)</h2>`;
+  if(!es.length)h+='<div class="empty">✓ Nothing quarantined. Anything you stage here can always be un-quarantined — the tool never removes it.</div>';
+  else{h+='<table><tr><th>Original path</th><th>Contents</th><th class="num">Age</th><th>Marked</th><th>Status</th><th></th></tr>';
+    for(const e of es){
+      const who=`${esc(e.by||'user')}${e.reason?' · “'+esc(e.reason)+'”':''}`;
+      const gone=e.status==='QUARANTINED'&&!e.exists;
+      h+=`<tr>
+        <td class="mono" style="font-size:11px;word-break:break-all">${esc(e.original_rel)}<div class="dim" style="font-size:10px">under ${esc(e.root)}</div></td>
+        <td class="dim" style="font-size:11px">${e.is_dir?commaN(e.file_count)+' file(s)':'file'} · ${esc(e.human_bytes)}${gone?' <span style="color:var(--warn)">· bytes gone</span>':''}</td>
+        <td class="num dim" style="font-size:11px">${e.age_days}d</td>
+        <td class="dim" style="font-size:11px">${who}<div style="font-size:10px">${esc((e.at||'').slice(0,10))}</div></td>
+        <td>${qStatusBadge(e.status)}</td>
+        <td>${e.status==='QUARANTINED'&&e.exists?`<button class="btn ghost" style="font-size:11px" onclick="unQuarantine(${e.id})">Un-quarantine</button>`:''}</td></tr>`;
+    }
+    h+='</table>';}
+  h+=`<div class="dim" style="font-size:11px;margin-top:8px">Removed-by-hand entries are kept as history — the tool reconciles a hand-emptied <span class="mono">${esc('_deleted')}</span> gracefully and never re-fabricates the bytes.</div></div>`;
+  $('#view').innerHTML=h;
+}
+function quarantineDlg(){dlg(`<h1>Quarantine a path</h1>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Give a file or folder inside managed territory. The tool previews the protection consequence <b>before</b> anything moves — you confirm only after seeing it. Nothing is ever deleted; this only stages into <span class="mono">${esc('_deleted')}</span>.</div>
+  <label>Path (inside a destination Mnemosyne populated)</label><input id="q_path" class="full" placeholder="Y:\\NAS\\Photos\\2023\\Henderson Wedding\\RAW or /mnt/nas/...">${browseBtn('q_path')}
+  <label>Reason (optional — recorded in the catalog &amp; audit log)</label><input id="q_reason" class="full" placeholder="duplicate export, superseded, …">
+  <div id="q_preview" style="margin-top:10px"></div>
+  <div class="row" style="margin-top:14px"><button class="btn ghost" type="button" onclick="quarantinePreview()">Preview consequence</button>
+    <button class="btn danger" id="q_go" disabled onclick="go()">Quarantine</button></div>`,
+  async()=>{const path=$('#q_path').value.trim();if(!path)throw new Error('choose a path');
+    await api('POST','/api/quarantine',{path,reason:$('#q_reason').value.trim()});
+    toast('Quarantined — reversible from this screen');vQuarantine()})}
+async function quarantinePreview(){const path=($('#q_path').value||'').trim();const box=$('#q_preview');const go=$('#q_go');
+  if(!path){box.innerHTML='<div class="err">Enter a path first.</div>';return}
+  try{const c=await api('GET','/api/quarantine/consequence?path='+encodeURIComponent(path));
+    let inner=`<div style="font-size:12.5px">Would stage <b>${c.is_dir?commaN(c.file_count)+' file(s)':'1 file'}</b> · ${GB(c.total_bytes)} GB into <span class="mono">${esc('_deleted')}</span>.</div>`;
+    if((c.warnings||[]).length){inner+=`<div style="border-left:3px solid var(--bad);padding:6px 10px;margin-top:8px;background:rgba(220,80,80,.08)">`
+      +c.warnings.map(w=>`<div style="font-size:12.5px;font-weight:600">⚠️ ${esc(w)} — proceed?</div>`).join('')+`</div>`;}
+    else inner+='<div class="dim" style="font-size:11.5px;margin-top:6px">No tracked protection is reduced by this move.</div>';
+    box.innerHTML=inner;if(go)go.disabled=false;
+  }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>';if(go)go.disabled=true}}
+async function unQuarantine(id){if(!confirm('Un-quarantine: move the staged bytes back to their original path and re-credit the copy?'))return;
+  try{await api('POST','/api/quarantine/'+id+'/restore',{});toast('Un-quarantined — restored to its original path');vQuarantine()}catch(e){toast(e.message,1)}}
+
 /* ================= Plans ================= */
 const PLAN_STATUS={DRAFT:['draft','var(--ink-3)'],COMPILED:['compiled','var(--act)'],EXECUTING:['executing','var(--warn)'],CLOSED:['done','var(--ok)']};
 function planStatusBadge(st){const[t,c]=PLAN_STATUS[st]||[st,'var(--ink-3)'];return `<span class="etag" style="color:${c};border-color:${c}">${t}</span>`}
@@ -2616,7 +2669,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,quarantine:vQuarantine,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
 function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));
