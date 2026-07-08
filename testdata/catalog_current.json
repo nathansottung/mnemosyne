@@ -1,9 +1,10 @@
 {
- "schema_version": 3,
+ "schema_version": 4,
  "next_id": {
   "chunk": 1,
   "collection": 2,
   "location": 1,
+  "template": 1,
   "volume": 1
  },
  "collections": [
@@ -105,6 +106,31 @@
  ],
  "drift": null,
  "dock_sessions": null,
+ "templates": [
+  {
+   "id": 1,
+   "name": "Photographer Standard",
+   "event_types": [
+    "wedding",
+    "engagement",
+    "baptism",
+    "boudoir",
+    "religious event",
+    "family",
+    "portrait",
+    "other"
+   ],
+   "routes": {
+    "CATALOG": "photos/{year}/{event_type}/{event}/",
+    "EDITED-EXPORT": "Finalized Images/{year}/{event_type}/{event}/",
+    "RAW": "photos/{year}/{event_type}/{event}/",
+    "SIDECAR": "photos/{year}/{event_type}/{event}/",
+    "VIDEO": "photos/{year}/{event_type}/{event}/video/"
+   },
+   "built_in": true,
+   "created_at": "0001-01-01T00:00:00Z"
+  }
+ ],
  "tape_checks": null,
  "profiles": [
   {

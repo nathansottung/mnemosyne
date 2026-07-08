@@ -183,6 +183,8 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <a href="#volumes" data-v="volumes">Volumes</a>
   <a href="#locations" data-v="locations">Locations</a>
   <a href="#dock" data-v="dock">Dock</a>
+  <a href="#events" data-v="events">Events</a>
+  <a href="#templates" data-v="templates">Templates</a>
   <a href="#keys" data-v="keys">Keys</a>
   <a href="#jobs" data-v="jobs">Jobs</a>
   <a href="#settings" data-v="settings">Settings</a>
@@ -893,7 +895,13 @@ async function vVault(){
     <div class="row" style="margin-top:6px">
       <select id="qstatus" onchange="doSearch()"><option value="">any protection status</option>${PROT_ORDER.map(sx=>`<option value="${sx}">${PROT[sx].i} ${PROT[sx].t}</option>`).join('')}</select>
       <select id="qarch" onchange="doSearch()"><option value="">all archives</option>${cs.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-      <span class="dim" style="font-size:11.5px">e.g. status <b>Not backed up</b> + ext <b>.nef</b> → every unprotected raw</span>
+      <select id="qrole" onchange="doSearch()"><option value="">any role</option>${['RAW','EDITED-EXPORT','SIDECAR','CATALOG','VIDEO','OTHER'].map(r=>`<option value="${r}">${r}</option>`).join('')}</select>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <select id="qevent" onchange="doSearch()"><option value="">any event</option><option value="-1">— no event —</option></select>
+      <label class="dim" style="font-size:11.5px">shot from</label><input id="qfrom" type="date" onchange="doSearch()" style="font:12px var(--mono)">
+      <label class="dim" style="font-size:11.5px">to</label><input id="qto" type="date" onchange="doSearch()" style="font:12px var(--mono)">
+      <span class="dim" style="font-size:11.5px">e.g. role <b>RAW</b> + shot <b>Oct 2019</b> → RAWs from October 2019</span>
     </div>
     <div id="sres"></div></div>`;
   const drifted=(cs||[]).filter(c=>c.drift&&c.drift.changes>0);
@@ -1081,19 +1089,25 @@ function searchCopies(r){const cps=r.copies||[];
   if(!cps.length)return r.chunk?'<span class="dim">no copies recorded</span>':'<span class="dim">—</span>';
   const parts=cps.map(cp=>`${esc(cp.volume_label||'vol#'+cp.volume_id)}${cp.location?' ('+esc(cp.location)+')':''} — ${copyVerifyLabel(cp)}`);
   return `<span style="font-size:11.5px">${r.verified_copies}/${cps.length} B-verified · ${parts.join(' · ')}</span>`}
-let sT;function doSearch(){clearTimeout(sT);sT=setTimeout(async()=>{
+let _evFilterFilled=false;
+async function fillEventFilter(){if(_evFilterFilled)return;_evFilterFilled=true;
+  const sel=$('#qevent');if(!sel)return;
+  try{const d=await api('GET','/api/events');for(const e of (d.events||[]))sel.insertAdjacentHTML('beforeend',`<option value="${e.id}">${esc(e.name)}${e.year?' ('+e.year+')':''}</option>`)}catch(e){}}
+let sT;function doSearch(){clearTimeout(sT);fillEventFilter();sT=setTimeout(async()=>{
   const g=id=>(($('#'+id)||{}).value||'').trim();
-  const q=g('q'),hash=g('qhash'),ext=g('qext'),status=g('qstatus'),arch=g('qarch');
-  if(!q&&!hash&&!ext&&!status&&!arch){$('#sres').innerHTML='';return}
+  const q=g('q'),hash=g('qhash'),ext=g('qext'),status=g('qstatus'),arch=g('qarch'),role=g('qrole'),ev=g('qevent'),from=g('qfrom'),to=g('qto');
+  if(!q&&!hash&&!ext&&!status&&!arch&&!role&&!ev&&!from&&!to){$('#sres').innerHTML='';return}
   const p=new URLSearchParams();
   if(q)p.set('q',q);if(hash)p.set('hash',hash);if(ext)p.set('ext',ext);
   if(status)p.set('status',status);if(arch)p.set('collection_id',arch);
+  if(role)p.set('role',role);if(ev)p.set('event_id',ev);if(from)p.set('from',from);if(to)p.set('to',to);
   const rs=await api('GET','/api/search?'+p.toString());
   let h=`<div class="dim" style="font-size:11.5px;margin:6px 0">${(rs||[]).length} match${(rs||[]).length===1?'':'es'}${(rs||[]).length>=200?' (showing first 200)':''}</div>`;
-  h+='<table><tr><th>File</th><th class="num">Size</th><th>Protection</th><th>Package</th><th>Copies / volumes</th></tr>';
-  for(const r of rs||[]) h+=`<tr><td class="mono"><a href="#" onclick="showFileVersions(${r.file_id});return false" style="color:var(--act)">${esc(r.rel_path)}</a>${r.version_count>1?` <span class="chip" style="font-size:10px" title="retained content versions">📑 ${r.version_count} versions</span>`:''}</td><td class="num">${GB(r.size_bytes)} GB</td>
+  h+='<table><tr><th>File</th><th>Role / shot</th><th class="num">Size</th><th>Protection</th><th>Event</th><th>Copies / volumes</th></tr>';
+  for(const r of rs||[]) h+=`<tr><td class="mono"><a href="#" onclick="showFileVersions(${r.file_id});return false" style="color:var(--act)">${esc(r.rel_path)}</a>${r.version_count>1?` <span class="chip" style="font-size:10px" title="retained content versions">📑 ${r.version_count} versions</span>`:''}</td>
+    <td class="dim" style="font-size:11px">${r.role?esc(r.role):''}${r.shot_at?`<div>${esc((r.shot_at||'').slice(0,10))}</div>`:''}</td><td class="num">${GB(r.size_bytes)} GB</td>
     <td>${protBadge(r.protection_status,r.protection_detail)}${r.profile_name?`<div class="dim" style="font-size:10px">${esc(r.profile_name)}</div>`:''}</td>
-    <td>${r.chunk?'<span class="chip">'+esc(r.chunk)+'</span>':'<span class="dim">not packaged</span>'}</td>
+    <td>${r.event?`<a href="#" onclick="vEventDetail(${r.event_id});return false" style="color:var(--act)">${esc(r.event)}</a>`:'<span class="dim">—</span>'}</td>
     <td>${searchCopies(r)}</td></tr>`;
   $('#sres').innerHTML=(rs&&rs.length)?h+'</table>':'<div class="empty">No matches.</div>';
 },250)}
@@ -2258,6 +2272,181 @@ async function pickRender(path){let data;
   $('#pick').innerHTML=h}
 function pickUse(){const p=(($('#pickpath')||{}).value||'').trim()||_pickPath;const d=$('#pick');if(d)d.close();if(_pickCb)_pickCb(p)}
 
+/* ================= Events ================= */
+const ROLE_ROUTE_ORDER=['RAW','EDITED-EXPORT','SIDECAR','CATALOG','VIDEO','OTHER'];
+function eventStatusBadge(roll){if(!roll||!roll.files)return '<span class="dim">no files yet</span>';
+  return `${protBadge(roll.status,roll.detail)} <span class="dim" style="font-size:11px">· ${roll.files} file(s) · ${GB(roll.bytes)} GB</span>`}
+async function vEvents(){
+  const [d,colls]=await Promise.all([api('GET','/api/events'),api('GET','/api/collections').catch(()=>[])]);
+  const roll={};for(const r of (d.rollups||[]))roll[r.event_id]=r;
+  const evs=d.events||[];
+  let h=`${hdr('Events','the happenings your files belong to — weddings, baptisms, shoots','events')}
+  <div class="panel"><div class="row">
+    <button class="btn" onclick="clusterDlg()">✨ Cluster an archive into events…</button>
+    <button class="btn ghost" onclick="inferDlg()">📂 Learn structure from a folder…</button>
+    <button class="btn ghost" onclick="newEventDlg()">New event…</button></div>
+    <div class="dim" style="font-size:11.5px;margin-top:6px">Clustering groups a chaotic archive's files by capture-date bursts. Learning from an organized folder detects its pattern, proposes a routing template, and harvests one event per folder.</div></div>`;
+  h+=`<div class="panel"><h2>Events (${evs.length})</h2>`;
+  if(!evs.length)h+='<div class="empty">No events yet — cluster an archive or learn from an organized folder.</div>';
+  else{h+='<table><tr><th>Event</th><th>Type</th><th class="num">Year</th><th>Protection</th></tr>';
+    for(const e of evs){const r=roll[e.id]||{};
+      h+=`<tr style="cursor:pointer" onclick="vEventDetail(${e.id})"><td><b>${esc(e.name)}</b>${e.source?` <span class="etag" style="font-size:9.5px">${esc(e.source)}</span>`:''}${e.folder_hint?`<div class="dim mono" style="font-size:10px">${esc(e.folder_hint)}</div>`:''}</td>
+        <td>${esc(e.event_type||'—')}</td><td class="num">${e.year||'—'}</td><td>${eventStatusBadge(r)}</td></tr>`}
+    h+='</table>'}
+  h+='</div>';
+  $('#view').innerHTML=h;
+}
+async function vEventDetail(id){if(location.hash!=='#events')location.hash='#events';
+  const d=await api('GET','/api/events/'+id);const e=d.event,roll=d.rollup||{},files=d.files||[];
+  let h=`<h1>${esc(e.name)}</h1><div class="crumb">${esc(e.event_type||'untyped')} · ${e.year||'no year'} · ${esc((e.capture_start||'').slice(0,10)||'?')} → ${esc((e.capture_end||'').slice(0,10)||'?')} · ${esc(e.source||'MANUAL')}</div>
+    <div class="row" style="margin:10px 0"><button class="btn ghost" onclick="loc('events')">← all events</button>
+      <button class="btn ghost" onclick="editEventDlg(${e.id})">Edit…</button>
+      <button class="btn" onclick="eventSuggest(${e.id})">🧲 Find more like this (magnet)…</button>
+      <button class="btn ghost danger" onclick="delEvent(${e.id})">Delete</button></div>
+    <div class="panel"><h2>Protection</h2>${roll&&roll.files?`${protBadge(roll.status,roll.detail)} — ${roll.files} file(s), ${GB(roll.bytes)} GB.`:'<span class="dim">No files assigned yet — use the magnet to pull matching strays in.</span>'}</div>
+    <div id="magbox"></div>
+    <div class="panel"><h2>Files (${files.length})</h2>`;
+  if(!files.length)h+='<div class="empty">No files in this event yet.</div>';
+  else{h+='<table><tr><th>File</th><th>Role / shot</th><th>Protection</th><th>Copies / volumes</th></tr>';
+    for(const r of files)h+=`<tr><td class="mono">${esc(r.rel_path)}</td><td class="dim" style="font-size:11px">${esc(r.role||'')}${r.shot_at?'<div>'+esc((r.shot_at||'').slice(0,10))+'</div>':''}</td>
+      <td>${protBadge(r.protection_status,r.protection_detail)}</td><td>${searchCopies(r)}</td></tr>`;
+    h+='</table>'}
+  h+='</div>';
+  $('#view').innerHTML=h;
+}
+async function eventSuggest(id){const box=$('#magbox');if(box)box.innerHTML='<div class="panel"><div class="dim">Finding strays whose capture dates fall in this event…</div></div>';
+  const d=await api('GET','/api/events/'+id+'/suggestions');const gs=d.groups||[];
+  if(!gs.length){if(box)box.innerHTML='<div class="panel"><div class="dim">No unassigned files fall in this event\'s date range.</div></div>';return}
+  let h=`<div class="panel" style="border-left:3px solid var(--act)"><h2>🧲 Suggested (by capture date)</h2><div class="dim" style="font-size:11.5px;margin-bottom:6px">Accept a group to pull those files into this event.</div>`;
+  gs.forEach((g,i)=>{h+=`<div class="row" style="align-items:center;border-bottom:1px solid var(--line);padding:6px 0">
+    <div style="flex:1"><b class="mono">${esc(g.folder_hint)}/</b> <span class="dim">· ${g.file_count} file(s) · ${GB(g.bytes)} GB</span><div class="dim mono" style="font-size:10.5px">${(g.sample||[]).map(esc).join(', ')}${g.file_count>(g.sample||[]).length?', …':''}</div></div>
+    <button class="btn" onclick='acceptSuggest(${id},${JSON.stringify(g.file_ids)})'>Accept</button></div>`});
+  h+='</div>';if(box)box.innerHTML=h;
+}
+async function acceptSuggest(id,ids){try{await api('POST','/api/events/'+id+'/assign',{file_ids:ids});toast('Assigned '+ids.length+' file(s)');vEventDetail(id)}catch(e){toast(e.message,1)}}
+async function delEvent(id){if(!confirm('Delete this event? Files stay in the catalog; their membership is cleared.'))return;
+  try{await api('POST','/api/events/'+id+'/delete',{});toast('Event deleted');loc('events')}catch(e){toast(e.message,1)}}
+function newEventDlg(){dlg(`<h1>New event</h1>
+  <label>Name</label><input id="ne_name" class="full" placeholder="Henderson Wedding">
+  <label>Type</label><input id="ne_type" class="full" placeholder="wedding">
+  <div class="row"><div style="flex:1"><label>Capture from</label><input id="ne_from" type="date" class="full"></div><div style="flex:1"><label>to</label><input id="ne_to" type="date" class="full"></div></div>
+  <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Create</button></div>`,
+  async()=>{const b={name:$('#ne_name').value.trim(),event_type:$('#ne_type').value.trim(),capture_start:$('#ne_from').value,capture_end:$('#ne_to').value};
+    if(!b.name)throw new Error('name required');await api('POST','/api/events',b);toast('Event created');vEvents()})}
+function editEventDlg(id){api('GET','/api/events/'+id).then(d=>{const e=d.event;
+  dlg(`<h1>Edit event</h1>
+    <label>Name</label><input id="ee_name" class="full" value="${esc(e.name)}">
+    <label>Type</label><input id="ee_type" class="full" value="${esc(e.event_type||'')}">
+    <label>Year</label><input id="ee_year" class="full" value="${e.year||''}">
+    <label>Notes</label><input id="ee_notes" class="full" value="${esc(e.notes||'')}">
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Save</button></div>`,
+    async()=>{await api('POST','/api/events/'+id+'/update',{name:$('#ee_name').value.trim(),event_type:$('#ee_type').value.trim(),year:parseInt($('#ee_year').value)||0,notes:$('#ee_notes').value});toast('Saved');vEventDetail(id)})})}
+
+/* ---- clustering & inference review ---- */
+let _proposed=[],_propMeta={};
+function clusterDlg(){api('GET','/api/collections').then(cs=>{
+  const src=(cs||[]);
+  dlg(`<h1>Cluster an archive into events</h1>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">Groups the archive's dated files into capture-date bursts. Works best on chaotic (sourceless) archives adopted from old drives.</div>
+    <label>Archive</label><select id="cl_arch" class="full">${src.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+    <div class="row"><div style="flex:1"><label>Min files / burst</label><input id="cl_min" class="full" value="12"></div><div style="flex:1"><label>Max span (days)</label><input id="cl_span" class="full" value="3"></div></div>
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Cluster →</button></div>`,
+  async()=>{const cid=parseInt($('#cl_arch').value);const r=await api('POST','/api/events/cluster',{collection_id:cid,min_files:parseInt($('#cl_min').value)||0,span_days:parseInt($('#cl_span').value)||0});
+    reviewProposed(r.proposed||[],{collection_id:cid,source:'CLUSTERED'})})})}
+function inferDlg(){dlg(`<h1>Learn structure from a folder</h1>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Point at an organized photos root ({year}/{event_type}/{event}). Detects the pattern, proposes a template, and harvests an event per leaf folder. Read-only.</div>
+  <label>Folder</label><input id="if_root" class="full" placeholder="Y:\\Photos or /mnt/nas/photos">${browseBtn('if_root')}
+  <label>Template name</label><input id="if_name" class="full" placeholder="NAS Photos">
+  <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Learn →</button></div>`,
+  async()=>{const root=$('#if_root').value.trim();if(!root)throw new Error('folder required');
+    const r=await api('POST','/api/infer-structure',{root,template_name:$('#if_name').value.trim()});
+    showInference(r)})}
+function showInference(r){const s=r.structure||{},tp=r.template_proposal||{};
+  let h=`${hdr('Learned structure',esc(s.root||''),'events')}
+  <div class="panel"><h2>Detected pattern</h2>
+    <div class="mono" style="font-size:15px">${esc(s.pattern||'(none)')}</div>
+    <div class="dim" style="font-size:11.5px;margin-top:4px">${s.leaf_folders||0} leaf folder(s) · confidence ${Math.round((s.confidence||0)*100)}%${s.note?' · '+esc(s.note):''}</div>
+    <div class="row" style="margin-top:10px"><button class="btn" onclick='saveTemplate(${JSON.stringify(tp)})'>Save “${esc(tp.name||'template')}” template</button></div></div>`;
+  $('#view').innerHTML=h;
+  reviewProposed(s.events||[],{collection_id:0,source:'HARVESTED',append:true});
+}
+async function saveTemplate(t){try{await api('POST','/api/templates',t);toast('Template saved')}catch(e){toast(e.message,1)}}
+function reviewProposed(props,meta){_proposed=props.map((p,i)=>({...p,_keep:true,_i:i}));_propMeta=meta;
+  const vocab=['wedding','engagement','baptism','boudoir','religious event','family','portrait','other'];
+  let h=`<div class="panel" ${meta.append?'':''}><h2>${props.length} proposed event(s) — confirm, rename, or drop</h2>`;
+  if(!props.length)h+='<div class="empty">No bursts met the threshold. Lower the min-files, or the files may lack EXIF capture dates.</div>';
+  else{h+='<table><tr><th>Keep</th><th>Name</th><th>Type</th><th class="num">Year</th><th class="num">Files</th><th>Dates</th></tr>';
+    _proposed.forEach(p=>{h+=`<tr>
+      <td><input type="checkbox" checked onchange="_proposed[${p._i}]._keep=this.checked"></td>
+      <td><input value="${esc(p.name)}" oninput="_proposed[${p._i}].name=this.value" style="min-width:160px"></td>
+      <td><select onchange="_proposed[${p._i}].event_type=this.value"><option value="">—</option>${vocab.map(v=>`<option ${v===p.event_type?'selected':''}>${v}</option>`).join('')}</select></td>
+      <td class="num">${p.year||'—'}</td><td class="num">${p.file_count||0}</td>
+      <td class="dim" style="font-size:11px">${esc((p.capture_start||'').slice(0,10))}${p.capture_end&&p.capture_end.slice(0,10)!==(p.capture_start||'').slice(0,10)?' → '+esc((p.capture_end||'').slice(0,10)):''}</td></tr>`});
+    h+='</table>';
+    h+=`<div class="row" style="margin-top:12px"><button class="btn" onclick="saveProposed()">Save selected events</button></div>`}
+  h+='</div>';
+  if(meta.append)$('#view').insertAdjacentHTML('beforeend',h);else $('#view').innerHTML=hdr('Proposed events','review before saving','events')+h;
+}
+async function saveProposed(){const keep=_proposed.filter(p=>p._keep&&(p.name||'').trim());
+  if(!keep.length){toast('Nothing selected',1);return}
+  try{const r=await api('POST','/api/events/batch',{collection_id:_propMeta.collection_id||0,source:_propMeta.source||'CLUSTERED',
+    events:keep.map(p=>({name:p.name,event_type:p.event_type,year:p.year,capture_start:p.capture_start,capture_end:p.capture_end,folder_hint:p.folder_hint,file_ids:p.file_ids||[]}))});
+    toast('Saved '+(r.created||[]).length+' event(s)');loc('events')}catch(e){toast(e.message,1)}}
+
+/* ================= Templates ================= */
+async function vTemplates(){
+  const d=await api('GET','/api/templates');const ts=d.templates||[];
+  let h=`${hdr('Templates','where files should live — one destination pattern per role','templates')}
+  <div class="panel"><div class="row"><button class="btn" onclick="editTemplate(0)">New template…</button></div>
+    <div class="dim" style="font-size:11.5px;margin-top:6px">A template is a small document, not a wall of options: a destination pattern per file role, built from a fixed set of tokens. Exceptions are handled by drag-in-tree, not more knobs.</div></div>
+  <div class="panel"><h2>Templates (${ts.length})</h2>`;
+  for(const t of ts){h+=`<div style="border-bottom:1px solid var(--line);padding:8px 0">
+    <div class="row" style="align-items:center"><div style="flex:1"><b>${esc(t.name)}</b>${t.built_in?' <span class="etag">built-in</span>':''}</div>
+      <button class="btn ghost" onclick="editTemplate(${t.id})">${t.built_in?'View / clone':'Edit'}</button></div>
+    <div class="dim mono" style="font-size:11px;margin-top:4px">${ROLE_ROUTE_ORDER.filter(r=>t.routes&&t.routes[r]).map(r=>`${r} → ${esc(t.routes[r])}`).join('<br>')||'(no routes)'}</div></div>`}
+  h+='</div>';
+  $('#view').innerHTML=h;
+}
+let _tplPrevT=null;
+async function editTemplate(id){
+  const [d,colls]=await Promise.all([api('GET','/api/templates'),api('GET','/api/collections').catch(()=>[])]);
+  const tokens=d.tokens||['{year}','{date}','{event_type}','{event}','{camera_serial}','{orig_name}'];
+  let t=(d.templates||[]).find(x=>x.id===id)||{name:'',routes:{},event_types:['wedding','engagement','baptism','boudoir','religious event','family','portrait','other'],built_in:false};
+  const builtIn=!!t.built_in, editingId=(id&&!builtIn)?id:0;
+  let h=`${hdr(builtIn?'Clone template':(editingId?'Edit template':'New template'),'one calm panel — tokens, routes, and a live consequence preview','templates')}
+  <div class="panel">
+    <label>Name</label><input id="tpl_name" class="full" value="${esc(builtIn?t.name+' (copy)':t.name)}" oninput="tplPreview()">
+    <label style="margin-top:10px">Event-type vocabulary (one per line)</label>
+    <textarea id="tpl_vocab" class="full" rows="3" style="font:12px var(--mono)">${esc((t.event_types||[]).join('\n'))}</textarea>
+    <div class="dim" style="font-size:11.5px;margin:10px 0 4px">Tokens you can use in a route: ${tokens.map(x=>`<span class="chip mono" style="font-size:10.5px">${esc(x)}</span>`).join(' ')}. A route ending in <b>/</b> is a folder; the original filename is appended.</div>
+    <table style="width:100%">${ROLE_ROUTE_ORDER.map(r=>`<tr><td style="width:120px"><b>${r}</b></td><td><input id="tpl_r_${r}" class="full" value="${esc((t.routes||{})[r]||'')}" oninput="tplPreview()" placeholder="(unrouted)" style="font:12px var(--mono)"></td></tr>`).join('')}</table>
+    <div class="row" style="margin-top:10px;align-items:center"><label class="dim" style="font-size:11.5px">Preview against</label>
+      <select id="tpl_arch" onchange="tplPreview()"><option value="0">all archives</option>${(colls||[]).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+    <div id="tpl_preview" class="panel" style="background:var(--panel-2,rgba(127,127,127,.06));margin-top:10px"><div class="dim">Enter routes to see the consequence preview…</div></div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="saveTemplateEditor(${editingId})">${editingId?'Save template':'Create template'}</button>
+      <button class="btn ghost" onclick="loc('templates')">Cancel</button></div>
+  </div>`;
+  $('#view').innerHTML=h;tplPreview();
+}
+function templateFromEditor(){const routes={};for(const r of ROLE_ROUTE_ORDER){const v=(($('#tpl_r_'+r)||{}).value||'').trim();if(v)routes[r]=v}
+  return {name:($('#tpl_name')||{}).value||'',event_types:(($('#tpl_vocab')||{}).value||'').split('\n').map(s=>s.trim()).filter(Boolean),routes}}
+function tplPreview(){clearTimeout(_tplPrevT);_tplPrevT=setTimeout(async()=>{
+  const box=$('#tpl_preview');if(!box)return;const t=templateFromEditor();const cid=parseInt(($('#tpl_arch')||{}).value||'0');
+  if(!Object.keys(t.routes).length){box.innerHTML='<div class="dim">Add at least one route to preview.</div>';return}
+  try{const p=await api('POST','/api/templates/preview',{template:t,collection_id:cid});
+    let h=`<div style="font-size:14px;font-weight:600">places ${commaN(p.placed)} file(s) · ${commaN(p.no_route)} match no route · ${commaN(p.conflicts)} await conflict review</div>`;
+    h+=`<div class="dim" style="font-size:11.5px;margin:4px 0 8px">of ${commaN(p.total)} file(s) in scope</div>`;
+    if((p.examples||[]).length){h+='<div class="dim" style="font-size:11px;margin-bottom:3px">Example placements:</div>';
+      for(const e of p.examples)h+=`<div class="mono" style="font-size:10.5px">${esc(e.src)} <span class="dim">→</span> ${esc(e.dest)}</div>`}
+    if((p.no_route_examples||[]).length){h+='<div class="dim" style="font-size:11px;margin:8px 0 3px">Unrouted (no matching route or missing token — assign an event):</div>';
+      for(const s of p.no_route_examples)h+=`<div class="mono dim" style="font-size:10.5px">${esc(s)}</div>`}
+    box.innerHTML=h;
+  }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+},300)}
+async function saveTemplateEditor(id){const t=templateFromEditor();if(!t.name.trim()){toast('Name required',1);return}
+  try{if(id)await api('POST','/api/templates/'+id+'/update',t);else await api('POST','/api/templates',t);
+    toast('Template saved');loc('templates')}catch(e){toast(e.message,1)}}
+
 /* ---------------- shell ---------------- */
 let dlgGo=null;
 function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog');d.id='dlg';document.body.append(d)}
@@ -2265,7 +2454,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
 function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));

@@ -371,6 +371,17 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 						matchedByArchive[aid][f.ID] = f
 						matchedBytes += f.SizeBytes
 					}
+					// Backfill media metadata onto the matched archive file if a prior
+					// scan/adopt didn't capture it (e.g. cataloged before this feature).
+					if f.ShotAt.IsZero() && !sf.ShotAt.IsZero() {
+						f.ShotAt = sf.ShotAt
+					}
+					if f.Role == "" && sf.Role != "" {
+						f.Role = sf.Role
+					}
+					if f.CameraSerial == "" && sf.CameraSerial != "" {
+						f.CameraSerial = sf.CameraSerial
+					}
 				}
 			} else if histHashes[sha] {
 				hist++

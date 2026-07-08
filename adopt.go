@@ -422,6 +422,7 @@ func (a *App) AdoptFolder(mountPath string, collectionID, volumeID int, progress
 	}
 
 	total := len(paths)
+	reg := a.formatRegistry() // extension → role, for media metadata on still images
 	var mu sync.Mutex
 	hashed := map[string]unionFile{} // abs path -> file
 	// MEDIA READ-ONLY: only hashes are read; nothing is written to the folder.
@@ -434,8 +435,13 @@ func (a *App) AdoptFolder(mountPath string, collectionID, volumeID int, progress
 			if e != nil {
 				rel = filepath.Base(p)
 			}
+			role, _ := classifyRole(reg, rel)
+			uf := unionFile{RelPath: filepath.ToSlash(rel), Hash: sha, Size: size, Role: role}
+			if role == RoleRAW || role == RoleEditedExport {
+				uf.ShotAt, uf.CameraSerial = extractShotMeta(p)
+			}
 			mu.Lock()
-			hashed[p] = unionFile{RelPath: filepath.ToSlash(rel), Hash: sha, Size: size}
+			hashed[p] = uf
 			mu.Unlock()
 		})
 	unreadable := len(paths) - len(hashed)

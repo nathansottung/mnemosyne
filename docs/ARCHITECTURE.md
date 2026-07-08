@@ -50,6 +50,17 @@ snapshot.go    Reads a drive's stored VolumeSnapshot back: driveReport (role
 exif.go        extractShotMeta: stdlib-only EXIF reader (JPEG APP1 + TIFF-based
                raws) pulling capture time + camera body serial for the snapshot.
                Best-effort and totally non-fatal — unparseable = empty fields.
+events.go      Events (named happenings files belong to): ClusterEvents (group a
+               chaotic archive's dated files into capture-date bursts), SuggestForEvent
+               (magnet — pull unassigned strays in by date), EventRollups (per-event
+               protection, a grouping axis parallel to the folder tree).
+templates.go   Routing templates: token expansion ({year} {date} {event_type}
+               {event} {camera_serial} {orig_name}) and RoutePreview — the editor's
+               live "places N · no route · conflicts" consequence preview. Plans
+               placements; moves nothing.
+inference.go   InferStructure: point at an organized {year}/{event_type}/{event}
+               tree, detect the pattern, propose a template, and HARVEST an Event per
+               leaf folder (capture range from member EXIF). Read-only walk.
 mirror.go      MirrorToVolume: native mirror backup — copy an archive's files to a
                volume as PLAIN FILES (copy-then-verify via .mnemo_tmp → atomic
                rename), recorded as verified file-level copies (same Chunk.Mirror
@@ -480,6 +491,55 @@ against one or more Archives and remembers every drive it processed.
   verified copy, how many of the selected archives' files now have ≥1 copy.
   `SessionReportMarkdown` is the exportable documentation trail — every drive's
   serial/label/contents summary plus running coverage.
+
+## Templates & Events — organizing what was adopted
+
+Files are the substrate; **Events** are the unit people actually think in ("the
+Henderson wedding," not "these 8,000 files"). This layer turns dated files into
+events, and defines **Templates** that say where files *should* live.
+
+- **Media metadata on the File.** For any of this to work the archive `File` must
+  know its capture date and role, so `File` gained `ShotAt` / `Role` /
+  `CameraSerial` / `EventID` (schema v4, additive). They're filled best-effort in
+  the *same read pass* that already hashes each file — during **scan**
+  (`pipeline.go`), **sourceless adopt** (`adopt.go` → `unionFile`), and **dock
+  content-match** (backfilled from the snapshot). EXIF comes from the stdlib reader
+  (`exif.go`); role from `classifyRole`. Non-images and legacy rows just leave them
+  empty.
+
+- **Events are small records; membership lives on the File.** An `Event`
+  (`{name, event_type, year, capture_start/end, …}`) stores no file list — a file
+  points at its event via `File.EventID`. That keeps events tiny and makes both
+  search and the protection rollup a single pass over files grouped by `EventID`.
+
+- **Three ways to make events** (`events.go` / `inference.go`):
+  - *Structure inference* — point `InferStructure` at an organized
+    `{year}/{event_type}/{event}` tree; it detects the pattern (per-position year/
+    type scoring, the deepest segment always the event), proposes a routing
+    template, and **harvests** one Event per leaf folder with a capture-date range
+    read from member EXIF.
+  - *Clustering* — `ClusterEvents` groups a chaotic archive's dated files into
+    capture-date **bursts** (≥N files spanning ≤3 days), pre-naming each from its
+    most common folder and guessing the type from folder keywords.
+  - *Magnets* — a saved Event's date range pulls in still-unassigned files whose
+    shot dates fall inside it (`SuggestForEvent`), grouped for accept/reject. This
+    is how harvested date-range events (no members yet) adopt matching strays.
+
+- **Events are first-class.** Search gained `role` / `event_id` / capture-date
+  (`from`/`to`) filters ("RAWs from October 2019"); `EventRollups` aggregates the
+  same six-status protection model by event ("this wedding: 1 copy — at risk") — a
+  grouping axis parallel to the folder tree.
+
+- **Templates plan, they don't move.** A `Template` is a deliberately tiny
+  document: one destination pattern per role, from a fixed six-token set (`{year}
+  {date} {event_type} {event} {camera_serial} {orig_name}`). `RoutePreview`
+  (`templates.go`) expands those tokens against the real catalog and returns the
+  editor's **live consequence preview** — *places N · match no route · await
+  conflict review* (a file is unrouted when its role has no route or a token can't
+  be filled; a conflict is two sources landing on one destination). Nothing is ever
+  moved — exceptions are a future drag-in-tree, not more knobs. The built-in
+  **Photographer Standard** template is seeded like the built-in profiles (present
+  in a fresh catalog; re-seeded only when none exist).
 
 ## Dependencies
 

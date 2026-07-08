@@ -233,6 +233,26 @@ func pathID(r *http.Request) int {
 	return id
 }
 
+// parseSearchDate parses a capture-date filter: a plain date (2019-10-01) or a full
+// RFC3339. endOfDay pushes a bare date to 23:59:59 so a "to" bound covers the whole
+// day. Returns the zero time on empty/unparseable input (the filter is then off).
+func parseSearchDate(v string, endOfDay bool) time.Time {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		if endOfDay {
+			return t.Add(24*time.Hour - time.Second)
+		}
+		return t
+	}
+	return time.Time{}
+}
+
 // sealGuard refuses a write targeting a SEALED (finalized, vault-ready) volume.
 // A newly-registered inline volume (id 0 here, created by resolveVolume) is never
 // sealed, so only an explicit existing volume_id can trip this.
@@ -650,10 +670,242 @@ func api(mux *http.ServeMux, app *App) {
 	mux.HandleFunc("GET /api/search", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		cid, _ := strconv.Atoi(q.Get("collection_id"))
-		jsonOut(w, app.Store.Search(SearchQuery{
+		eid, _ := strconv.Atoi(q.Get("event_id")) // >0 = that event; -1 = only unassigned
+		sq := SearchQuery{
 			Text: q.Get("q"), Hash: q.Get("hash"), Ext: q.Get("ext"),
 			Status: q.Get("status"), CollectionID: cid, Limit: 200,
-		}))
+			Role: q.Get("role"), EventID: eid,
+		}
+		// Date filters accept a plain date (2019-10-01) or full RFC3339. "To" without
+		// a time covers the whole day.
+		sq.From = parseSearchDate(q.Get("from"), false)
+		sq.To = parseSearchDate(q.Get("to"), true)
+		jsonOut(w, app.Store.Search(sq))
+	})
+
+	// ---- Events -----------------------------------------------------------
+	// List events (optionally scoped to an archive) with their protection rollup.
+	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
+		cid, _ := strconv.Atoi(r.URL.Query().Get("collection_id"))
+		jsonOut(w, map[string]any{"events": app.Store.Events(cid), "rollups": app.Store.EventRollups(cid)})
+	})
+	// Create one event (manual, or a confirmed harvested/clustered proposal).
+	mux.HandleFunc("POST /api/events", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		name := strings.TrimSpace(s(b, "name"))
+		if name == "" {
+			jsonErr(w, 400, fmt.Errorf("event name required"))
+			return
+		}
+		ev := app.Store.AddEvent(&Event{
+			Name: name, EventType: s(b, "event_type"), Year: int(f(b, "year")),
+			CaptureStart: parseSearchDate(s(b, "capture_start"), false),
+			CaptureEnd:   parseSearchDate(s(b, "capture_end"), true),
+			Notes:        s(b, "notes"), CollectionID: int(f(b, "collection_id")),
+			FolderHint: s(b, "folder_hint"), Source: nonEmpty(s(b, "source"), "MANUAL"),
+		})
+		if ids := intList(b, "file_ids"); len(ids) > 0 { // clustered proposal carries its members
+			app.Store.AssignFilesToEvent(ids, ev.ID)
+		}
+		jsonOut(w, ev)
+	})
+	// Save a batch of proposed events (from clustering or inference harvest).
+	mux.HandleFunc("POST /api/events/batch", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			CollectionID int             `json:"collection_id"`
+			Source       string          `json:"source"`
+			Events       []ProposedEvent `json:"events"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		created := []*Event{}
+		for _, pe := range in.Events {
+			if strings.TrimSpace(pe.Name) == "" {
+				continue
+			}
+			ev := app.Store.AddEvent(&Event{
+				Name: pe.Name, EventType: pe.EventType, Year: pe.Year,
+				CaptureStart: pe.CaptureStart, CaptureEnd: pe.CaptureEnd,
+				CollectionID: in.CollectionID, FolderHint: pe.FolderHint,
+				Source: nonEmpty(in.Source, "CLUSTERED"),
+			})
+			if len(pe.FileIDs) > 0 {
+				app.Store.AssignFilesToEvent(pe.FileIDs, ev.ID)
+			}
+			created = append(created, ev)
+		}
+		jsonOut(w, map[string]any{"created": created})
+	})
+	// Cluster a (chaotic) archive's dated files into proposed events by EXIF density.
+	mux.HandleFunc("POST /api/events/cluster", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		cid := int(f(b, "collection_id"))
+		if cid == 0 {
+			jsonErr(w, 400, fmt.Errorf("collection_id required"))
+			return
+		}
+		props := app.ClusterEvents(cid, int(f(b, "min_files")), int(f(b, "span_days")))
+		jsonOut(w, map[string]any{"proposed": props, "count": len(props)})
+	})
+	// Event detail: the record, its rollup, and its member files (with locations).
+	mux.HandleFunc("GET /api/events/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ev := app.Store.Event(pathID(r))
+		if ev == nil {
+			jsonErr(w, 404, fmt.Errorf("event not found"))
+			return
+		}
+		files := app.Store.Search(SearchQuery{EventID: ev.ID, Limit: 100000})
+		var roll *EventRollup
+		for _, rr := range app.Store.EventRollups(ev.CollectionID) {
+			if rr.EventID == ev.ID {
+				r2 := rr
+				roll = &r2
+				break
+			}
+		}
+		jsonOut(w, map[string]any{"event": ev, "rollup": roll, "files": files})
+	})
+	// Update an event's editable fields.
+	mux.HandleFunc("POST /api/events/{id}/update", func(w http.ResponseWriter, r *http.Request) {
+		ev := app.Store.Event(pathID(r))
+		if ev == nil {
+			jsonErr(w, 404, fmt.Errorf("event not found"))
+			return
+		}
+		b := body(r)
+		if v := strings.TrimSpace(s(b, "name")); v != "" {
+			ev.Name = v
+		}
+		if _, ok := b["event_type"]; ok {
+			ev.EventType = s(b, "event_type")
+		}
+		if _, ok := b["year"]; ok {
+			ev.Year = int(f(b, "year"))
+		}
+		if _, ok := b["notes"]; ok {
+			ev.Notes = s(b, "notes")
+		}
+		if v := s(b, "capture_start"); v != "" {
+			ev.CaptureStart = parseSearchDate(v, false)
+		}
+		if v := s(b, "capture_end"); v != "" {
+			ev.CaptureEnd = parseSearchDate(v, true)
+		}
+		app.Store.UpdateEvent(ev)
+		jsonOut(w, ev)
+	})
+	mux.HandleFunc("POST /api/events/{id}/delete", func(w http.ResponseWriter, r *http.Request) {
+		app.Store.DeleteEvent(pathID(r))
+		jsonOut(w, map[string]any{"ok": true})
+	})
+	// Magnet suggestions: unassigned files whose capture dates fall in this event's
+	// range, grouped for accept/reject.
+	mux.HandleFunc("GET /api/events/{id}/suggestions", func(w http.ResponseWriter, r *http.Request) {
+		if app.Store.Event(pathID(r)) == nil {
+			jsonErr(w, 404, fmt.Errorf("event not found"))
+			return
+		}
+		groups := app.SuggestForEvent(pathID(r))
+		jsonOut(w, map[string]any{"groups": groups})
+	})
+	// Accept/assign files to an event (file_ids), or unassign (event_id omitted → 0).
+	mux.HandleFunc("POST /api/events/{id}/assign", func(w http.ResponseWriter, r *http.Request) {
+		ev := app.Store.Event(pathID(r))
+		if ev == nil {
+			jsonErr(w, 404, fmt.Errorf("event not found"))
+			return
+		}
+		b := body(r)
+		n := app.Store.AssignFilesToEvent(intList(b, "file_ids"), ev.ID)
+		jsonOut(w, map[string]any{"assigned": n})
+	})
+	mux.HandleFunc("POST /api/events/{id}/unassign", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		n := app.Store.AssignFilesToEvent(intList(b, "file_ids"), 0)
+		jsonOut(w, map[string]any{"unassigned": n})
+	})
+
+	// ---- Templates --------------------------------------------------------
+	mux.HandleFunc("GET /api/templates", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, map[string]any{"templates": app.Store.Templates(), "tokens": routeTokens,
+			"roles": []string{RoleRAW, RoleEditedExport, RoleSidecar, RoleCatalog, RoleVideo, RoleOther}})
+	})
+	mux.HandleFunc("POST /api/templates", func(w http.ResponseWriter, r *http.Request) {
+		var t Template
+		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		if strings.TrimSpace(t.Name) == "" {
+			jsonErr(w, 400, fmt.Errorf("template name required"))
+			return
+		}
+		t.BuiltIn = false
+		if len(t.EventTypes) == 0 {
+			t.EventTypes = append([]string(nil), defaultEventVocabulary...)
+		}
+		jsonOut(w, app.Store.AddTemplate(&t))
+	})
+	mux.HandleFunc("POST /api/templates/{id}/update", func(w http.ResponseWriter, r *http.Request) {
+		t := app.Store.Template(pathID(r))
+		if t == nil {
+			jsonErr(w, 404, fmt.Errorf("template not found"))
+			return
+		}
+		var in Template
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		if strings.TrimSpace(in.Name) != "" {
+			t.Name = in.Name
+		}
+		if in.EventTypes != nil {
+			t.EventTypes = in.EventTypes
+		}
+		if in.Routes != nil {
+			t.Routes = in.Routes
+		}
+		app.Store.UpdateTemplate(t)
+		jsonOut(w, t)
+	})
+	mux.HandleFunc("POST /api/templates/{id}/delete", func(w http.ResponseWriter, r *http.Request) {
+		app.Store.DeleteTemplate(pathID(r))
+		jsonOut(w, map[string]any{"ok": true})
+	})
+	// Live consequence preview for an UNSAVED (being-edited) template against the real
+	// catalog: how many files it places, match no route, and collide.
+	mux.HandleFunc("POST /api/templates/preview", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Template     Template `json:"template"`
+			CollectionID int      `json:"collection_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, app.RoutePreview(&in.Template, in.CollectionID))
+	})
+
+	// ---- Structure inference ----------------------------------------------
+	// Point at an organized tree → detect its {year}/{event_type}/{event} pattern,
+	// propose a template, and harvest an Event per leaf folder (read-only walk).
+	mux.HandleFunc("POST /api/infer-structure", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		root := strings.TrimSpace(s(b, "root"))
+		if root == "" {
+			jsonErr(w, 400, fmt.Errorf("root (the organized folder to learn from) required"))
+			return
+		}
+		inf, err := app.InferStructure(root)
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"structure": inf,
+			"template_proposal": app.ProposeTemplateFromInference(inf, s(b, "template_name"))})
 	})
 
 	// format sustainability — the registry and the per-archive census (0 = all).

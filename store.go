@@ -105,6 +105,19 @@ type File struct {
 	ModTime   time.Time     `json:"mtime,omitempty"`
 	FirstSeen time.Time     `json:"first_seen,omitempty"`
 	Versions  []FileVersion `json:"versions,omitempty"` // superseded prior versions, oldest→newest
+	// Media metadata (prompt: Templates + Events). ShotAt is the EXIF capture time,
+	// Role the workflow classification (RAW/EDITED-EXPORT/…), CameraSerial the EXIF
+	// body serial — all best-effort, filled during scan/adopt/dock when the file is
+	// a still image the stdlib EXIF reader understands (see exif.go / classifyRole).
+	// Empty/zero on non-images and legacy rows; they drive event clustering, the
+	// routing tokens, and the date/role/event search filters.
+	ShotAt       time.Time `json:"shot_at,omitempty"`
+	Role         string    `json:"role,omitempty"`
+	CameraSerial string    `json:"camera_serial,omitempty"`
+	// EventID is the Event this file belongs to (0 = unassigned). Set by confirming a
+	// clustered/harvested Event or accepting a magnet suggestion; the sole membership
+	// record (Events don't store file lists). See events.go.
+	EventID int `json:"event_id,omitempty"`
 }
 
 // FileVersion is a superseded prior state of a file, retained so the catalog
@@ -426,6 +439,43 @@ type VolumeSnapshot struct {
 	RoleBytes map[string]int64 `json:"role_bytes,omitempty"`
 }
 
+// Event is a first-class named happening — a wedding, a baptism, a family shoot —
+// that a set of files belong to. It is the unit people actually search for
+// ("Henderson"), the unit protection rolls up to ("this wedding: 1 copy — at
+// risk"), and the {event}/{event_type} a routing template fills. Membership is
+// recorded on the File (File.EventID), not here, so an event is a small record.
+// CaptureStart/End is the EXIF date span of its members (or a harvested folder's),
+// and doubles as the magnet range that pulls in unassigned files by capture date.
+type Event struct {
+	ID           int       `json:"id"`
+	Name         string    `json:"name"`
+	EventType    string    `json:"event_type,omitempty"`
+	Year         int       `json:"year,omitempty"`
+	CaptureStart time.Time `json:"capture_start,omitempty"`
+	CaptureEnd   time.Time `json:"capture_end,omitempty"`
+	Notes        string    `json:"notes,omitempty"`
+	CollectionID int       `json:"collection_id,omitempty"` // archive this event's files live in (0 = any)
+	FolderHint   string    `json:"folder_hint,omitempty"`   // leaf folder it was harvested/named from
+	Source       string    `json:"source,omitempty"`        // HARVESTED | CLUSTERED | MANUAL
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// Template is a small named document describing WHERE files should live: an
+// editable event-type vocabulary plus one destination pattern per file role,
+// using a fixed, tiny token set ({year} {date} {event_type} {event}
+// {camera_serial} {orig_name}). It is intentionally NOT a wall of options —
+// exceptions are handled by drag-in-tree, not more knobs. Routes maps a role
+// (RAW/EDITED-EXPORT/SIDECAR/CATALOG/VIDEO/OTHER) to its destination pattern; a
+// role with no route is "unrouted" in the preview.
+type Template struct {
+	ID         int               `json:"id"`
+	Name       string            `json:"name"`
+	EventTypes []string          `json:"event_types"`
+	Routes     map[string]string `json:"routes"`
+	BuiltIn    bool              `json:"built_in,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+}
+
 // TapeAlertFlag is one active TapeAlert bit reported by a tape drive, rendered
 // in plain language. Severity is one of: clean, warn, error (info flags are
 // dropped). TapeAlert is the drive's own self-report — a diagnostic SIGNAL, like
@@ -578,7 +628,7 @@ func (r *DriftReport) Changes() int {
 // Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
 // ("Schema versioning"): persisted fields are append-only, removal needs a
 // migration + a major bump, and every field must tolerate being absent.
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // schemaMigration transforms the in-memory catalog UP TO the version named by To.
 // Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
@@ -607,6 +657,11 @@ var schemaMigrations = []schemaMigration{
 	// an OLDER build refuses to write a snapshot-bearing catalog (it would silently
 	// drop the snapshots on save). Empty body — nothing to transform.
 	{To: 3, Fn: func(c *catalog) {}},
+	// 3 → 4: Events + Templates became first-class, and File gained shot_at/role/
+	// camera_serial/event_id. All additive and absent-tolerant; the bump makes older
+	// builds refuse to write (they'd drop events/templates/media-metadata). Empty
+	// body — nothing to transform.
+	{To: 4, Fn: func(c *catalog) {}},
 }
 
 // migrateLocations is the 1→2 step: fold every volume's free-text Location + Offsite
@@ -668,8 +723,12 @@ type catalog struct {
 	// Snapshots is the complete offline inventory of every dock-ingested drive
 	// (one per volume, keyed by VolumeID). It is what lets Volumes/Treemap describe
 	// an unplugged drive. See VolumeSnapshot.
-	Snapshots  []*VolumeSnapshot `json:"volume_snapshots,omitempty"`
-	TapeChecks []TapeHealth      `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
+	Snapshots []*VolumeSnapshot `json:"volume_snapshots,omitempty"`
+	// Events (named happenings files belong to) and Templates (role→destination
+	// routing documents). Additive in schema v4. See Event / Template.
+	Events     []*Event     `json:"events,omitempty"`
+	Templates  []*Template  `json:"templates,omitempty"`
+	TapeChecks []TapeHealth `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
 	// Protection profiles (the 3-2-1 model), their per-archive/per-folder
 	// assignments, and the latest recomputed status summary per collection.
 	Profiles    []*Profile           `json:"profiles"`
@@ -823,6 +882,13 @@ func OpenStore(dataDir string) (*Store, error) {
 	// canonical (they are immutable, so we overwrite any drifted copy). Custom
 	// user profiles are never touched. New catalogs start with just these three.
 	if s.seedBuiltinProfilesLocked() {
+		recovered = true
+	}
+	// Built-in routing template: seed "Photographer Standard" on a catalog with no
+	// templates (never re-added once the operator deletes all of them within a run —
+	// but a fresh open with zero templates re-seeds, matching the profiles spirit).
+	if len(s.c.Templates) == 0 {
+		s.seedBuiltinTemplateLocked()
 		recovered = true
 	}
 	if recovered {
@@ -1175,6 +1241,18 @@ func (s *Store) UpsertFile(f File) *File {
 		if !f.ModTime.IsZero() {
 			e.ModTime = f.ModTime
 		}
+		// Media metadata is refreshed when re-supplied (a later scan may parse EXIF the
+		// first pass skipped); never cleared. EventID is preserved — membership is the
+		// operator's, not the scanner's, to change.
+		if !f.ShotAt.IsZero() {
+			e.ShotAt = f.ShotAt
+		}
+		if f.Role != "" {
+			e.Role = f.Role
+		}
+		if f.CameraSerial != "" {
+			e.CameraSerial = f.CameraSerial
+		}
 		return e
 	}
 	nf := f
@@ -1188,10 +1266,15 @@ func (s *Store) UpsertFile(f File) *File {
 }
 
 // unionFile is one loose file being folded into a SOURCELESS archive's union.
+// ShotAt/Role/CameraSerial carry the best-effort EXIF/role captured during the
+// adopt walk, so union files become event-clusterable and routable.
 type unionFile struct {
-	RelPath string
-	Hash    string
-	Size    int64
+	RelPath      string
+	Hash         string
+	Size         int64
+	ShotAt       time.Time
+	Role         string
+	CameraSerial string
 }
 
 // UpsertUnionFiles folds a batch of loose files into a SOURCELESS archive's file
@@ -1216,11 +1299,23 @@ func (s *Store) UpsertUnionFiles(collectionID int, items []unionFile) (ids []int
 		if it.Hash != "" {
 			if e := byHash[it.Hash]; e != nil {
 				ids[i] = e.ID
+				// Backfill EXIF/role onto the shared union entry if this drive's copy
+				// carried metadata the first-seen copy lacked.
+				if e.ShotAt.IsZero() && !it.ShotAt.IsZero() {
+					e.ShotAt = it.ShotAt
+				}
+				if e.Role == "" && it.Role != "" {
+					e.Role = it.Role
+				}
+				if e.CameraSerial == "" && it.CameraSerial != "" {
+					e.CameraSerial = it.CameraSerial
+				}
 				continue
 			}
 		}
 		nf := &File{ID: s.next("file"), CollectionID: collectionID, FolderID: 0,
-			RelPath: it.RelPath, SizeBytes: it.Size, HashAlg: "SHA256", Hash: it.Hash, FirstSeen: now}
+			RelPath: it.RelPath, SizeBytes: it.Size, HashAlg: "SHA256", Hash: it.Hash, FirstSeen: now,
+			ShotAt: it.ShotAt, Role: it.Role, CameraSerial: it.CameraSerial}
 		s.c.Files = append(s.c.Files, nf)
 		if it.Hash != "" {
 			byHash[it.Hash] = nf
@@ -1288,6 +1383,16 @@ func (s *Store) FilesOf(collectionID int) []*File {
 	return out
 }
 
+// AllFiles returns every catalog file (live records), for cross-archive scans like
+// the event magnet. Caller treats elements as read-only unless holding intent.
+func (s *Store) AllFiles() []*File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*File, len(s.c.Files))
+	copy(out, s.c.Files)
+	return out
+}
+
 func (s *Store) FileByID(id int) *File {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1317,11 +1422,15 @@ func (s *Store) ExtTally(collectionID int) *extTally {
 // SearchQuery bundles the search filters. Empty fields are ignored, so a bare
 // path query behaves exactly as before.
 type SearchQuery struct {
-	Text         string // substring of the file's rel path (case-insensitive)
-	Hash         string // exact or prefix match of the SHA-256 (case-insensitive)
-	Ext          string // file extension filter, e.g. ".nef" (leading dot optional)
-	Status       string // protection status filter (COMPLETE, PARTIAL, …)
-	CollectionID int    // 0 = all archives; else scope to this archive
+	Text         string    // substring of the file's rel path (case-insensitive)
+	Hash         string    // exact or prefix match of the SHA-256 (case-insensitive)
+	Ext          string    // file extension filter, e.g. ".nef" (leading dot optional)
+	Status       string    // protection status filter (COMPLETE, PARTIAL, …)
+	CollectionID int       // 0 = all archives; else scope to this archive
+	Role         string    // media role filter (RAW / EDITED-EXPORT / VIDEO / …)
+	EventID      int       // event membership filter (0 = ignore; -1 = only unassigned)
+	From         time.Time // capture-date lower bound (inclusive) on EXIF ShotAt
+	To           time.Time // capture-date upper bound (inclusive)
 	Limit        int
 }
 
@@ -1337,9 +1446,14 @@ func (s *Store) Search(qr SearchQuery) []map[string]any {
 		ext = "." + ext
 	}
 	status := strings.ToUpper(strings.TrimSpace(qr.Status))
+	role := strings.ToUpper(strings.TrimSpace(qr.Role))
 	limit := qr.Limit
 	if limit <= 0 {
 		limit = 200
+	}
+	eventName := map[int]string{}
+	for _, e := range s.c.Events {
+		eventName[e.ID] = e.Name
 	}
 	loc := map[int]*Chunk{} // fileID -> chunk
 	for _, ch := range s.c.Chunks {
@@ -1392,12 +1506,39 @@ func (s *Store) Search(qr SearchQuery) []map[string]any {
 		if ext != "" && !strings.EqualFold(pathExt(f.RelPath), ext) {
 			continue
 		}
+		if role != "" && !strings.EqualFold(f.Role, role) {
+			continue
+		}
+		if qr.EventID > 0 && f.EventID != qr.EventID {
+			continue
+		}
+		if qr.EventID == -1 && f.EventID != 0 { // -1 = only files with no event
+			continue
+		}
+		if !qr.From.IsZero() && (f.ShotAt.IsZero() || f.ShotAt.Before(qr.From)) {
+			continue
+		}
+		if !qr.To.IsZero() && (f.ShotAt.IsZero() || f.ShotAt.After(qr.To)) {
+			continue
+		}
 		pst, pdet, pprof := s.fileProtectionLocked(f, fileCopies, folderPath)
 		if status != "" && pst != status {
 			continue
 		}
 		row := map[string]any{"file_id": f.ID, "rel_path": f.RelPath, "size_bytes": f.SizeBytes, "hash": f.Hash, "ext": pathExt(f.RelPath)}
 		row["protection_status"], row["protection_detail"] = pst, pdet
+		if f.Role != "" {
+			row["role"] = f.Role
+		}
+		if !f.ShotAt.IsZero() {
+			row["shot_at"] = f.ShotAt
+		}
+		if f.EventID != 0 {
+			row["event_id"] = f.EventID
+			if n := eventName[f.EventID]; n != "" {
+				row["event"] = n
+			}
+		}
 		if len(f.Versions) > 0 { // total known content versions (current + retained history)
 			row["version_count"] = len(f.Versions) + 1
 		}
@@ -1835,6 +1976,191 @@ func (s *Store) VolumeSnapshots() []*VolumeSnapshot {
 	out := make([]*VolumeSnapshot, len(s.c.Snapshots))
 	copy(out, s.c.Snapshots)
 	return out
+}
+
+// ---- events ------------------------------------------------------------
+
+// AddEvent creates an event (stamping ID + CreatedAt) and persists.
+func (s *Store) AddEvent(e *Event) *Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e.ID = s.next("event")
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now().UTC()
+	}
+	s.c.Events = append(s.c.Events, e)
+	_ = s.save()
+	return e
+}
+
+// Events returns events scoped to a collection (0 = all), newest-created first.
+func (s *Store) Events(collectionID int) []*Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []*Event{}
+	for _, e := range s.c.Events {
+		if collectionID == 0 || e.CollectionID == collectionID {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out
+}
+
+// Event returns one event by ID (live record), or nil.
+func (s *Store) Event(id int) *Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.c.Events {
+		if e.ID == id {
+			return e
+		}
+	}
+	return nil
+}
+
+// UpdateEvent persists in-place edits to an event record.
+func (s *Store) UpdateEvent(e *Event) { s.mu.Lock(); defer s.mu.Unlock(); _ = s.save() }
+
+// DeleteEvent removes an event and clears the membership of any files pointing at
+// it (their EventID resets to 0 — unassigned, not deleted).
+func (s *Store) DeleteEvent(id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.c.Events[:0]
+	for _, e := range s.c.Events {
+		if e.ID != id {
+			out = append(out, e)
+		}
+	}
+	s.c.Events = out
+	for _, f := range s.c.Files {
+		if f.EventID == id {
+			f.EventID = 0
+		}
+	}
+	_ = s.save()
+}
+
+// AssignFilesToEvent sets the EventID on the given files (0 to unassign). Returns
+// how many rows changed. One lock; persists once.
+func (s *Store) AssignFilesToEvent(fileIDs []int, eventID int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := map[int]bool{}
+	for _, id := range fileIDs {
+		want[id] = true
+	}
+	n := 0
+	for _, f := range s.c.Files {
+		if want[f.ID] && f.EventID != eventID {
+			f.EventID = eventID
+			n++
+		}
+	}
+	if n > 0 {
+		_ = s.save()
+	}
+	return n
+}
+
+// FilesOfEvent returns the files whose membership points at an event.
+func (s *Store) FilesOfEvent(eventID int) []*File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []*File{}
+	for _, f := range s.c.Files {
+		if f.EventID == eventID {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// ---- templates ---------------------------------------------------------
+
+// AddTemplate creates a routing template and persists.
+func (s *Store) AddTemplate(t *Template) *Template {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.ID = s.next("template")
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now().UTC()
+	}
+	s.c.Templates = append(s.c.Templates, t)
+	_ = s.save()
+	return t
+}
+
+// Templates returns all routing templates (built-in first, then by ID).
+func (s *Store) Templates() []*Template {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Template, len(s.c.Templates))
+	copy(out, s.c.Templates)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].BuiltIn != out[j].BuiltIn {
+			return out[i].BuiltIn
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// Template returns one template by ID (live record), or nil.
+func (s *Store) Template(id int) *Template {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.c.Templates {
+		if t.ID == id {
+			return t
+		}
+	}
+	return nil
+}
+
+// UpdateTemplate persists in-place edits to a template.
+func (s *Store) UpdateTemplate(t *Template) { s.mu.Lock(); defer s.mu.Unlock(); _ = s.save() }
+
+// DeleteTemplate removes a template (built-ins included; a fresh open re-seeds the
+// built-in only when NO templates exist).
+func (s *Store) DeleteTemplate(id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.c.Templates[:0]
+	for _, t := range s.c.Templates {
+		if t.ID != id {
+			out = append(out, t)
+		}
+	}
+	s.c.Templates = out
+	_ = s.save()
+}
+
+// seedBuiltinTemplateLocked installs the "Photographer Standard" template on a
+// catalog that has none, so there's always a starting point to clone/edit. Caller
+// holds s.mu (OpenStore is single-threaded at call time).
+func (s *Store) seedBuiltinTemplateLocked() {
+	if len(s.c.Templates) > 0 {
+		return
+	}
+	raw := "photos/{year}/{event_type}/{event}/"
+	// CreatedAt is deliberately left zero: the built-in is canonical, not
+	// operator-authored, so its serialization stays deterministic across catalogs
+	// (the same reason built-in profiles carry no per-open timestamp).
+	s.c.Templates = append(s.c.Templates, &Template{
+		ID:         s.next("template"),
+		Name:       "Photographer Standard",
+		BuiltIn:    true,
+		EventTypes: append([]string(nil), defaultEventVocabulary...),
+		Routes: map[string]string{
+			RoleRAW:          raw,
+			RoleSidecar:      raw,
+			RoleCatalog:      raw,
+			RoleEditedExport: "Finalized Images/{year}/{event_type}/{event}/",
+			RoleVideo:        "photos/{year}/{event_type}/{event}/video/",
+		},
+	})
 }
 
 // ---- tape diagnostics --------------------------------------------------

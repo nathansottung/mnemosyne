@@ -457,12 +457,20 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 		return 0, err
 	}
 	total := len(paths)
+	reg := a.formatRegistry() // extension → role, for media metadata on still images
 	parallelHash(paths, func(d int) {
 		progress(float64(d)/float64(total), progStats(0, 0, int64(d), int64(total), "hashing source files"))
 	}, func(p, sha, b3 string, size int64, mtime time.Time) {
 		if rel, e := filepath.Rel(root, p); e == nil {
-			a.Store.UpsertFile(File{CollectionID: collectionID, FolderID: folder.ID,
-				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: sha, Blake3: b3, ModTime: mtime})
+			// Media metadata: classify the role, and for still images pull EXIF
+			// capture time + camera serial (bounded header read; empty on failure).
+			role, _ := classifyRole(reg, rel)
+			f := File{CollectionID: collectionID, FolderID: folder.ID,
+				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: sha, Blake3: b3, ModTime: mtime, Role: role}
+			if role == RoleRAW || role == RoleEditedExport {
+				f.ShotAt, f.CameraSerial = extractShotMeta(p)
+			}
+			a.Store.UpsertFile(f)
 		}
 	})
 	a.Store.Flush()
