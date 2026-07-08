@@ -181,6 +181,7 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <a href="#packages" data-v="packages">Packages</a>
   <a href="#burn" data-v="burn">Burn</a>
   <a href="#volumes" data-v="volumes">Volumes</a>
+  <a href="#locations" data-v="locations">Locations</a>
   <a href="#dock" data-v="dock">Dock</a>
   <a href="#keys" data-v="keys">Keys</a>
   <a href="#jobs" data-v="jobs">Jobs</a>
@@ -901,18 +902,20 @@ async function vVault(){
   h+='<div class="panel"><h2>Archives</h2>';
   if(!cs.length) h+='<div class="empty">No archives yet. Create one, then scan a folder into it.</div>';
   else{h+='<table><tr><th>Name</th><th class="num">Files</th><th class="num">Size</th><th class="num">Packages</th><th></th></tr>';
-    for(const c of cs){const dr=c.drift;
-      h+=`<tr><td>${esc(c.name)}${dr&&dr.changes>0?` <a href="#" onclick="vDrift(${c.id},'${esc(c.name)}');return false" class="etag due" style="text-decoration:none">${dr.changes} changes${dr.informational?' · '+dr.informational+' informational':''}</a>`:dr?` <span class="etag enc">in sync</span>`:''}</td>
+    for(const c of cs){const dr=c.drift;const sl=c.kind==='SOURCELESS';
+      const srcActions=`<button class="btn ghost" onclick="scanDlg(${c.id},'${esc(c.name)}')">Scan folder…</button>
+      <button class="btn ghost" onclick="mirrorDlg(${c.id},'${esc(c.name)}')">Mirror backup…</button>
+      <button class="btn ghost" onclick="doReconcile(${c.id},'${esc(c.name)}')">Rescan & compare</button>`;
+      const slActions=`<button class="btn ghost" onclick="adoptFolderDlg(${c.id},'${esc(c.name)}')">Adopt a drive…</button>`;
+      h+=`<tr><td>${esc(c.name)}${sl?' <span class="etag" title="No source folder — its files are the union of adopted drives">scattered</span>':''}${!sl&&dr&&dr.changes>0?` <a href="#" onclick="vDrift(${c.id},'${esc(c.name)}');return false" class="etag due" style="text-decoration:none">${dr.changes} changes${dr.informational?' · '+dr.informational+' informational':''}</a>`:(!sl&&dr)?` <span class="etag enc">in sync</span>`:''}</td>
       <td class="num">${c.files}</td><td class="num">${GB(c.bytes)} GB</td>
       <td class="num">${c.chunks}</td><td class="row" style="justify-content:flex-end">
-      <button class="btn ghost" onclick="scanDlg(${c.id},'${esc(c.name)}')">Scan folder…</button>
+      ${sl?slActions:srcActions}
       <button class="btn ghost" onclick="planDlg(${c.id},'${esc(c.name)}')">Plan packages…</button>
-      <button class="btn ghost" onclick="mirrorDlg(${c.id},'${esc(c.name)}')">Mirror backup…</button>
       <button class="btn ghost" onclick="vArchiveProtection(${c.id})">Protection…</button>
       <button class="btn ghost" onclick="tmOpen(${c.id})">Treemap…</button>
       <button class="btn ghost" onclick="censusDlg(${c.id},'${esc(c.name)}')">Formats…</button>
-      <button class="btn ghost" onclick="bagExportDlg(${c.id},'${esc(c.name)}')">Export bag…</button>
-      <button class="btn ghost" onclick="doReconcile(${c.id},'${esc(c.name)}')">Rescan & compare</button></td></tr>`}
+      <button class="btn ghost" onclick="bagExportDlg(${c.id},'${esc(c.name)}')">Export bag…</button></td></tr>`}
     h+='</table>'}
   h+='</div>';
   $('#view').innerHTML=h;
@@ -1000,8 +1003,80 @@ function itemList(list){let h='<table>';for(const it of list){
     <td>${it.needs_backup?'<span class="etag due">needs backup</span>':''}</td>
     <td class="dim" style="font-size:11px">${it.chunk?'restore from '+esc(it.chunk):''}${(it.volumes||[]).length?': '+it.volumes.map(esc).join(', '):''}</td></tr>`}
   return h+'</table>'}
-async function addColl(){const n=$('#newname').value.trim();if(!n)return;
-  try{await api('POST','/api/collections',{name:n});toast('Archive created');vVault()}catch(e){toast(e.message,1)}}
+/* Creating an archive asks one plain question: one main place, or scattered? */
+function addColl(){const n=($('#newname').value||'').trim();
+  dlg(`<h1>New archive${n?' — “'+esc(n)+'”':''}</h1>
+    ${n?'':'<label>Name</label><input id="acname" class="full" placeholder="e.g. Family Photos">'}
+    <label style="margin-top:12px">Do these files live in one main place, or are they scattered across drives?</label>
+    <label class="row" style="gap:8px;align-items:flex-start;margin-top:6px"><input type="radio" name="ackind" value="SOURCED" checked style="width:auto;margin-top:3px"> <span><b>One main place (like a NAS)</b> — a folder I can point Mnemosyne at. It scans that source, watches for changes, and builds copies from it.</span></label>
+    <label class="row" style="gap:8px;align-items:flex-start;margin-top:8px"><input type="radio" name="ackind" value="SOURCELESS" style="width:auto;margin-top:3px"> <span><b>Scattered across drives</b> — no single source folder. The archive is simply whatever I find on the drives I adopt into it (no scan, no NAS needed).</span></label>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Create archive</button></div>`,
+  async()=>{const name=n||(($('#acname')||{}).value||'').trim();
+    if(!name){toast('Name required',1);throw new Error('name');}
+    const kind=(document.querySelector('input[name=ackind]:checked')||{}).value||'SOURCED';
+    await api('POST','/api/collections',{name,kind});
+    toast(kind==='SOURCELESS'?'Sourceless archive created — adopt your drives into it':'Archive created');vVault()});}
+/* ---------------- Locations — physical places (the "1" in 3-2-1) ---------------- */
+async function vLocations(){
+  const [locs,volsRaw]=await Promise.all([api('GET','/api/locations'),api('GET','/api/volumes')]);
+  const V=(volsRaw||[]).map(r=>r.volume||r).filter(v=>v.label!=='(unregistered)');
+  let h=`${hdr('Locations','physical places your media live — the “1” in 3-2-1','locations')}
+  <div class="panel"><div class="row" style="align-items:center"><div style="flex:1" class="dim">A location is a real place — a shelf, a shoe box, a relative’s house. <b>Offsite math reads from here:</b> flip a location to offsite and every drive in it counts as your offsite copy, all at once.</div>
+    <button class="btn" onclick="locationDlg()">Add location</button></div></div>
+  <div class="panel"><h2>Locations</h2>`;
+  if(!(locs||[]).length)h+='<div class="empty">No locations yet. Add one (e.g. “Shoe Box #1”, “Grandma’s house”), then assign your drives below.</div>';
+  else{h+='<table><tr><th>Name</th><th>Type</th><th class="num">Volumes</th><th class="num">Size</th><th>Notes</th><th></th></tr>';
+    for(const l of locs)h+=`<tr><td><b>${esc(l.name)}</b></td>
+      <td>${l.offsite?'<span class="etag due">offsite</span>':'<span class="etag enc">onsite</span>'}</td>
+      <td class="num">${l.volumes||0}</td><td class="num">${GB(l.bytes)} GB</td>
+      <td class="dim" style="font-size:11.5px">${esc(l.notes||'')}</td>
+      <td>${l.id?`<button class="btn ghost" style="font-size:11px;padding:1px 8px" onclick='locationDlg(${JSON.stringify(l)})'>Edit</button>`:'<span class="dim" style="font-size:11px">assign below</span>'}</td></tr>`;
+    h+='</table>'}
+  h+='</div><div class="panel"><h2>Volumes — assign to a location</h2>';
+  if(!V.length)h+='<div class="empty">No registered volumes yet. Register a volume (Volumes tab) or adopt a drive, then place it here.</div>';
+  else{const opts=cur=>`<option value="0"${!cur?' selected':''}>— unassigned —</option>`+(locs||[]).filter(l=>l.id).map(l=>`<option value="${l.id}"${cur===l.id?' selected':''}>${esc(l.name)}${l.offsite?' (offsite)':''}</option>`).join('');
+    h+='<table><tr><th>Volume</th><th>Kind</th><th>Location</th></tr>';
+    for(const v of V)h+=`<tr><td>${esc(v.label)}${v.barcode?` <span class="mono dim">${esc(v.barcode)}</span>`:''}</td><td>${esc(v.kind)}</td>
+      <td><select onchange="moveVolume(${v.id},this.value)">${opts(v.location_id||0)}</select></td></tr>`;
+    h+='</table>'}
+  $('#view').innerHTML=h+'</div>';
+}
+async function moveVolume(vid,lid){try{await api('POST','/api/volumes/'+vid+'/location',{location_id:parseInt(lid)});toast('Volume moved');vLocations()}catch(e){toast(e.message,1)}}
+function locationDlg(l){const e=l||{};dlg(`<h1>${e.id?'Edit location':'Add location'}</h1>
+  <label>Name</label><input id="lname" class="full" value="${esc(e.name||'')}" placeholder="e.g. Shoe Box #1 or Grandma's house">
+  <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="loff" type="checkbox" ${e.offsite?'checked':''}> This place is <b>offsite</b> — a different building than my main copies (this is what makes a drive count as the “1” in 3-2-1).</label>
+  <label style="margin-top:10px">Notes</label><input id="lnotes" class="full" value="${esc(e.notes||'')}" placeholder="e.g. bank deposit box; brother's house across town">
+  <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">${e.id?'Save':'Add'}</button></div>`,
+  async()=>{const name=$('#lname').value.trim();if(!name){toast('Name required',1);throw new Error('name');}
+    const b={name,offsite:$('#loff').checked,notes:$('#lnotes').value.trim()};
+    if(e.id)await api('POST','/api/locations/'+e.id,b);else await api('POST','/api/locations',b);
+    toast('Location saved');vLocations()});}
+/* Adopt a folder-"drive" of loose files into a SOURCELESS archive (union by hash). */
+async function adoptFolderDlg(id,name){
+  const [volsRaw,locs]=await Promise.all([api('GET','/api/volumes'),api('GET','/api/locations')]);
+  const V=(volsRaw||[]).map(r=>r.volume||r).filter(v=>v.label!=='(unregistered)');
+  dlg(`<h1>Adopt a drive into “${esc(name)}”</h1>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">Point Mnemosyne at a folder of loose files (a drive). It hashes every file, folds them into this archive’s <b>union</b> (identical content across drives counts once), and records a verified copy on the drive you choose — so a file on two drives shows two copies across two locations. <b>Read-only:</b> your files are only hashed, never changed.</div>
+    <label>Folder to adopt (the drive)</label>
+    <input id="afpath" class="full" placeholder="D:\\ or /mnt/olddrive">${browseBtn('afpath')}
+    <label style="margin-top:10px">Which drive is this? (records where the copy lives)</label>
+    <select id="afvol" class="full" onchange="document.getElementById('afnew').style.display=this.value==='new'?'block':'none'">
+      ${V.map(v=>`<option value="${v.id}">${esc(v.label)}${v.barcode?' · '+esc(v.barcode):''}</option>`).join('')}
+      <option value="new">➕ Register a new drive…</option>
+    </select>
+    <div id="afnew" style="display:${V.length?'none':'block'};margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:6px">
+      <label>New drive label</label><input id="afvlabel" class="full" placeholder="e.g. Old Blue USB">
+      <label style="margin-top:6px">Location (where this drive lives)</label>
+      <select id="afvloc" class="full"><option value="0">— unassigned —</option>${(locs||[]).filter(l=>l.id).map(l=>`<option value="${l.id}">${esc(l.name)}${l.offsite?' (offsite)':''}</option>`).join('')}</select>
+    </div>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Adopt drive</button></div>`,
+  async()=>{const path=$('#afpath').value.trim();if(!path){toast('Folder required',1);throw new Error('path');}
+    let volId=$('#afvol').value;
+    if(volId==='new'||!V.length){const label=(($('#afvlabel')||{}).value||'').trim()||'Adopted drive';
+      const nv=(await api('POST','/api/volumes',{label,kind:'HDD'})).volume;volId=nv.id;
+      const lid=$('#afvloc')?parseInt($('#afvloc').value):0;if(lid)await api('POST','/api/volumes/'+nv.id+'/location',{location_id:lid});}
+    await api('POST','/api/collections/'+id+'/adopt-folder',{path,volume_id:parseInt(volId)});
+    toast('Adopting drive — see Jobs');loc('jobs')});}
 function searchCopies(r){const cps=r.copies||[];
   if(!cps.length)return r.chunk?'<span class="dim">no copies recorded</span>':'<span class="dim">—</span>';
   const parts=cps.map(cp=>`${esc(cp.volume_label||'vol#'+cp.volume_id)}${cp.location?' ('+esc(cp.location)+')':''} — ${copyVerifyLabel(cp)}`);
@@ -1482,7 +1557,7 @@ async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v
     <button class="btn ghost" onclick="printLabel(${v.id},'${esc(v.barcode||'')}')">🖨 Print label</button>
     <button class="btn ghost" onclick="identifyDlg(${v.id})">Detect drive identity…</button>
     ${hasMirror?`<button class="btn ghost" onclick="verifyMirrorDlg(${v.id},'${esc(v.label)}')">Re-verify mirror…</button>`:''}
-    <button class="btn ghost" onclick="toggleOffsite(${v.id},${v.offsite?true:false})">${v.offsite?'Mark onsite':'Mark offsite'}</button>
+    <button class="btn ghost" onclick="setVolLocationDlg(${v.id},${v.location_id||0})">📍 Location…</button>
     <button class="btn ghost" onclick="driveEncDlg(${v.id},${v.drive_encrypted?true:false},'${esc(v.drive_enc_note||'')}')">${v.drive_encrypted?'Drive encryption ⚠🔒':'Drive encryption…'}</button>
     ${v.sealed?`<button class="btn danger" onclick="unsealDlg(${v.id},'${esc(v.label)}')">Unseal…</button>`:`<button class="btn" onclick="finalizeDlg(${v.id},'${esc(v.label)}')">Finalize (seal)…</button>`}
     ${v.barcode?'':`<button class="btn ghost" onclick="assignBarcode(${v.id})">Assign barcode</button>`}</div>
@@ -1527,9 +1602,16 @@ async function printLabel(id,barcode){
   }
   window.open(mediaURL('/api/volumes/'+id+'/label'),'_blank');
 }
-async function toggleOffsite(id,cur){
-  try{const r=await api('POST',`/api/volumes/${id}/offsite`,{offsite:!cur});
-    recomputeToast(r);volDetail(id)}catch(e){toast(e.message,1)}}
+/* A volume's offsite status comes from its Location (the "1" in 3-2-1). */
+async function setVolLocationDlg(vid,cur){
+  const locs=await api('GET','/api/locations');
+  dlg(`<h1>Where does this volume live?</h1>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">Offsite status comes from the <b>location</b> — a place you flip to offsite once, and every drive there counts as your offsite copy. Add or edit places in the <b>Locations</b> tab.</div>
+    <label>Location</label>
+    <select id="svl" class="full"><option value="0"${!cur?' selected':''}>— unassigned (treated as onsite) —</option>${(locs||[]).filter(l=>l.id).map(l=>`<option value="${l.id}"${cur===l.id?' selected':''}>${esc(l.name)}${l.offsite?' (offsite)':''}</option>`).join('')}</select>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Save</button> <button class="btn ghost" onclick="document.querySelector('#dlg').close();loc('locations')">Manage locations…</button></div>`,
+  async()=>{const r=await api('POST','/api/volumes/'+vid+'/location',{location_id:parseInt($('#svl').value)});
+    recomputeToast(r);volDetail(vid)});}
 function verifyMirrorDlg(id,label){dlg(`<h1>Re-verify mirror — ${esc(label)}</h1>
   <div class="dim" style="margin-bottom:8px">Re-checks this volume's mirror file(s) against the catalog at the chosen level. Read-only toward the medium.</div>
   <label>Mounted path (blank = the recorded copy location)</label><input id="d1" class="full" placeholder="E:\\ or /mnt/disk">
@@ -2119,7 +2201,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,dock:vDock,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
 function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));

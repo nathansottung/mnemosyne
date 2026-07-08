@@ -494,18 +494,30 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, out)
 	})
 	register(mux, "POST /api/collections", func(w http.ResponseWriter, r *http.Request) {
-		name := s(body(r), "name")
+		b := body(r)
+		name := s(b, "name")
 		if name == "" {
 			jsonErr(w, 400, fmt.Errorf("name required"))
 			return
 		}
-		jsonOut(w, app.Store.AddCollection(name))
+		// The one plain question at create time: sourceless (scattered drives) or
+		// sourced (one main place / NAS). Accept either kind or a sourceless bool.
+		kind := ArchiveSourced
+		if strings.EqualFold(s(b, "kind"), ArchiveSourceless) || bl(b, "sourceless") {
+			kind = ArchiveSourceless
+		}
+		jsonOut(w, app.Store.AddCollectionKind(name, kind))
 	})
 	register(mux, "POST /api/collections/{id}/scan", func(w http.ResponseWriter, r *http.Request) {
 		id := pathID(r)
 		root := s(body(r), "path")
-		if app.Store.Collection(id) == nil {
+		c := app.Store.Collection(id)
+		if c == nil {
 			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		if c.IsSourceless() {
+			jsonErr(w, 400, fmt.Errorf("%q is a sourceless archive — it has no source folder to scan. Its files come from the media you adopt into it (Adopt a drive…)", c.Name))
 			return
 		}
 		if root == "" {
@@ -517,11 +529,34 @@ func api(mux *http.ServeMux, app *App) {
 			return map[string]any{"files": n}, err
 		}))
 	})
+	// Adopt a folder-"drive" of loose files into a SOURCELESS archive (union by hash).
+	register(mux, "POST /api/collections/{id}/adopt-folder", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		c := app.Store.Collection(id)
+		if c == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		b := body(r)
+		path := s(b, "path")
+		if path == "" {
+			jsonErr(w, 400, fmt.Errorf("path (the drive/folder) required"))
+			return
+		}
+		vol := resolveVolume(app, b)
+		jsonOut(w, runJob(app, "adopt-folder", "Adopt drive → "+c.Name, func(p func(float64, string)) (map[string]any, error) {
+			return app.AdoptFolder(path, id, vol, p)
+		}))
+	})
 	register(mux, "POST /api/collections/{id}/reconcile", func(w http.ResponseWriter, r *http.Request) {
 		id := pathID(r)
 		c := app.Store.Collection(id)
 		if c == nil {
 			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		if c.IsSourceless() {
+			jsonErr(w, 400, fmt.Errorf("%q is a sourceless archive — there is no source folder to reconcile against; its truth is the union of adopted media", c.Name))
 			return
 		}
 		jsonOut(w, runJob(app, "reconcile", "Rescan & compare "+c.Name, func(p func(float64, string)) (map[string]any, error) {
@@ -1490,6 +1525,41 @@ func api(mux *http.ServeMux, app *App) {
 		app.Store.UpdateVolume(v)
 		app.Store.Log("volume", fmt.Sprintf("%s: marked %s", v.Label, offsiteWord(v.Offsite)))
 		jsonOut(w, map[string]any{"volume": v, "recompute": app.recomputeJob()})
+	})
+
+	// ---- locations: first-class physical places (the "1" in 3-2-1) --------
+	mux.HandleFunc("GET /api/locations", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.Store.LocationStats())
+	})
+	mux.HandleFunc("POST /api/locations", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		if strings.TrimSpace(s(b, "name")) == "" {
+			jsonErr(w, 400, fmt.Errorf("name required (e.g. \"Shoe Box #1\" or \"Grandma's house\")"))
+			return
+		}
+		l := app.Store.AddLocation(s(b, "name"), bl(b, "offsite"), s(b, "notes"))
+		app.Store.Log("location", fmt.Sprintf("created location %q (%s)", l.Name, offsiteWord(l.Offsite)))
+		jsonOut(w, l)
+	})
+	// Edit a location (name/offsite/notes). Flipping offsite re-homes every volume in
+	// it, so a protection recompute rides back.
+	mux.HandleFunc("POST /api/locations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		l := app.Store.UpdateLocation(pathID(r), s(b, "name"), bl(b, "offsite"), s(b, "notes"))
+		if l == nil {
+			jsonErr(w, 404, fmt.Errorf("location not found"))
+			return
+		}
+		app.Store.Log("location", fmt.Sprintf("updated location %q (%s)", l.Name, offsiteWord(l.Offsite)))
+		jsonOut(w, map[string]any{"location": l, "recompute": app.recomputeJob()})
+	})
+	// Reassign a volume to a location (location_id 0 clears it). Recompute rides back.
+	mux.HandleFunc("POST /api/volumes/{id}/location", func(w http.ResponseWriter, r *http.Request) {
+		if err := app.Store.SetVolumeLocation(pathID(r), int(f(body(r), "location_id"))); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"volume": app.Store.Volume(pathID(r)), "recompute": app.recomputeJob()})
 	})
 
 	mux.HandleFunc("GET /api/profiles", func(w http.ResponseWriter, r *http.Request) {

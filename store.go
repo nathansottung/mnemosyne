@@ -50,16 +50,32 @@ func pathRelated(a, b string) bool {
 // pathExt returns a file's lowercased extension (".nef"), for the search filter.
 func pathExt(rel string) string { return strings.ToLower(filepath.Ext(rel)) }
 
+// Archive kinds. SOURCED (default/legacy blank) archives have source folders on a
+// main store (NAS) that scan/drift compare against. SOURCELESS archives have NO
+// source folders — their file list is the deduped union (by hash) of everything
+// found on the media adopted into them; the union IS the truth (see AdoptFolder).
+const (
+	ArchiveSourced    = "SOURCED"
+	ArchiveSourceless = "SOURCELESS"
+)
+
 type Collection struct {
 	ID        int       `json:"id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
+	// Kind is SOURCED (blank legacy = sourced) or SOURCELESS. Blank tolerated as
+	// SOURCED so pre-Kind catalogs keep their current behavior.
+	Kind string `json:"kind,omitempty"`
 	// Integrity is an optional per-archive override of the global integrity preset
 	// (nil = inherit the global setting). It sits beside the archive's protection
 	// Profile: the Profile says how many copies, Integrity says how hard each copy
 	// is proven.
 	Integrity *Integrity `json:"integrity,omitempty"`
 }
+
+// IsSourceless reports whether this archive is defined by adopted media alone (no
+// source folders; scan/drift disabled).
+func (c *Collection) IsSourceless() bool { return strings.EqualFold(c.Kind, ArchiveSourceless) }
 
 type Folder struct {
 	ID           int    `json:"id"`
@@ -173,17 +189,33 @@ type Segment struct {
 // Volume is a physical medium the operator can hold and locate: a tape, a
 // drive, a disc. Barcodes come straight off a USB scanner (which types like a
 // keyboard). This is the "where do the Smiths' photos physically live?" record.
+// Location is a first-class physical place a volume can live — e.g. "Shoe Box #1"
+// (onsite) or "Grandma's house" (offsite). It is the single source of truth for
+// the "1" in 3-2-1: a volume's offsite-ness derives from its Location's Offsite
+// flag (see volumeOffsite). The legacy per-volume Offsite bool is kept working as
+// a fallback for any volume not yet assigned a Location.
+type Location struct {
+	ID        int       `json:"id"`
+	Name      string    `json:"name"`
+	Offsite   bool      `json:"offsite,omitempty"`
+	Notes     string    `json:"notes,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Volume struct {
 	ID       int    `json:"id"`
 	Label    string `json:"label"`
 	Barcode  string `json:"barcode"`
 	Kind     string `json:"kind"` // TAPE HDD SSD OPTICAL OTHER
 	Location string `json:"location"`
-	// Offsite is the "1" in 3-2-1: whether this medium lives in a different
-	// physical place than the primary copies (a friend's house, a bank box, the
-	// cloud). Distinct from Location, which is free-text ("office safe") and does
-	// not, on its own, tell us whether a copy counts as offsite. Default false
-	// (onsite) so pre-Offsite catalogs read as onsite until the operator says so.
+	// LocationID points at the Location this volume lives in (0 = unassigned). It is
+	// the modern replacement for the free-text Location + Offsite bool below; when
+	// set, offsite math reads the Location's Offsite flag. Zero on pre-Location
+	// catalogs until the schema-v2 migration attaches one.
+	LocationID int `json:"location_id,omitempty"`
+	// Offsite is the LEGACY "1" flag, superseded by LocationID → Location.Offsite.
+	// Kept and still read (as a fallback) so old catalogs and any unassigned volume
+	// keep working; the schema-v2 migration mirrors it into a Location. Default false.
 	Offsite   bool      `json:"offsite,omitempty"`
 	Notes     string    `json:"notes"`
 	CreatedAt time.Time `json:"created_at"`
@@ -500,7 +532,7 @@ func (r *DriftReport) Changes() int {
 // Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
 // ("Schema versioning"): persisted fields are append-only, removal needs a
 // migration + a major bump, and every field must tolerate being absent.
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 // schemaMigration transforms the in-memory catalog UP TO the version named by To.
 // Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
@@ -518,6 +550,52 @@ var schemaMigrations = []schemaMigration{
 	// — every field was already append-only and absent-tolerant — so this only
 	// stamps the version. Idempotent by construction (empty body).
 	{To: 1, Fn: func(c *catalog) {}},
+	// 1 → 2: Locations became first-class. Create a Location per distinct prior
+	// (free-text label, offsite) pairing among volumes and attach each volume to it,
+	// so 3-2-1 offsite math can read Location.Offsite. The legacy per-volume Offsite
+	// bool is preserved (reads keep working); this only ADDS Locations + location_id.
+	{To: 2, Fn: migrateLocations},
+}
+
+// migrateLocations is the 1→2 step: fold every volume's free-text Location + Offsite
+// bool into first-class Location rows. Idempotent — a volume that already has a
+// location_id is left alone, and existing Location rows are reused by (name, offsite).
+func migrateLocations(c *catalog) {
+	if c.NextID == nil {
+		c.NextID = map[string]int{}
+	}
+	type key struct {
+		name    string
+		offsite bool
+	}
+	idByKey := map[key]int{}
+	for _, l := range c.Locations {
+		idByKey[key{strings.ToLower(strings.TrimSpace(l.Name)), l.Offsite}] = l.ID
+	}
+	now := time.Now().UTC()
+	for _, v := range c.Volumes {
+		if v.LocationID != 0 {
+			continue
+		}
+		name := strings.TrimSpace(v.Location)
+		if name == "" {
+			if v.Offsite {
+				name = "Offsite"
+			} else {
+				name = "Onsite"
+			}
+		}
+		k := key{strings.ToLower(name), v.Offsite}
+		id, ok := idByKey[k]
+		if !ok {
+			c.NextID["location"]++
+			id = c.NextID["location"]
+			c.Locations = append(c.Locations, &Location{ID: id, Name: name, Offsite: v.Offsite,
+				Notes: "migrated from the per-volume offsite flag", CreatedAt: now})
+			idByKey[k] = id
+		}
+		v.LocationID = id
+	}
 }
 
 type catalog struct {
@@ -532,7 +610,8 @@ type catalog struct {
 	Keys          []*KeyMeta     `json:"keys"`
 	BurnQueues    []*BurnQueue   `json:"burn_queues"`
 	Volumes       []*Volume      `json:"volumes"`
-	Drift         []*DriftReport `json:"drift"` // latest reconcile report per collection
+	Locations     []*Location    `json:"locations"` // physical places volumes live (the "1" in 3-2-1)
+	Drift         []*DriftReport `json:"drift"`     // latest reconcile report per collection
 	DockSessions  []*DockSession `json:"dock_sessions"`
 	TapeChecks    []TapeHealth   `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
 	// Protection profiles (the 3-2-1 model), their per-archive/per-folder
@@ -879,9 +958,21 @@ func (s *Store) Log(action, detail string) {
 // ---- collections / folders / files -----------------------------------
 
 func (s *Store) AddCollection(name string) *Collection {
+	return s.AddCollectionKind(name, ArchiveSourced)
+}
+
+// AddCollectionKind creates an archive of a given kind (SOURCED / SOURCELESS). Both
+// get the canonical 3-2-1 rule by default — protection counts copies the same way
+// for both; a sourceless archive's file list just comes from adopted media.
+func (s *Store) AddCollectionKind(name, kind string) *Collection {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c := &Collection{ID: s.next("collection"), Name: name, CreatedAt: time.Now().UTC()}
+	if !strings.EqualFold(kind, ArchiveSourceless) {
+		kind = ArchiveSourced
+	} else {
+		kind = ArchiveSourceless
+	}
+	c := &Collection{ID: s.next("collection"), Name: name, Kind: kind, CreatedAt: time.Now().UTC()}
 	s.c.Collections = append(s.c.Collections, c)
 	// New Archives default to the canonical 3-2-1 rule (archive-level assignment).
 	if s.profileLocked(DefaultProfileID) != nil {
@@ -1040,6 +1131,65 @@ func (s *Store) UpsertFile(f File) *File {
 	return &nf
 }
 
+// unionFile is one loose file being folded into a SOURCELESS archive's union.
+type unionFile struct {
+	RelPath string
+	Hash    string
+	Size    int64
+}
+
+// UpsertUnionFiles folds a batch of loose files into a SOURCELESS archive's file
+// list, deduped by CONTENT HASH: a file whose hash already exists in the archive
+// reuses that File (so the same content on two drives is ONE union entry with two
+// copies). Returns the File IDs aligned with items, plus how many were NEW to the
+// union (the rest are duplicates already present). One lock, O(files).
+func (s *Store) UpsertUnionFiles(collectionID int, items []unionFile) (ids []int, added int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byHash := map[string]*File{}
+	for _, f := range s.c.Files {
+		if f.CollectionID == collectionID && f.Hash != "" {
+			if _, ok := byHash[f.Hash]; !ok {
+				byHash[f.Hash] = f
+			}
+		}
+	}
+	now := time.Now().UTC()
+	ids = make([]int, len(items))
+	for i, it := range items {
+		if it.Hash != "" {
+			if e := byHash[it.Hash]; e != nil {
+				ids[i] = e.ID
+				continue
+			}
+		}
+		nf := &File{ID: s.next("file"), CollectionID: collectionID, FolderID: 0,
+			RelPath: it.RelPath, SizeBytes: it.Size, HashAlg: "SHA256", Hash: it.Hash, FirstSeen: now}
+		s.c.Files = append(s.c.Files, nf)
+		if it.Hash != "" {
+			byHash[it.Hash] = nf
+		}
+		ids[i] = nf.ID
+		added++
+	}
+	_ = s.save()
+	return ids, added
+}
+
+// CollectionFileCount is the number of catalog file rows in an archive — for a
+// sourceless archive, the size of the deduped union.
+func (s *Store) CollectionFileCount(collectionID int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, f := range s.c.Files {
+		if f.CollectionID == collectionID {
+			n++
+		}
+	}
+	return n
+}
+
 // SetVersionsRetained sets the per-file retained-version cap (0 = unlimited).
 // Called before a scan/reconcile from config so UpsertFile prunes consistently.
 func (s *Store) SetVersionsRetained(n int) {
@@ -1145,6 +1295,7 @@ func (s *Store) Search(qr SearchQuery) []map[string]any {
 	for _, v := range s.c.Volumes {
 		vol[v.ID] = v
 	}
+	locs := s.locationsMapLocked()
 	// Per-file protection status (the six-status model) so search speaks the same
 	// language as the dashboard and protection tree.
 	fileCopies := map[int]map[string]physCopy{}
@@ -1152,7 +1303,7 @@ func (s *Store) Search(qr SearchQuery) []map[string]any {
 		if ch.Status == "FAILED" {
 			continue
 		}
-		pcs := chunkPhysCopies(ch, vol)
+		pcs := chunkPhysCopies(ch, vol, locs)
 		if len(pcs) == 0 {
 			continue
 		}
@@ -1429,6 +1580,150 @@ func (s *Store) VolumeBySerial(serial string) *Volume {
 }
 
 func (s *Store) UpdateVolume(v *Volume) { s.mu.Lock(); defer s.mu.Unlock(); _ = s.save() }
+
+// ---- locations ---------------------------------------------------------
+
+// volumeOffsite is the single source of truth for whether a volume counts as the
+// "1" in 3-2-1: its Location's Offsite flag when assigned, else the legacy
+// per-volume Offsite bool (so unassigned/pre-migration volumes keep working).
+func volumeOffsite(v *Volume, locs map[int]*Location) bool {
+	if v == nil {
+		return false
+	}
+	if v.LocationID != 0 {
+		if l := locs[v.LocationID]; l != nil {
+			return l.Offsite
+		}
+	}
+	return v.Offsite
+}
+
+// locationsMapLocked indexes locations by ID for offsite resolution. Caller holds s.mu.
+func (s *Store) locationsMapLocked() map[int]*Location {
+	m := make(map[int]*Location, len(s.c.Locations))
+	for _, l := range s.c.Locations {
+		m[l.ID] = l
+	}
+	return m
+}
+
+func (s *Store) AddLocation(name string, offsite bool, notes string) *Location {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l := &Location{ID: s.next("location"), Name: strings.TrimSpace(name), Offsite: offsite,
+		Notes: strings.TrimSpace(notes), CreatedAt: time.Now().UTC()}
+	s.c.Locations = append(s.c.Locations, l)
+	_ = s.save()
+	return l
+}
+
+func (s *Store) Locations() []*Location {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*Location{}, s.c.Locations...)
+}
+
+func (s *Store) Location(id int) *Location {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, l := range s.c.Locations {
+		if l.ID == id {
+			return l
+		}
+	}
+	return nil
+}
+
+// UpdateLocation edits a location's name/offsite/notes in place. Because offsite
+// math reads through the Location, flipping Offsite here re-homes every volume in
+// it at once — exactly the point of first-class locations.
+func (s *Store) UpdateLocation(id int, name string, offsite bool, notes string) *Location {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, l := range s.c.Locations {
+		if l.ID == id {
+			l.Name, l.Offsite, l.Notes = strings.TrimSpace(name), offsite, strings.TrimSpace(notes)
+			_ = s.save()
+			return l
+		}
+	}
+	return nil
+}
+
+// SetVolumeLocation reassigns a volume to a location (0 = clear). It also mirrors
+// the location's offsite/label back onto the legacy Volume fields so any code (or
+// export) still reading them stays consistent.
+func (s *Store) SetVolumeLocation(volumeID, locationID int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var vol *Volume
+	for _, v := range s.c.Volumes {
+		if v.ID == volumeID {
+			vol = v
+			break
+		}
+	}
+	if vol == nil {
+		return fmt.Errorf("volume %d not found", volumeID)
+	}
+	if locationID == 0 {
+		vol.LocationID = 0
+		_ = s.save()
+		return nil
+	}
+	var loc *Location
+	for _, l := range s.c.Locations {
+		if l.ID == locationID {
+			loc = l
+			break
+		}
+	}
+	if loc == nil {
+		return fmt.Errorf("location %d not found", locationID)
+	}
+	vol.LocationID = loc.ID
+	vol.Offsite, vol.Location = loc.Offsite, loc.Name // keep legacy fields in sync
+	_ = s.save()
+	return nil
+}
+
+// LocationStats returns per-location volume counts + total device bytes, for the
+// Locations view. Volumes with no location are grouped under id 0 ("Unassigned").
+func (s *Store) LocationStats() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type agg struct {
+		volumes int
+		bytes   int64
+	}
+	byLoc := map[int]*agg{}
+	for _, v := range s.c.Volumes {
+		if v.Label == "(unregistered)" { // skip the synthetic bucket for pre-volumes media
+			continue
+		}
+		a := byLoc[v.LocationID]
+		if a == nil {
+			a = &agg{}
+			byLoc[v.LocationID] = a
+		}
+		a.volumes++
+		a.bytes += v.DeviceSize
+	}
+	out := []map[string]any{}
+	for _, l := range s.c.Locations {
+		a := byLoc[l.ID]
+		if a == nil {
+			a = &agg{}
+		}
+		out = append(out, map[string]any{"id": l.ID, "name": l.Name, "offsite": l.Offsite,
+			"notes": l.Notes, "volumes": a.volumes, "bytes": a.bytes})
+	}
+	if a := byLoc[0]; a != nil && a.volumes > 0 {
+		out = append(out, map[string]any{"id": 0, "name": "Unassigned", "offsite": false,
+			"notes": "volumes not yet placed in a location", "volumes": a.volumes, "bytes": a.bytes})
+	}
+	return out
+}
 
 // AppendSmartSnapshot records a drive-health reading in the volume's history
 // (newest last), capped to the most recent 50 so trends stay visible across dock

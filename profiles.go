@@ -169,18 +169,21 @@ func isVerifyStale(t *time.Time, months int) bool {
 type physCopy struct {
 	kinds      map[string]bool
 	offsite    bool
+	locations  map[int]bool // distinct Location IDs this copy touches (0 = unassigned)
 	verifiedAt *time.Time
 }
 
 // chunkPhysCopies returns the verified physical copies of a chunk, keyed by a
 // signature that dedups the same volume across chunks. Only VerifyOK copies (and
 // fully-verified spanned chunks) qualify — the "counts toward requirements" bar.
-func chunkPhysCopies(ch *Chunk, vols map[int]*Volume) map[string]physCopy {
+// offsite-ness and location come from each volume's Location (see volumeOffsite).
+func chunkPhysCopies(ch *Chunk, vols map[int]*Volume, locs map[int]*Location) map[string]physCopy {
 	out := map[string]physCopy{}
 	if ch.Spanned {
 		// A spanned chunk is ONE logical copy spread across its segment media.
 		allVerified := len(ch.Segments) > 0
 		kinds := map[string]bool{}
+		locationSet := map[int]bool{}
 		offsite := false
 		var segVols []int
 		for _, sg := range ch.Segments {
@@ -189,7 +192,8 @@ func chunkPhysCopies(ch *Chunk, vols map[int]*Volume) map[string]physCopy {
 			}
 			if v := vols[sg.VolumeID]; v != nil {
 				kinds[v.Kind] = true
-				if v.Offsite {
+				locationSet[v.LocationID] = true
+				if volumeOffsite(v, locs) {
 					offsite = true
 				}
 				segVols = append(segVols, sg.VolumeID)
@@ -201,7 +205,7 @@ func chunkPhysCopies(ch *Chunk, vols map[int]*Volume) map[string]physCopy {
 			for i, id := range segVols {
 				parts[i] = strconv.Itoa(id)
 			}
-			out["span:"+strings.Join(parts, "-")] = physCopy{kinds: kinds, offsite: offsite, verifiedAt: ch.VerifiedAt}
+			out["span:"+strings.Join(parts, "-")] = physCopy{kinds: kinds, offsite: offsite, locations: locationSet, verifiedAt: ch.VerifiedAt}
 		}
 		return out
 	}
@@ -215,7 +219,8 @@ func chunkPhysCopies(ch *Chunk, vols map[int]*Volume) map[string]physCopy {
 		}
 		out[strconv.Itoa(cp.VolumeID)] = physCopy{
 			kinds:      map[string]bool{v.Kind: true},
-			offsite:    v.Offsite,
+			offsite:    volumeOffsite(v, locs),
+			locations:  map[int]bool{v.LocationID: true},
 			verifiedAt: cp.LastVerifiedAt,
 		}
 	}
@@ -228,6 +233,7 @@ type fileDims struct {
 	copies     int
 	kinds      int
 	offsite    int
+	locations  int  // distinct physical locations holding a qualifying copy
 	disallowed bool // a qualifying copy sits on a disallowed media kind
 	stale      bool // a qualifying copy's verify is older than verify_due_months
 }
@@ -239,10 +245,14 @@ func dimsFromCopies(cps map[string]physCopy, prof *Profile) fileDims {
 	// statusFor(nil, …) short-circuits to UNASSIGNED. Guarding here keeps every
 	// caller (Search, Protection) crash-safe for archives with no assignment.
 	kindSet := map[string]bool{}
+	locSet := map[int]bool{}
 	for _, pc := range cps {
 		d.copies++
 		if pc.offsite {
 			d.offsite++
+		}
+		for lid := range pc.locations {
+			locSet[lid] = true
 		}
 		if prof != nil && isVerifyStale(pc.verifiedAt, prof.VerifyDueMonths) {
 			d.stale = true
@@ -255,6 +265,7 @@ func dimsFromCopies(cps map[string]physCopy, prof *Profile) fileDims {
 		}
 	}
 	d.kinds = len(kindSet)
+	d.locations = len(locSet)
 	return d
 }
 
@@ -308,11 +319,15 @@ func statusDetail(prof *Profile, d fileDims, status string) string {
 		}
 		return strconv.Itoa(have) + "/" + strconv.Itoa(req) + " " + label
 	}
-	return strings.Join([]string{
+	parts := []string{
 		dim(d.copies, prof.RequiredCopies, "copies"),
 		dim(d.kinds, prof.RequiredDistinctMediaKinds, "kinds"),
 		dim(d.offsite, prof.RequiredOffsiteCopies, "offsite"),
-	}, " · ")
+	}
+	if d.locations > 1 { // informational: copies span multiple physical places
+		parts = append(parts, strconv.Itoa(d.locations)+" locations")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // ---- per-collection computation -----------------------------------------
@@ -372,13 +387,14 @@ func (s *Store) Protection(collectionID int) ProtectionResult {
 	for _, v := range s.c.Volumes {
 		vols[v.ID] = v
 	}
+	locs := s.locationsMapLocked()
 	// fileID -> deduped verified physical copies (across every non-FAILED chunk).
 	fileCopies := map[int]map[string]physCopy{}
 	for _, ch := range s.c.Chunks {
 		if ch.CollectionID != collectionID || ch.Status == "FAILED" {
 			continue
 		}
-		pcs := chunkPhysCopies(ch, vols)
+		pcs := chunkPhysCopies(ch, vols, locs)
 		if len(pcs) == 0 {
 			continue
 		}
@@ -475,6 +491,45 @@ func (s *Store) Protection(collectionID int) ProtectionResult {
 		Nodes:          nodes,
 		TotalFiles:     total,
 	}
+}
+
+// fileDimsForCollection returns per-file protection dims (copies, kinds, offsite,
+// distinct locations) keyed by file ID — the numbers behind the six-status model,
+// exposed for diagnostics and tests (notably the sourceless-union coverage test).
+func (s *Store) fileDimsForCollection(collectionID int) map[int]fileDims {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vols := map[int]*Volume{}
+	for _, v := range s.c.Volumes {
+		vols[v.ID] = v
+	}
+	locs := s.locationsMapLocked()
+	fileCopies := map[int]map[string]physCopy{}
+	for _, ch := range s.c.Chunks {
+		if ch.CollectionID != collectionID || ch.Status == "FAILED" {
+			continue
+		}
+		pcs := chunkPhysCopies(ch, vols, locs)
+		if len(pcs) == 0 {
+			continue
+		}
+		for _, cf := range ch.Files {
+			m := fileCopies[cf.FileID]
+			if m == nil {
+				m = map[string]physCopy{}
+				fileCopies[cf.FileID] = m
+			}
+			for sig, pc := range pcs {
+				m[sig] = pc
+			}
+		}
+	}
+	prof := s.resolveProfileLocked(collectionID, "")
+	out := make(map[int]fileDims, len(fileCopies))
+	for fid, cps := range fileCopies {
+		out[fid] = dimsFromCopies(cps, prof)
+	}
+	return out
 }
 
 // fileProtectionLocked derives the six-status + detail + resolved profile for one

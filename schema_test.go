@@ -8,15 +8,16 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestCatalogSchema1RoundTrip(t *testing.T) {
+func TestCatalogCurrentRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	fixture, err := os.ReadFile(filepath.Join("testdata", "catalog_schema1.json"))
+	fixture, err := os.ReadFile(filepath.Join("testdata", "catalog_current.json"))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -30,7 +31,7 @@ func TestCatalogSchema1RoundTrip(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	if ro, _ := s1.ReadOnly(); ro {
-		t.Fatal("a schema-1 fixture must not open read-only")
+		t.Fatal("a current-schema fixture must not open read-only")
 	}
 	if s1.c.SchemaVersion != currentSchemaVersion {
 		t.Errorf("schema_version = %d, want %d", s1.c.SchemaVersion, currentSchemaVersion)
@@ -79,6 +80,50 @@ func TestCatalogSchema1RoundTrip(t *testing.T) {
 	}
 }
 
+// TestCatalogMigrateV1ToV2 loads the checked-in schema-1 fixture (a volume with a
+// free-text Location and no first-class Location rows) and proves the 1→2 migration
+// folds it into a Location, attaches the volume, preserves the legacy offsite read,
+// and backs up the pre-migration bytes.
+func TestCatalogMigrateV1ToV2(t *testing.T) {
+	dir := t.TempDir()
+	fixture, err := os.ReadFile(filepath.Join("testdata", "catalog_schema1.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	catPath := filepath.Join(dir, "catalog.json")
+	if err := os.WriteFile(catPath, fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if s.c.SchemaVersion != currentSchemaVersion {
+		t.Errorf("schema should migrate to v%d, got %d", currentSchemaVersion, s.c.SchemaVersion)
+	}
+	if baks, _ := filepath.Glob(catPath + ".pre-schema-v1-*"); len(baks) == 0 {
+		t.Error("a 1→2 migration must write a pre-schema backup")
+	}
+	// The fixture's single volume must now carry a location_id pointing at a Location.
+	vols := s.Volumes()
+	if len(vols) == 0 {
+		t.Fatal("fixture should have a volume")
+	}
+	v := vols[0]
+	if v.LocationID == 0 {
+		t.Fatalf("migration must attach a location_id to %s", v.Label)
+	}
+	loc := s.Location(v.LocationID)
+	if loc == nil {
+		t.Fatal("the attached location must exist")
+	}
+	// Offsite reads must still work — the fixture volume was onsite, so its Location
+	// is onsite, and volumeOffsite agrees.
+	if volumeOffsite(v, map[int]*Location{loc.ID: loc}) != v.Offsite {
+		t.Error("offsite read must be preserved across the migration")
+	}
+}
+
 func TestCatalogLegacyMigratesAndBacksUp(t *testing.T) {
 	dir := t.TempDir()
 	// A pre-versioning catalog: no schema_version field (reads as 0).
@@ -106,8 +151,8 @@ func TestCatalogLegacyMigratesAndBacksUp(t *testing.T) {
 	if len(s.Collections()) != 1 || s.Collections()[0].Name != "Old" {
 		t.Errorf("data lost in migration: %+v", s.Collections())
 	}
-	if on, _ := os.ReadFile(catPath); !bytes.Contains(on, []byte(`"schema_version": 1`)) {
-		t.Error("migrated catalog on disk must be stamped at schema 1")
+	if on, _ := os.ReadFile(catPath); !bytes.Contains(on, []byte(fmt.Sprintf(`"schema_version": %d`, currentSchemaVersion))) {
+		t.Errorf("migrated catalog on disk must be stamped at schema %d", currentSchemaVersion)
 	}
 }
 

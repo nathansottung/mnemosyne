@@ -46,6 +46,23 @@ the technical/maintainer reference.
 > Archivematica, the commercial media-archive tools, and complements like
 > dvdisaster and rclone) lives in **[docs/COMPARISON.md](docs/COMPARISON.md)**.
 
+### No NAS? Start here
+
+Mnemosyne doesn't need a server or a single "source of truth" folder. If your
+stuff is **scattered across a pile of external drives** with overlapping copies and
+no master, make a **sourceless archive**: at create time, pick *"scattered across
+drives."* Then **adopt each drive** — Mnemosyne hashes its loose files and folds
+them into the archive's **deduped union** (identical content across drives counts
+once). The union *is* the archive; there's no source to scan or drift against.
+
+The other half is **Locations** — first-class physical places like *"Shoe Box #1"*
+(onsite) or *"Grandma's house"* (offsite). You assign each drive to a location, and
+the **3-2-1 "offsite" math reads straight from it**: a file that lives on two drives
+in two locations shows **2 copies across 2 locations**, and if one of those places
+is offsite, its offsite requirement is satisfied. Flip a location to offsite once
+and every drive there re-counts at a stroke — no per-drive bookkeeping. So even with
+"just a shelf of USB drives," you get real 3-2-1 coverage tracking.
+
 ---
 
 ## Source safety guarantee

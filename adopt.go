@@ -15,12 +15,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -360,6 +363,119 @@ func (a *App) AdoptMedia(mountPath string, collectionID, volumeID int, deep bool
 		"mount_path": mountPath, "volume_id": volumeID,
 		"adopted": adopted, "skipped_duplicate": skipped, "unreadable": unreadable,
 		"summary": summary,
+	}, nil
+}
+
+// AdoptFolder brings a folder of LOOSE files into a SOURCELESS archive: every file
+// is hashed, folded into the archive's union (deduped by content hash), and
+// recorded as a verified copy on the drive's volume. The union of all folders
+// adopted this way IS the archive's file list — the union is the truth. A file
+// present on N drives shows N copies across their locations; identical content is
+// one union entry. READ-ONLY toward the folder (only hashes; the catalog changes).
+func (a *App) AdoptFolder(mountPath string, collectionID, volumeID int, progress func(float64, string)) (map[string]any, error) {
+	coll := a.Store.Collection(collectionID)
+	if coll == nil {
+		return nil, fmt.Errorf("archive %d not found", collectionID)
+	}
+	if !coll.IsSourceless() {
+		return nil, fmt.Errorf("archive %q is a sourced archive — adopt a loose folder only into a SOURCELESS archive (for sourced archives use scan / mirror / dock)", coll.Name)
+	}
+	if strings.TrimSpace(mountPath) == "" {
+		return nil, fmt.Errorf("mount_path (the drive/folder) required")
+	}
+	if fi, err := os.Stat(mountPath); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("cannot read folder %s", mountPath)
+	}
+	if volumeID <= 0 {
+		return nil, fmt.Errorf("a volume (the drive these files live on) is required so the copy can be located")
+	}
+	vol := a.Store.Volume(volumeID)
+	if vol == nil {
+		return nil, fmt.Errorf("volume %d not found", volumeID)
+	}
+	if progress == nil {
+		progress = func(float64, string) {}
+	}
+	a.Store.BeginBatch()
+	defer a.Store.EndBatch()
+	if _, changed := a.resolveVolumeIdentity(vol, mountPath); changed {
+		a.Store.UpdateVolume(vol)
+	}
+
+	// Walk loose files (skip our own sidecar dir + OS junk, like the dock).
+	var paths []string
+	_ = filepath.WalkDir(mountPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipDockDir(d.Name()) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		paths = append(paths, p)
+		return nil
+	})
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no files found under %s", mountPath)
+	}
+
+	total := len(paths)
+	var mu sync.Mutex
+	hashed := map[string]unionFile{} // abs path -> file
+	// MEDIA READ-ONLY: only hashes are read; nothing is written to the folder.
+	parallelHash(paths,
+		func(done int) {
+			progress(0.06+float64(done)/float64(total)*0.72, progStats(0, 0, int64(done), int64(total), "hashing drive files"))
+		},
+		func(p, sha, b3 string, size int64, _ time.Time) {
+			rel, e := filepath.Rel(mountPath, p)
+			if e != nil {
+				rel = filepath.Base(p)
+			}
+			mu.Lock()
+			hashed[p] = unionFile{RelPath: filepath.ToSlash(rel), Hash: sha, Size: size}
+			mu.Unlock()
+		})
+	unreadable := len(paths) - len(hashed)
+
+	items := make([]unionFile, 0, len(hashed))
+	for _, it := range hashed {
+		items = append(items, it)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].RelPath < items[j].RelPath })
+
+	// Fold into the archive's union (dedup by hash); new = files not seen on any
+	// prior drive, duplicate = already in the union (the same content on another drive).
+	progress(0.85, "folding into union")
+	ids, added := a.Store.UpsertUnionFiles(collectionID, items)
+	dupInUnion := len(items) - added
+
+	// One ref per distinct FileID for THIS drive (dedup identical content within
+	// the drive), so the mirror package records exactly one copy per union file.
+	seen := map[int]bool{}
+	refs := make([]ChunkFileRef, 0, len(items))
+	for i, it := range items {
+		fid := ids[i]
+		if seen[fid] {
+			continue
+		}
+		seen[fid] = true
+		refs = append(refs, ChunkFileRef{FileID: fid, RelPath: it.RelPath, SizeBytes: it.Size, Hash: it.Hash})
+	}
+	progress(0.92, "recording copies")
+	a.upsertMirrorChunk(collectionID, vol, mountPath, refs, "mirror-adopt")
+
+	union := a.Store.CollectionFileCount(collectionID)
+	summary := fmt.Sprintf("adopted %d file(s) from %s — %d new to the union, %d already present · union now %d",
+		len(refs), vol.Label, added, dupInUnion, union)
+	a.Store.Log("adopt", coll.Name+": "+summary)
+	progress(1.0, summary)
+	return map[string]any{
+		"archive": coll.Name, "volume_id": vol.ID, "volume": vol.Label,
+		"files_on_drive": len(refs), "new_to_union": added, "duplicate_in_union": dupInUnion,
+		"union_files": union, "unreadable": unreadable, "summary": summary,
 	}, nil
 }
 

@@ -119,12 +119,13 @@ func (s *Store) Treemap(collectionID int, dirPath, colorBy string) TreemapResult
 	for _, v := range s.c.Volumes {
 		vols[v.ID] = v
 	}
+	locs := s.locationsMapLocked()
 	fileCopies := map[int]map[string]physCopy{}
 	for _, ch := range s.c.Chunks {
 		if ch.CollectionID != collectionID || ch.Status == "FAILED" {
 			continue
 		}
-		pcs := chunkPhysCopies(ch, vols)
+		pcs := chunkPhysCopies(ch, vols, locs)
 		if len(pcs) == 0 {
 			continue
 		}
