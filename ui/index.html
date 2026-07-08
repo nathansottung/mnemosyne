@@ -1424,7 +1424,7 @@ async function vVolumes(){
   if(!vols.length)h+='<div class="empty">No volumes yet — a volume is a physical tape/drive/disc with a barcode and location.<div class="row" style="justify-content:center;margin-top:12px"><button class="btn" onclick="newVolumeDlg()">Register volume…</button></div></div>';
   else{h+='<table><tr><th>Label</th><th>Barcode</th><th>Kind</th><th>Location</th><th class="num">Packages</th><th class="num">Bytes</th><th>Last verified</th></tr>';
     for(const r of vols){const v=r.volume;
-      h+=`<tr style="cursor:pointer" tabindex="0" role="button" aria-label="Open volume ${esc(v.label)}" onclick="volDetail(${v.id})" onkeydown="if(event.key==='Enter')volDetail(${v.id})"><td><b>${esc(v.label)}</b>${v.sealed?' <span class="etag" style="border-color:var(--blue);color:var(--blue)" title="finalized &amp; vault-ready">🔒 SEALED</span>':''}${(v.model||v.serial)?`<div class="dim" style="font-size:10.5px">🖴 ${esc([v.model,v.serial].filter(Boolean).join(' · '))}</div>`:''}</td><td class="mono">${esc(v.barcode||'—')}</td>
+      h+=`<tr style="cursor:pointer" tabindex="0" role="button" aria-label="Open volume ${esc(v.label)}" onclick="volDetail(${v.id})" onkeydown="if(event.key==='Enter')volDetail(${v.id})"><td><b>${esc(v.label)}</b>${v.sealed?' <span class="etag" style="border-color:var(--blue);color:var(--blue)" title="finalized &amp; vault-ready">🔒 SEALED</span>':''}${r.has_snapshot?` <span class="etag due" title="Full offline snapshot on file — browsable unplugged (last seen ${esc((r.snapshot_at||'').slice(0,10))})">📷 snapshot</span>`:''}${(v.model||v.serial)?`<div class="dim" style="font-size:10.5px">🖴 ${esc([v.model,v.serial].filter(Boolean).join(' · '))}</div>`:''}</td><td class="mono">${esc(v.barcode||'—')}</td>
         <td>${esc(v.kind)}</td><td>${esc(v.location||'—')} ${v.offsite?'<span class="etag enc" title="counts as an offsite copy">offsite</span>':'<span class="etag" style="color:var(--ink-3)">onsite</span>'}</td><td class="num">${r.chunk_count}</td>
         <td class="num">${GB(r.total_bytes)} GB</td><td class="dim" style="font-size:11.5px">${esc(ageStr(r.last_verified_at))}</td></tr>`}
     h+='</table>'}
@@ -1563,6 +1563,7 @@ async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v
     ${v.barcode?'':`<button class="btn ghost" onclick="assignBarcode(${v.id})">Assign barcode</button>`}</div>
   ${v.drive_encrypted?`<div class="err" style="margin-bottom:10px"><b>🔒 DRIVE-ENCRYPTED (stenc/LTO hardware AES).</b> Outside the par2→gpg→tar restore story: without the <b>drive key</b>, this medium is unreadable by <i>any</i> tool — gpg included. ${v.drive_enc_note?'Drive key: '+esc(v.drive_enc_note):'<b>Drive key location NOT recorded.</b>'}</div>`:''}
   ${mediaHealthCard(d)}
+  ${d.has_snapshot?`<div class="panel" id="snapbox"><div class="dim">Loading drive snapshot…</div></div>`:''}
   <div class="panel"><h2>Contents (${cs.length} package${cs.length===1?'':'s'}) — click a package to see its files (from the catalog)</h2>`;
   if(!cs.length)h+='<div class="empty">Nothing recorded on this volume yet.</div>';
   else cs.forEach((c,i)=>{
@@ -1574,7 +1575,46 @@ async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v
         <button class="btn ghost" style="margin-top:6px" onclick="readMediumDlg(${c.id},'${esc(c.name)}')">Read manifest from mounted medium…</button></div>
     </div>`});
   $('#view').innerHTML=h+'</div>';
+  if(d.has_snapshot)loadVolSnapshot(id);
 }
+/* ---- offline drive SNAPSHOT: browse an unplugged drive from the catalog ---- */
+const ROLE_COLOR={'RAW':'var(--blue)','EDITED-EXPORT':'var(--ok)','VIDEO':'#a970ff','SIDECAR':'var(--ink-3)','CATALOG':'var(--bad)','OTHER':'var(--ink-3)'};
+function roleDot(role){return `<span title="${esc(role||'OTHER')}" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${ROLE_COLOR[role]||'var(--ink-3)'};margin-right:6px;vertical-align:middle"></span>`}
+async function loadVolSnapshot(id){
+  const box=$('#snapbox');if(!box)return;
+  let s;try{s=await api('GET','/api/volumes/'+id+'/snapshot')}catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>';return}
+  if(!s.has_snapshot){box.style.display='none';return}
+  const seen=(s.captured_at||'').slice(0,16).replace('T',' ');
+  const rep=s.report||{};
+  let h=`<div class="row" style="align-items:baseline;gap:10px"><h2 style="flex:1">Drive snapshot <span class="etag due" title="This drive may be unplugged — everything below is from the catalog snapshot">📷 from snapshot · drive last seen ${esc(seen)}</span></h2></div>
+    <div class="dim" style="font-size:12px;margin-bottom:8px">${commaN(s.total_files)} files · ${GB(s.total_bytes)} GB${s.unreadable?` · ${s.unreadable} unreadable`:''}${s.serial?` · S/N ${esc(s.serial)}`:''}. The full tree, hashes, dates &amp; roles are queryable with the drive back in the box.</div>`;
+  // Report warnings (mirror / duplicate / critical-catalog).
+  for(const n of (rep.notes||[])){const risk=/AT RISK|⚠/.test(n);
+    h+=`<div style="font-size:12.5px;margin:3px 0;color:${risk?'var(--bad)':'var(--ink-2)'}">${risk?'':'• '}${esc(n)}</div>`;}
+  // Role breakdown bar.
+  if((rep.roles||[]).length){h+=`<div style="margin:10px 0">`;
+    const tot=s.total_bytes||1;
+    h+=`<div style="display:flex;height:10px;border-radius:3px;overflow:hidden;border:1px solid var(--line)">`+
+      (rep.roles||[]).map(r=>`<div title="${esc(r.role)} · ${commaN(r.files)} files · ${GB(r.bytes)} GB" style="width:${Math.max(0.5,r.bytes/tot*100)}%;background:${ROLE_COLOR[r.role]||'var(--ink-3)'}"></div>`).join('')+`</div>`;
+    h+=`<div class="dim" style="font-size:11px;margin-top:5px">`+(rep.roles||[]).map(r=>`${roleDot(r.role)}${esc(r.role)} ${commaN(r.files)}${r.critical?' ⚠':''}`).join(' &nbsp; ')+`</div></div>`;}
+  h+=`<div id="snaptree" style="margin-top:8px"><div class="dim">Loading tree…</div></div>`;
+  box.innerHTML=h;
+  snapTree(id,'');
+}
+async function snapTree(id,path){
+  const el=$('#snaptree');if(!el)return;
+  let r;try{r=await api('GET','/api/volumes/'+id+'/treemap?path='+encodeURIComponent(path||''))}catch(e){el.innerHTML='<div class="err">'+esc(e.message)+'</div>';return}
+  const crumbs=(r.crumbs||[]).map((c,i,arr)=>i===arr.length-1?`<b>${esc(c.name)}</b>`:`<a href="#" onclick="snapTree(${id},'${esc(c.path)}');return false" style="color:var(--act)">${esc(c.name)}</a>`).join(' <span class="dim">/</span> ');
+  let h=`<div style="font-size:12px;margin-bottom:6px">${crumbs}</div>`;
+  h+=`<table style="width:100%"><tr><th></th><th>Name</th><th class="num">Size</th><th class="num">Files</th></tr>`;
+  for(const c of (r.children||[])){
+    const nm=c.is_dir&&!c.other?`<a href="#" onclick="snapTree(${id},'${esc(c.path)}');return false" style="color:var(--act)">${esc(c.name)}/</a>`:esc(c.name)+(c.is_dir?'/':'');
+    h+=`<tr><td style="width:16px">${roleDot(c.status)}</td><td>${nm}</td><td class="num dim">${GB(c.size)} GB</td><td class="num dim">${c.is_dir?commaN(c.files):''}</td></tr>`;}
+  h+=`</table>`;
+  if(r.folded)h+=`<div class="dim" style="font-size:11px;margin-top:4px">…${r.folded} smaller entr${r.folded===1?'y':'ies'} folded into “other”.</div>`;
+  el.innerHTML=h;
+}
+function commaN(n){return (n==null?0:n).toLocaleString('en-US')}
 /* Drive-level (hardware) tape AES — awareness + loud warning. Mnemosyne never
    sets it; this only records that the operator did, so kits/inventories warn. */
 function driveEncDlg(id,on,note){dlg(`<h1>Drive-level encryption (stenc / LTO hardware)</h1>
@@ -1946,7 +1986,7 @@ async function vDock(){
 async function dockStart(){
   const colls=await api('GET','/api/collections')||[];
   let h=`${hdr('Dock','ingest a stack of legacy drives, one at a time','dock')}
-  <div class="panel"><div class="dim" style="margin-bottom:8px">🛡 <b>Read-only toward your sources.</b> Mnemosyne only ever <b>hashes</b> the archive folders on the NAS to match drive contents — it never writes to them. The only writes are to the catalog and each drive's own inventory sidecar.</div>
+  <div class="panel"><div class="dim" style="margin-bottom:8px">🛡 <b>Read-only, both ways.</b> Mnemosyne only ever <b>hashes</b> the NAS archive folders to match drive contents, and it never writes to a docked drive either — adopted media stay untouched. The full inventory of each drive is recorded in the <b>catalog snapshot</b>, browsable later with the drive unplugged.</div>
     <h2>Start a session</h2>
     <div class="dim" style="font-size:12px;margin-bottom:6px">Choose the Archive(s) these drives should be reconciled against (e.g. both a business and a personal archive that live on the NAS).</div>`;
   if(!colls.length)h+='<div class="empty">Create an Archive first (Vault → Create archive), then start a dock session.</div>';
@@ -1962,8 +2002,12 @@ function covBar(pct){return `<div style="background:var(--line);border-radius:6p
 function renderDock(d){
   const ds=d.session, cov=d.coverage||{}, banner=dockBanner; dockBanner=null;
   let h=hdr('Dock','ingest a stack of legacy drives, one at a time','dock');
-  if(banner)h+=`<div class="panel" style="border:2px solid var(--ok);background:rgba(60,180,90,.08)"><div style="font-size:20px;font-weight:700">✅ ${esc(banner.message||'DONE')}</div>
-    <div class="dim" style="margin-top:4px">${esc(banner.detail||'')}</div></div>`;
+  if(banner){const bcol=banner.atRisk?'var(--bad)':'var(--ok)';
+    h+=`<div class="panel" style="border:2px solid ${bcol};background:rgba(60,180,90,.08)"><div style="font-size:20px;font-weight:700">✅ ${esc(banner.message||'DONE')}</div>
+    <div class="dim" style="margin-top:4px">${esc(banner.detail||'')}</div>`;
+    for(const n of (banner.notes||[])){const risk=/AT RISK|⚠/.test(n);
+      h+=`<div style="margin-top:6px;font-size:12.5px;color:${risk?'var(--bad)':'var(--ink-2)'}">${risk?'':'• '}${esc(n)}</div>`;}
+    h+=`</div>`;}
   h+=`<div class="panel"><div class="row" style="align-items:center;gap:10px">
     <div style="flex:1"><b>Session #${ds.id}</b> <span class="dim">· started ${esc((ds.started_at||'').slice(0,10))} · ${(ds.drives_processed||[]).length} drive(s)</span></div>
     <button class="btn ghost" onclick="window.open(mediaURL('/api/dock/session/${ds.id}/report'),'_blank')">Export report (.md)</button>
@@ -2018,18 +2062,38 @@ function dockReverifyDlg(sid,path){dlg(`<h1>Re-verify drive</h1>
   ${levelSelectorHTML('drl')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Re-verify at this level</button></div>`,
   async()=>{const lvl=$('#drl').value;const d=$('#dlg');if(d)d.close();dockIngest(sid,path,'reverify',lvl)})}
-async function dockIngest(sid,path,mode,level){
+async function dockIngest(sid,path,mode,level,confirm){
   try{
     toast('Ingesting '+path+' — hashing & matching…');
-    const r=await api('POST',`/api/dock/session/${sid}/ingest`,{mount_path:path,mode:mode||'',level:level||''});
-    await waitJob(r.job_id);
+    const r=await api('POST',`/api/dock/session/${sid}/ingest`,{mount_path:path,mode:mode||'',level:level||'',confirm:!!confirm});
+    const j=await waitJob(r.job_id);
+    const res=(j&&j.result)||{};
+    // Pre-flight drive-mortality gate — SMART is shouting failure BEFORE the long read.
+    if(res.needs_confirmation){
+      dockFailingDlg(sid,path,mode,level,res);
+      return;
+    }
     // Pull the just-finished result off the refreshed session for the banner.
     const d=await api('GET',`/api/dock/session/${sid}`);
     const last=(d.session.drives_processed||[]).slice().sort((a,b)=>new Date(b.finished_at||0)-new Date(a.finished_at||0))[0]||{};
-    dockBanner={message:'DONE — safe to eject. Insert the next drive.',
-      detail:`${last.label||'drive'}: ${last.matched||0} files matched (${GB(last.matched_bytes)} GB)${last.mode==='reverify'?' · re-verified':''} · ${last.unreadable||0} unreadable. ${d.coverage.pct||0}% of the selected archives now covered.`};
+    let detail=`${last.label||'drive'}: ${last.matched||0} files matched (${GB(last.matched_bytes)} GB)${last.mode==='reverify'?' · re-verified':''} · ${last.unreadable||0} unreadable. ${d.coverage.pct||0}% of the selected archives now covered.`;
+    const notes=(res.report&&res.report.notes)||[];
+    dockBanner={message:'DONE — safe to eject. Insert the next drive.',detail,notes,
+      atRisk:!!(res.report&&res.report.mirror&&res.report.mirror.at_risk)};
     vDock();
   }catch(e){toast(e.message,1)}
+}
+/* The drive raised a SMART failure advisory before the inventory read. Offer to
+   stop and rescue data first, or continue the (non-destructive, read-only) scan. */
+function dockFailingDlg(sid,path,mode,level,res){
+  const h=(res.health||{});
+  dlg(`<h1>⚠ This drive may be failing</h1>
+    <div class="err" style="font-size:12.5px;margin-bottom:10px">${esc(res.message||h.advisory_why||'SMART reports imminent-failure signals on this drive.')}</div>
+    <div class="dim mono" style="font-size:11px;margin-bottom:10px">${esc([h.reallocated_sectors?`${h.reallocated_sectors} reallocated`:'',h.pending_sectors?`${h.pending_sectors} pending`:'',(h.passed===false)?'SMART self-test FAILING':''].filter(Boolean).join(' · ')||'')}</div>
+    <div class="dim" style="font-size:12px;margin-bottom:14px">Inventorying is <b>read-only</b> and never writes to the drive — but a failing disk can die mid-read. If anything here is irreplaceable, copy it off first, then continue.</div>
+    <div class="row"><button class="btn danger" onclick="const d=$('#dlg');if(d)d.close();dockIngest(${sid},'${esc(path)}','${esc(mode||'')}','${esc(level||'')}',true)">Continue inventory anyway</button>
+      <button class="btn ghost" onclick="const d=$('#dlg');if(d)d.close()">Stop — I'll rescue data first</button></div>`,
+  async()=>{});
 }
 async function closeDock(id){try{await api('POST',`/api/dock/session/${id}/close`);toast('Session closed');vDock()}catch(e){toast(e.message,1)}}
 

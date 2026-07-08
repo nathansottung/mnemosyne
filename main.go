@@ -1123,8 +1123,13 @@ func api(mux *http.ServeMux, app *App) {
 		out := make([]map[string]any, 0, len(vols))
 		for _, v := range vols {
 			a := st[v.ID]
-			out = append(out, map[string]any{"volume": v, "chunk_count": len(a.chunks),
-				"total_bytes": a.bytes, "last_verified_at": a.last})
+			row := map[string]any{"volume": v, "chunk_count": len(a.chunks),
+				"total_bytes": a.bytes, "last_verified_at": a.last}
+			if snap := app.Store.VolumeSnapshot(v.ID); snap != nil {
+				row["has_snapshot"] = true
+				row["snapshot_at"] = snap.CapturedAt
+			}
+			out = append(out, row)
 		}
 		jsonOut(w, out)
 	})
@@ -1279,6 +1284,12 @@ func api(mux *http.ServeMux, app *App) {
 		if !app.smartAvailable() {
 			out["smart_hint"] = smartInstallHint
 		}
+		if snap := app.Store.VolumeSnapshot(v.ID); snap != nil {
+			out["has_snapshot"] = true
+			out["snapshot_at"] = snap.CapturedAt
+			out["snapshot_files"] = snap.TotalFiles
+			out["snapshot_bytes"] = snap.TotalBytes
+		}
 		jsonOut(w, out)
 	})
 	// Read drive-mortality (SMART) signals for a volume from a mounted path and
@@ -1306,6 +1317,47 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		jsonOut(w, map[string]any{"available": true, "snapshot": snap, "history": v.SmartHistory})
+	})
+
+	// A volume's SNAPSHOT — the offline inventory captured at dock ingest. Summary +
+	// per-drive report (role breakdown, duplicates vs. other drives, mirror verdict).
+	// The full file list is NOT inlined here; the treemap endpoint browses it lazily.
+	mux.HandleFunc("GET /api/volumes/{id}/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		v := app.Store.Volume(pathID(r))
+		if v == nil {
+			jsonErr(w, 404, fmt.Errorf("volume not found"))
+			return
+		}
+		snap := app.Store.VolumeSnapshot(v.ID)
+		if snap == nil {
+			jsonOut(w, map[string]any{"has_snapshot": false})
+			return
+		}
+		jsonOut(w, map[string]any{
+			"has_snapshot": true,
+			"captured_at":  snap.CapturedAt, "session_id": snap.SessionID,
+			"serial": snap.Serial, "model": snap.Model, "device_size": snap.DeviceSize,
+			"total_files": snap.TotalFiles, "total_bytes": snap.TotalBytes, "unreadable": snap.Unreadable,
+			"role_files": snap.RoleFiles, "role_bytes": snap.RoleBytes,
+			"smart": snap.Smart, "report": app.driveReport(snap),
+		})
+	})
+	// One zoom level of a volume's snapshot treemap (offline — no disk access),
+	// colored by file role. path="" is the drive root; echo a child's path to zoom.
+	mux.HandleFunc("GET /api/volumes/{id}/treemap", func(w http.ResponseWriter, r *http.Request) {
+		v := app.Store.Volume(pathID(r))
+		if v == nil {
+			jsonErr(w, 404, fmt.Errorf("volume not found"))
+			return
+		}
+		snap := app.Store.VolumeSnapshot(v.ID)
+		if snap == nil {
+			jsonErr(w, 404, fmt.Errorf("no snapshot for this volume — dock-ingest the drive first"))
+			return
+		}
+		res := snapshotTreemap(snap, r.URL.Query().Get("path"))
+		res.Name = v.Label
+		jsonOut(w, res)
 	})
 
 	// mirror re-verify — re-check the mirror(s) on a volume at a chosen level
@@ -1487,8 +1539,9 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		serial, label, mode, level := s(b, "serial"), s(b, "label"), s(b, "mode"), s(b, "level")
+		confirm := bl(b, "confirm") // proceed past the SMART failure gate (operator acknowledged)
 		jsonOut(w, runJob(app, "dock", "Ingest "+mount, func(p func(float64, string)) (map[string]any, error) {
-			return app.IngestDrive(id, mount, serial, label, mode, level, p)
+			return app.IngestDrive(id, mount, serial, label, mode, level, confirm, p)
 		}))
 	})
 	mux.HandleFunc("POST /api/dock/session/{id}/close", func(w http.ResponseWriter, r *http.Request) {

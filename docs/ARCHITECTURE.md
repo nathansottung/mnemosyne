@@ -37,10 +37,19 @@ privacy.go     ReadMediumManifest: decrypt a private manifest.json.gpg off a
 adopt.go       AdoptMedia: catalog pre-existing *.tar/*.tar.gpg media in place —
                hash payloads, import manifests, "deep adopt" via tar -tvf,
                idempotent by payload hash. Never rewrites the medium.
-dock.go        DockSession ingest: watch for a docked drive, mirror-adopt it by
-               CONTENT hash against selected archives, write a drive sidecar,
-               track coverage, export a session report. Mounts enumerated in
+dock.go        DockSession ingest: watch for a docked drive, SMART-gate a failing
+               one, then in one read pass SNAPSHOT every file (role + EXIF) AND
+               mirror-adopt it by CONTENT hash against selected archives. Writes
+               NOTHING to the drive (inventory lives in the catalog snapshot).
+               Tracks coverage; exports a session report. Mounts enumerated in
                dock_mounts_windows.go / dock_mounts_unix.go.
+snapshot.go    Reads a drive's stored VolumeSnapshot back: driveReport (role
+               breakdown, duplicates vs. other drives, folder-overlap, MIRROR
+               detection with the location-aware verdict) and snapshotTreemap (the
+               offline, role-colored tree — never touches the disk).
+exif.go        extractShotMeta: stdlib-only EXIF reader (JPEG APP1 + TIFF-based
+               raws) pulling capture time + camera body serial for the snapshot.
+               Best-effort and totally non-fatal — unparseable = empty fields.
 mirror.go      MirrorToVolume: native mirror backup — copy an archive's files to a
                volume as PLAIN FILES (copy-then-verify via .mnemo_tmp → atomic
                rename), recorded as verified file-level copies (same Chunk.Mirror
@@ -416,28 +425,61 @@ against one or more Archives and remembers every drive it processed.
   `DockCandidates` diffs the live mounts (`enumerateMounts`, platform-tagged)
   against it, so only *newly-inserted* drives are offered, each annotated with
   its resolved serial/model/size and whether it's been seen before.
-- **Mirror adoption** is the heart: `IngestDrive` → `mirrorAdopt` hashes every
-  loose file on the drive and matches it **by content** against the selected
-  archives' cataloged source hashes. Matches are recorded as an
+- **The ingest chain** (`IngestDrive`) runs hands-off after insertion: resolve
+  serial/model → **SMART snapshot** (`VolumeHealth`) → *pre-flight failure gate*
+  → full walk + hash of every file → **snapshot** the drive → content-match →
+  record mirror packages. The goal is that **one dock session captures EVERYTHING
+  about a drive** so it can go back in the box *forever knowable*.
+- **Pre-flight failure gate:** the SMART read happens **before** the long
+  full-drive read. If it raises a failure advisory (reallocated/pending sectors,
+  FAILING self-test, NVMe wear-out), `IngestDrive` returns early with
+  `needs_confirmation` — *"this drive may be failing — copy critical data off it
+  first? Continue inventory anyway?"* — so the operator can rescue data before a
+  dying disk is asked to stream every byte. The read is non-destructive, so
+  `confirm=true` proceeds. A drive with no SMART (USB bridge, smartctl absent) is
+  never gated.
+- **The drive SNAPSHOT** (`VolumeSnapshot`, one per volume, keyed by `VolumeID`)
+  is the record that makes an *unplugged* drive knowable. In one read pass
+  `mirrorAdopt` records **every** file — not just matches — with size, mtime,
+  SHA-256 + BLAKE3, a workflow **role**, and best-effort EXIF (capture time +
+  camera body serial). Roles come from the format registry's new `role` dimension
+  (`classifyRole`): `RAW` / `EDITED-EXPORT` / `SIDECAR` / `CATALOG` (`.lrcat` &c.,
+  flagged **CRITICAL** — edit state, not the photos) / `VIDEO` / `OTHER`. EXIF is
+  parsed stdlib-only (`exif.go`, JPEG APP1 + TIFF-based raws); anything
+  unparseable is simply empty, never an error. The catalog then answers *"what is
+  on DRIVE-04"* — sizes, tree, hashes, dates, roles, SMART state, serial — with
+  the drive in a shoebox. The Volumes view browses that tree, and `snapshotTreemap`
+  draws it (colored by role) with **no disk access**, exactly like the archive
+  treemap.
+- **Mirror adoption** still runs alongside the snapshot: the same hash pass matches
+  files **by content** against the selected archives and records matches as an
   `ADOPTED-VERIFIED` **mirror** package (`Chunk.Mirror`) per archive, with a
-  verified `Copy` on the drive's `Volume` — so the *existing* coverage/redundancy
-  machinery counts them with zero special-casing. Files are bucketed as *matched*
-  (a current source file), *historical* (an older packaged version), *other*
-  (readable but foreign), or *unreadable*.
+  verified `Copy` on the `Volume` — so the *existing* coverage/redundancy machinery
+  counts them with zero special-casing.
+- **Per-drive report** (`driveReport`, `snapshot.go`): role breakdown, how much of
+  the drive already lives on other cataloged drives (*"6,212 of 8,431 files already
+  exist on DRIVE-02"* — by comparing snapshot hash sets), folders ≥90% hash-shared
+  with a peer (**overlap**), and drives ≥98% content-identical (**MIRROR**, Jaccard
+  over deduped hashes). The mirror verdict is **location-aware**: two mirrors in the
+  *same* `Location` are *"redundancy at risk — both copies in Shoe Box #1"*; in
+  *different* locations they're a *"healthy offsite pair."*
 - **Identity & idempotency:** the drive's `Volume` is matched by physical
   **serial** (`VolumeBySerial`), so re-inserting a drive already ingested — even
-  on a different mount letter — is recognized and run as a **re-verify** (updates
-  the copy's verify timestamp) instead of a duplicate adopt. Idempotent across
-  sessions.
-- **Read-only toward sources (Prompt 31):** the NAS archive folders are only ever
-  *hashed*. The one write onto media — the drive's `MNEMOSYNE_DOCK/` inventory
-  sidecar + `catalog_snapshot.json` — goes through `AssertOutsideSources`, so it
-  can never land on a source path. The drive walk skips its own sidecar dir.
+  on a different mount letter — is recognized and run as a **re-verify** instead of
+  a duplicate adopt. Idempotent across sessions.
+- **Read-only, both ways — the sidecar asymmetry.** The NAS archive folders are
+  only ever *hashed*. And unlike everywhere else, the dock writes **nothing onto
+  the drive**: adopted media are treated as read-only originals, so a drive's
+  inventory lives in the **catalog snapshot alone** — there is no `MNEMOSYNE_DOCK/`
+  sidecar. This is deliberately *asymmetric* with **tool-written** media (packages
+  and sealed volumes), which still carry their `manifest.json` / `MNEMOSYNE_SEAL/`
+  sidecar at write/seal time so the medium self-documents. The rule of thumb:
+  *media Mnemosyne wrote get a sidecar; media Mnemosyne merely adopted do not —
+  we don't modify someone's existing drive to describe it.*
 - **Coverage & report:** `archiveCoverage` computes, across all chunks with a
-  verified copy, how many of the selected archives' files now have ≥1 copy
-  (matched by file-id or content hash). `SessionReportMarkdown` is the exportable
-  documentation trail — every drive's serial/label/contents summary plus running
-  coverage.
+  verified copy, how many of the selected archives' files now have ≥1 copy.
+  `SessionReportMarkdown` is the exportable documentation trail — every drive's
+  serial/label/contents summary plus running coverage.
 
 ## Dependencies
 

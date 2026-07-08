@@ -35,12 +35,41 @@ const (
 	TierUnknown    = "UNKNOWN"                // not in the registry
 )
 
-// FormatEntry is one extension's sustainability record.
+// FormatEntry is one extension's sustainability record. Tier rates longevity;
+// Role rates the file's PURPOSE in a photo/video workflow — an orthogonal
+// dimension the dock snapshot classifies by (RAW original vs edited export vs
+// sidecar vs application catalog vs video). Critical marks a role whose loss is
+// unrecoverable edit/organizational state (a Lightroom .lrcat and kin): the bytes
+// are not your photos, but losing them loses every edit and album you built.
 type FormatEntry struct {
 	Tier      string   `json:"tier"`
 	Rationale string   `json:"rationale"`
 	Readers   []string `json:"readers,omitempty"`
 	Migration string   `json:"migration,omitempty"`
+	Role      string   `json:"role,omitempty"`     // RAW | EDITED-EXPORT | SIDECAR | CATALOG | VIDEO | OTHER
+	Critical  bool     `json:"critical,omitempty"` // CATALOG state whose loss is unrecoverable (.lrcat &c.)
+}
+
+// File roles the snapshot classifies by. Orthogonal to Tier: a role says what a
+// file IS in the workflow, not how readable its format is.
+const (
+	RoleRAW          = "RAW"           // camera raw originals — the irreplaceable negatives
+	RoleEditedExport = "EDITED-EXPORT" // rendered/exported deliverables (JPEG/TIFF/PSD)
+	RoleSidecar      = "SIDECAR"       // per-image edit metadata (.xmp, .aae) — not the pixels
+	RoleCatalog      = "CATALOG"       // application databases (.lrcat) — CRITICAL edit/organizational state
+	RoleVideo        = "VIDEO"         // moving-image footage
+	RoleOther        = "OTHER"         // everything unclassified
+)
+
+// classifyRole maps a file extension to its workflow role via the registry,
+// returning OTHER for anything the registry does not tag. The bool is the CRITICAL
+// flag (only CATALOG roles set it). Purely extension-driven and never errors.
+func classifyRole(reg map[string]FormatEntry, rel string) (string, bool) {
+	e, ok := reg[normExt(pathExt(rel))]
+	if !ok || e.Role == "" {
+		return RoleOther, false
+	}
+	return e.Role, e.Critical
 }
 
 // normExt lowercases an extension and ensures a single leading dot.

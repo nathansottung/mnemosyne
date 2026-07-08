@@ -380,6 +380,52 @@ type DockSession struct {
 	Status     string      `json:"status"` // ACTIVE | CLOSED
 }
 
+// SnapFile is one file recorded in a drive's SNAPSHOT: everything known about it
+// from the ingest read pass, so the catalog can describe the drive's whole tree
+// with the drive unplugged. RelPath is drive-root-relative (forward-slashed).
+// Hash is the on-media SHA-256; Blake3 is the catalog-internal fast hash. Role
+// classifies the file's purpose (see classifyRole); ShotAt/CameraSerial are the
+// best-effort EXIF capture stamp and camera body serial (empty when unparseable).
+type SnapFile struct {
+	RelPath      string    `json:"rel_path"`
+	SizeBytes    int64     `json:"size_bytes"`
+	ModTime      time.Time `json:"mtime,omitempty"`
+	Hash         string    `json:"hash,omitempty"`   // SHA-256 (durable, on-media identity)
+	Blake3       string    `json:"blake3,omitempty"` // fast content hash, catalog-only
+	Role         string    `json:"role,omitempty"`   // RAW | EDITED-EXPORT | SIDECAR | CATALOG | VIDEO | OTHER
+	Critical     bool      `json:"critical,omitempty"`
+	ShotAt       time.Time `json:"shot_at,omitempty"`       // EXIF DateTimeOriginal, best-effort
+	CameraSerial string    `json:"camera_serial,omitempty"` // EXIF BodySerialNumber, best-effort
+}
+
+// VolumeSnapshot is the complete, offline-queryable record of what a drive holds,
+// captured in one dock ingest read pass: every file (tree, size, mtime, both
+// hashes, role, EXIF), the drive's SMART state at capture, and its physical
+// identity. It is what lets the catalog answer "what is on DRIVE-04" — sizes,
+// tree, hashes, dates, roles — with the drive unplugged and back in the box.
+//
+// Unlike a mirror Chunk (which records only files that content-match a cataloged
+// source), a snapshot records EVERY file on the drive. One snapshot per volume;
+// a re-ingest replaces it in place. Keyed by VolumeID.
+type VolumeSnapshot struct {
+	VolumeID   int            `json:"volume_id"`
+	CapturedAt time.Time      `json:"captured_at"`
+	SessionID  int            `json:"session_id,omitempty"`
+	Label      string         `json:"label,omitempty"`
+	Serial     string         `json:"serial,omitempty"`
+	Model      string         `json:"model,omitempty"`
+	DeviceSize int64          `json:"device_size,omitempty"`
+	LocationID int            `json:"location_id,omitempty"` // where the volume lived at capture (for mirror-pair verdicts)
+	Smart      *SmartSnapshot `json:"smart,omitempty"`       // drive-mortality state at capture
+	Files      []SnapFile     `json:"files"`                 // EVERY file on the drive
+	TotalFiles int            `json:"total_files"`
+	TotalBytes int64          `json:"total_bytes"`
+	Unreadable int            `json:"unreadable,omitempty"`
+	// Role rollups (denormalized for the offline view — the per-file Role is the truth).
+	RoleFiles map[string]int   `json:"role_files,omitempty"`
+	RoleBytes map[string]int64 `json:"role_bytes,omitempty"`
+}
+
 // TapeAlertFlag is one active TapeAlert bit reported by a tape drive, rendered
 // in plain language. Severity is one of: clean, warn, error (info flags are
 // dropped). TapeAlert is the drive's own self-report — a diagnostic SIGNAL, like
@@ -532,7 +578,7 @@ func (r *DriftReport) Changes() int {
 // Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
 // ("Schema versioning"): persisted fields are append-only, removal needs a
 // migration + a major bump, and every field must tolerate being absent.
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // schemaMigration transforms the in-memory catalog UP TO the version named by To.
 // Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
@@ -555,6 +601,12 @@ var schemaMigrations = []schemaMigration{
 	// so 3-2-1 offsite math can read Location.Offsite. The legacy per-volume Offsite
 	// bool is preserved (reads keep working); this only ADDS Locations + location_id.
 	{To: 2, Fn: migrateLocations},
+	// 2 → 3: drive SNAPSHOTS became a first-class catalog record (the full offline
+	// inventory of every dock-ingested drive). Purely additive — pre-v3 catalogs
+	// simply have no snapshots yet; the field is absent-tolerant. The bump exists so
+	// an OLDER build refuses to write a snapshot-bearing catalog (it would silently
+	// drop the snapshots on save). Empty body — nothing to transform.
+	{To: 3, Fn: func(c *catalog) {}},
 }
 
 // migrateLocations is the 1→2 step: fold every volume's free-text Location + Offsite
@@ -613,7 +665,11 @@ type catalog struct {
 	Locations     []*Location    `json:"locations"` // physical places volumes live (the "1" in 3-2-1)
 	Drift         []*DriftReport `json:"drift"`     // latest reconcile report per collection
 	DockSessions  []*DockSession `json:"dock_sessions"`
-	TapeChecks    []TapeHealth   `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
+	// Snapshots is the complete offline inventory of every dock-ingested drive
+	// (one per volume, keyed by VolumeID). It is what lets Volumes/Treemap describe
+	// an unplugged drive. See VolumeSnapshot.
+	Snapshots  []*VolumeSnapshot `json:"volume_snapshots,omitempty"`
+	TapeChecks []TapeHealth      `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
 	// Protection profiles (the 3-2-1 model), their per-archive/per-folder
 	// assignments, and the latest recomputed status summary per collection.
 	Profiles    []*Profile           `json:"profiles"`
@@ -1736,6 +1792,49 @@ func (s *Store) AppendSmartSnapshot(v *Volume, snap SmartSnapshot) {
 		v.SmartHistory = v.SmartHistory[len(v.SmartHistory)-50:]
 	}
 	_ = s.save()
+}
+
+// ---- drive snapshots ---------------------------------------------------
+
+// PutVolumeSnapshot stores (or replaces) the offline inventory for a volume. One
+// snapshot per volume, keyed by VolumeID — a re-ingest overwrites in place.
+// Persists (coalesced under an active batch).
+func (s *Store) PutVolumeSnapshot(snap *VolumeSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, ex := range s.c.Snapshots {
+		if ex.VolumeID == snap.VolumeID {
+			s.c.Snapshots[i] = snap
+			_ = s.save()
+			return
+		}
+	}
+	s.c.Snapshots = append(s.c.Snapshots, snap)
+	_ = s.save()
+}
+
+// VolumeSnapshot returns the offline inventory for a volume, or nil if the drive
+// has never been ingested. The returned pointer is the live catalog record —
+// treat it as read-only.
+func (s *Store) VolumeSnapshot(volumeID int) *VolumeSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, snap := range s.c.Snapshots {
+		if snap.VolumeID == volumeID {
+			return snap
+		}
+	}
+	return nil
+}
+
+// VolumeSnapshots returns every drive snapshot (for cross-drive duplicate/mirror
+// comparison). The slice is a fresh copy; the elements are live records.
+func (s *Store) VolumeSnapshots() []*VolumeSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*VolumeSnapshot, len(s.c.Snapshots))
+	copy(out, s.c.Snapshots)
+	return out
 }
 
 // ---- tape diagnostics --------------------------------------------------

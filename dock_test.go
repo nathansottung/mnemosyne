@@ -4,8 +4,9 @@ package main
 // for drives (serials supplied explicitly, as the watcher would after resolving
 // a real device). Two "drives" are ingested sequentially and one is re-inserted;
 // we assert content-match coverage grows, the re-insert is recognized by serial
-// (re-verify, not a duplicate), the inventory sidecar lands on the DRIVE, and the
-// NAS source is never written to. No external tools — dock needs none.
+// (re-verify, not a duplicate), a full offline SNAPSHOT is stored for the drive,
+// NO sidecar is written onto the (read-only) drive, and the NAS source is never
+// written to. No external tools — dock needs none.
 
 import (
 	"os"
@@ -67,7 +68,7 @@ func TestDockIngest_TwoDrivesSequentialAndReinsert(t *testing.T) {
 	}
 
 	// --- Ingest drive A ---
-	rA, err := app.IngestDrive(ds.ID, driveA, "SERIAL-A", "DRIVE-A", "", "", func(float64, string) {})
+	rA, err := app.IngestDrive(ds.ID, driveA, "SERIAL-A", "DRIVE-A", "", "", false, func(float64, string) {})
 	if err != nil {
 		t.Fatalf("ingest A: %v", err)
 	}
@@ -84,12 +85,11 @@ func TestDockIngest_TwoDrivesSequentialAndReinsert(t *testing.T) {
 	if covA.CoveredFiles != 2 || covA.TotalFiles != 3 {
 		t.Errorf("after A: want 2/3 covered, got %d/%d", covA.CoveredFiles, covA.TotalFiles)
 	}
-	// The inventory sidecar must be on the DRIVE, not the NAS source.
-	if _, err := os.Stat(filepath.Join(driveA, dockSidecarDir, "INVENTORY.md")); err != nil {
-		t.Errorf("expected inventory sidecar on drive A: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(driveA, dockSidecarDir, "catalog_snapshot.json")); err != nil {
-		t.Errorf("expected catalog snapshot on drive A: %v", err)
+	// Adopted media are READ-ONLY: no sidecar is written onto the drive (the
+	// inventory lives in the catalog snapshot alone), and the NAS source is never
+	// touched either.
+	if _, err := os.Stat(filepath.Join(driveA, dockSidecarDir)); err == nil {
+		t.Error("adopted media must NOT get a sidecar written onto them — found MNEMOSYNE_DOCK on drive A")
 	}
 	if _, err := os.Stat(filepath.Join(src, dockSidecarDir)); err == nil {
 		t.Error("source (NAS) must NEVER be written to — found a sidecar there")
@@ -98,11 +98,19 @@ func TestDockIngest_TwoDrivesSequentialAndReinsert(t *testing.T) {
 	if volA == nil {
 		t.Fatal("drive A should have registered a volume matchable by serial")
 	}
+	// A full offline snapshot of the drive must exist — EVERY file, not just matches.
+	snapA := app.Store.VolumeSnapshot(volA.ID)
+	if snapA == nil {
+		t.Fatal("drive A should have a stored offline snapshot")
+	}
+	if snapA.TotalFiles != 3 {
+		t.Errorf("snapshot should record all 3 files on drive A, got %d", snapA.TotalFiles)
+	}
 
 	// --- Ingest drive B (the missing third file) ---
 	driveB := t.TempDir()
 	writeTree(t, driveB, map[string]string{"archive/c.txt": "charlie, the third file\n"})
-	rB, err := app.IngestDrive(ds.ID, driveB, "SERIAL-B", "DRIVE-B", "", "", func(float64, string) {})
+	rB, err := app.IngestDrive(ds.ID, driveB, "SERIAL-B", "DRIVE-B", "", "", false, func(float64, string) {})
 	if err != nil {
 		t.Fatalf("ingest B: %v", err)
 	}
@@ -120,7 +128,7 @@ func TestDockIngest_TwoDrivesSequentialAndReinsert(t *testing.T) {
 		"a.txt":        "alpha content\n",
 		"photos/b.txt": "bravo content in a subfolder\n",
 	})
-	rR, err := app.IngestDrive(ds.ID, driveA2, "SERIAL-A", "DRIVE-A", "", "", func(float64, string) {})
+	rR, err := app.IngestDrive(ds.ID, driveA2, "SERIAL-A", "DRIVE-A", "", "", false, func(float64, string) {})
 	if err != nil {
 		t.Fatalf("re-insert A: %v", err)
 	}

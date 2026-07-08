@@ -18,7 +18,6 @@ package main
 // already processed is recognized and offered as a re-verify, not a re-adopt.
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -132,7 +131,14 @@ func (a *App) DockCandidates(sessionID int) ([]DockCandidate, error) {
 // be supplied by the watcher (or a test); a blank serial is resolved from the
 // live device. mode "" auto-selects adopt vs re-verify (a drive already holding
 // mirror data for these archives re-verifies).
-func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level string, progress func(float64, string)) (map[string]any, error) {
+//
+// confirm gates the long read behind the drive-mortality check: if the SMART
+// snapshot raises a failure advisory (reallocated/pending sectors &c.) and confirm
+// is false, IngestDrive returns EARLY with needs_confirmation=true and the SMART
+// detail — BEFORE hashing the whole drive — so the operator can copy critical data
+// off a dying disk first. Re-call with confirm=true to inventory it anyway (the
+// read is non-destructive; nothing is ever written to the drive).
+func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level string, confirm bool, progress func(float64, string)) (map[string]any, error) {
 	ds := a.Store.DockSession(sessionID)
 	if ds == nil {
 		return nil, fmt.Errorf("dock session %d not found", sessionID)
@@ -190,6 +196,24 @@ func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level s
 		health = snap
 	}
 
+	// Pre-flight failure gate — BEFORE the long full-drive read. If SMART is
+	// shouting imminent failure (reallocated/pending sectors, FAILING self-test,
+	// NVMe wear-out), stop and let the operator rescue critical data off the drive
+	// first. This is advisory only: the inventory read is non-destructive and never
+	// writes to the drive, so confirm=true proceeds normally. A drive with no SMART
+	// (smartctl absent / USB bridge) has health==nil and is never gated.
+	if health != nil && health.Advisory && !confirm {
+		a.Store.Log("dock", fmt.Sprintf("session %d: %s SMART advisory — %s (awaiting operator confirmation before inventory)",
+			ds.ID, vol.Label, health.AdvisoryWhy))
+		return map[string]any{
+			"needs_confirmation": true,
+			"volume_id":          vol.ID, "serial": vol.Serial, "label": vol.Label,
+			"health": health,
+			"message": "⚠ This drive may be failing — " + health.AdvisoryWhy + ". " +
+				"Copy critical data off it first? Or continue the inventory anyway — the read is non-destructive and never writes to the drive.",
+		}, nil
+	}
+
 	// A drive we already hold mirror data for is a RE-VERIFY, not a re-adopt.
 	hasMirror := a.volumeHasMirror(vol.ID, ds.ArchiveIDs)
 	effMode := "adopt"
@@ -205,7 +229,7 @@ func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level s
 	if effMode == "reverify" && normLevel(level) != VerifyB {
 		drive, err = a.dockReverifyAtLevel(ds, mountPath, vol, normLevel(level), progress)
 	} else {
-		drive, err = a.mirrorAdopt(ds, mountPath, vol, effMode, progress)
+		drive, err = a.mirrorAdopt(ds, mountPath, vol, effMode, health, progress)
 	}
 	if err != nil {
 		return nil, err
@@ -216,26 +240,41 @@ func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level s
 		ds.ID, effMode, vol.Label, drive.Matched, drive.Historical, drive.Unreadable))
 
 	progress(1.0, "DONE — safe to eject")
-	return map[string]any{
+	out := map[string]any{
 		"volume_id": vol.ID, "serial": vol.Serial, "label": vol.Label, "mode": effMode,
 		"reinserted": reinserted, "matched": drive.Matched, "matched_bytes": drive.MatchedBytes,
 		"historical": drive.Historical, "other": drive.Other, "unreadable": drive.Unreadable,
-		"sidecar": drive.Sidecar, "note": drive.Note, "health": health,
+		"note": drive.Note, "health": health,
 		"message":  "DONE — safe to eject. Insert the next drive.",
 		"coverage": a.archiveCoverage(ds.ArchiveIDs),
-	}, nil
+	}
+	// The per-drive ingest report: role breakdown, duplicates vs. already-cataloged
+	// drives, folder-overlap, and drive-mirror detection with the location verdict.
+	// Built from the snapshot mirrorAdopt just stored (nil on the cheap A/C re-verify
+	// path, which does not re-walk the drive).
+	if snap := a.Store.VolumeSnapshot(vol.ID); snap != nil {
+		out["report"] = a.driveReport(snap)
+	}
+	return out, nil
 }
 
-// mirrorAdopt hashes every loose file on the drive and matches it by CONTENT
-// against the selected archives' cataloged source hashes, records the matches as
+// mirrorAdopt hashes EVERY loose file on the drive in one read pass and does two
+// things with each: (1) records it in the drive's SNAPSHOT — the complete offline
+// inventory (tree, size, mtime, SHA-256 + BLAKE3, workflow role, best-effort EXIF
+// capture time + camera serial) that lets the catalog describe the drive unplugged;
+// and (2) matches it by CONTENT against the selected archives, recording matches as
 // an ADOPTED-VERIFIED mirror package per archive (with a verified copy on this
-// volume), and writes the drive's inventory sidecar + catalog snapshot.
-func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode string, progress func(float64, string)) (*DockDrive, error) {
-	// Source-safety (Prompt 31): the sidecar is WRITTEN onto this drive, so it
-	// must not resolve inside a registered source. Reading the drive is fine.
+// volume). It does NOT write anything onto the drive: adopted media are read-only,
+// so the inventory lives ONLY in the catalog (the snapshot), unlike tool-written
+// media which still carry a sidecar (see docs/ARCHITECTURE.md on this asymmetry).
+func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode string, health *SmartSnapshot, progress func(float64, string)) (*DockDrive, error) {
+	// Source-safety: refuse to treat a registered source folder as a docked drive.
+	// (We no longer write to the drive at all, but adopting a NAS source AS a drive
+	// would double-count it and is never intended — read-only or not.)
 	if err := a.Store.AssertOutsideSources(mountPath); err != nil {
 		return nil, err
 	}
+	reg := a.formatRegistry() // extension → sustainability tier + workflow role
 
 	// Content indexes from the selected archives. The dock first-pass matches by
 	// BLAKE3 (the fast hot-loop hash) when the catalog has it, falling back to
@@ -287,9 +326,11 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 		return nil
 	})
 
-	// Hash all files in parallel and classify each by content.
+	// Hash all files in parallel; for EACH file both (a) record a snapshot entry
+	// (role + best-effort EXIF) and (b) classify it by content against the archives.
 	var mu sync.Mutex
 	matchedByArchive := map[int]map[int]*File{} // archiveID -> fileID -> File
+	snapFiles := make([]SnapFile, 0, len(paths))
 	var matchedBytes int64
 	var hist, other int
 	var hashed int64
@@ -301,10 +342,20 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 		func(done int) {
 			progress(0.06+float64(done)/float64(total)*0.74, progStats(0, 0, int64(done), int64(len(paths)), "hashing drive files"))
 		},
-		func(p, sha, b3 string, size int64, _ time.Time) {
+		func(p, sha, b3 string, size int64, mtime time.Time) {
 			atomic.AddInt64(&hashed, 1)
+			// Snapshot entry — classify by role, and for still-image roles pull the
+			// EXIF capture time + camera body serial (bounded header read, outside the
+			// lock; unparseable = empty, never an error).
+			rel := driveRel(mountPath, p)
+			role, crit := classifyRole(reg, rel)
+			sf := SnapFile{RelPath: rel, SizeBytes: size, ModTime: mtime, Hash: sha, Blake3: b3, Role: role, Critical: crit}
+			if role == RoleRAW || role == RoleEditedExport {
+				sf.ShotAt, sf.CameraSerial = extractShotMeta(p)
+			}
 			mu.Lock()
 			defer mu.Unlock()
+			snapFiles = append(snapFiles, sf)
 			// BLAKE3 first (fast path), then SHA-256 for legacy catalog entries.
 			fs, ok := currentByBlake3[b3]
 			if !ok {
@@ -349,13 +400,12 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 	d := &DockDrive{VolumeID: vol.ID, Serial: vol.Serial, Label: vol.Label, Mode: mode,
 		Matched: totalMatched, MatchedBytes: matchedBytes, Historical: hist, Other: other, Unreadable: unreadable}
 
-	// Write the inventory sidecar + catalog snapshot onto the drive (Prompt 24).
-	progress(0.9, "writing drive sidecar")
-	if sidecar, serr := a.writeDriveSidecar(mountPath, ds, vol, matchedByArchive, d); serr == nil {
-		d.Sidecar = sidecar
-	} else {
-		d.Note = "sidecar not written: " + serr.Error()
-	}
+	// Store the drive's SNAPSHOT — the full offline inventory. NO sidecar is written
+	// to the drive: adopted media are read-only, so the inventory lives in the
+	// catalog alone (see this function's doc + docs/ARCHITECTURE.md).
+	progress(0.92, "recording drive snapshot")
+	a.Store.PutVolumeSnapshot(a.buildSnapshot(ds, vol, health, snapFiles, unreadable))
+
 	if mode == "reverify" {
 		if d.Note != "" {
 			d.Note += " · "
@@ -363,6 +413,39 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 		d.Note += "re-verified (drive recognized by serial)"
 	}
 	return d, nil
+}
+
+// buildSnapshot assembles a VolumeSnapshot from the walk's per-file records plus
+// the drive's identity and SMART state, with role rollups denormalized for the
+// offline view. Files are sorted by path for a stable, browsable tree.
+func (a *App) buildSnapshot(ds *DockSession, vol *Volume, health *SmartSnapshot, files []SnapFile, unreadable int) *VolumeSnapshot {
+	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
+	snap := &VolumeSnapshot{
+		VolumeID: vol.ID, CapturedAt: time.Now().UTC(), SessionID: ds.ID,
+		Label: vol.Label, Serial: vol.Serial, Model: vol.Model, DeviceSize: vol.DeviceSize,
+		LocationID: vol.LocationID, Smart: health, Files: files, Unreadable: unreadable,
+		RoleFiles: map[string]int{}, RoleBytes: map[string]int64{},
+	}
+	for _, f := range files {
+		snap.TotalFiles++
+		snap.TotalBytes += f.SizeBytes
+		role := f.Role
+		if role == "" {
+			role = RoleOther
+		}
+		snap.RoleFiles[role]++
+		snap.RoleBytes[role] += f.SizeBytes
+	}
+	return snap
+}
+
+// driveRel returns p as a forward-slashed path relative to the drive mount root,
+// so snapshot paths are stable and browsable regardless of mount letter.
+func driveRel(mountPath, p string) string {
+	if rel, err := filepath.Rel(mountPath, p); err == nil {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.ToSlash(p)
 }
 
 // dockReverifyAtLevel does a cheap path-based re-verify of the mirror(s) already
@@ -550,93 +633,12 @@ func (a *App) archiveCoverage(archiveIDs []int) Coverage {
 	return cov
 }
 
-// ---- sidecar + report --------------------------------------------------
-
-// writeDriveSidecar writes the MNEMOSYNE_DOCK folder onto the drive: a human
-// INVENTORY.md and a catalog_snapshot.json describing exactly what this drive
-// holds, so the medium self-documents. Guarded against writing into a source.
-func (a *App) writeDriveSidecar(mountPath string, ds *DockSession, vol *Volume, matched map[int]map[int]*File, d *DockDrive) (string, error) {
-	if err := a.Store.AssertOutsideSources(mountPath); err != nil {
-		return "", err
-	}
-	dir := filepath.Join(mountPath, dockSidecarDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	now := time.Now().UTC()
-
-	// catalog_snapshot.json — machine-readable truth for this drive.
-	type snapFile struct {
-		RelPath string `json:"rel_path"`
-		Hash    string `json:"hash"`
-		Size    int64  `json:"size_bytes"`
-	}
-	snapArchives := []map[string]any{}
-	for _, aid := range ds.ArchiveIDs {
-		coll := a.Store.Collection(aid)
-		name := ""
-		if coll != nil {
-			name = coll.Name
-		}
-		files := []snapFile{}
-		for _, f := range matched[aid] {
-			files = append(files, snapFile{RelPath: f.RelPath, Hash: f.Hash, Size: f.SizeBytes})
-		}
-		sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
-		snapArchives = append(snapArchives, map[string]any{"archive_id": aid, "archive": name, "matched_files": files})
-	}
-	snap := map[string]any{
-		"mnemosyne_dock_snapshot": 1, "schema_version": currentSchemaVersion, "mnemosyne_version": appVersion,
-		"generated_utc": now.Format(time.RFC3339),
-		"session_id":    ds.ID, "volume": vol, "mode": d.Mode,
-		"matched": d.Matched, "matched_bytes": d.MatchedBytes,
-		"historical": d.Historical, "unreadable": d.Unreadable, "other": d.Other,
-		"archives": snapArchives,
-	}
-	sb, _ := json.MarshalIndent(snap, "", "  ")
-	if err := os.WriteFile(filepath.Join(dir, "catalog_snapshot.json"), sb, 0o644); err != nil {
-		return "", err
-	}
-
-	// INVENTORY.md — the human documentation trail kept on the drive itself.
-	var b strings.Builder
-	b.WriteString("# Mnemosyne — drive inventory\n\n")
-	b.WriteString(fmt.Sprintf("Generated %s by dock session %d.\n\n", now.Format(time.RFC3339), ds.ID))
-	b.WriteString(fmt.Sprintf("- **Volume:** %s\n", vol.Label))
-	if vol.Serial != "" {
-		b.WriteString(fmt.Sprintf("- **Serial:** `%s`", vol.Serial))
-		if vol.DeviceNote != "" {
-			b.WriteString(" (⚠ " + vol.DeviceNote + ")")
-		}
-		b.WriteString("\n")
-	}
-	if vol.Model != "" {
-		b.WriteString(fmt.Sprintf("- **Model:** %s\n", vol.Model))
-	}
-	if vol.DeviceSize > 0 {
-		b.WriteString(fmt.Sprintf("- **Capacity:** %s\n", humanBytes(vol.DeviceSize)))
-	}
-	b.WriteString(fmt.Sprintf("- **Pass:** %s\n", d.Mode))
-	b.WriteString(fmt.Sprintf("- **Matched to current source:** %d files (%s)\n", d.Matched, humanBytes(d.MatchedBytes)))
-	b.WriteString(fmt.Sprintf("- **Historical (older versions):** %d · **Unrecognized:** %d · **Unreadable:** %d\n\n", d.Historical, d.Other, d.Unreadable))
-	b.WriteString("Matched files are content-verified copies of the source (SHA-256). This drive is READ-ONLY input; Mnemosyne only ever hashes source folders on the NAS — it never writes to them.\n\n")
-	for _, sa := range snapArchives {
-		files, _ := sa["matched_files"].([]snapFile)
-		b.WriteString(fmt.Sprintf("## %s — %d matched file(s)\n\n", sa["archive"], len(files)))
-		for i, f := range files {
-			if i >= 2000 {
-				b.WriteString(fmt.Sprintf("_…and %d more (see catalog_snapshot.json)_\n", len(files)-i))
-				break
-			}
-			b.WriteString(fmt.Sprintf("- `%s`\n", f.RelPath))
-		}
-		b.WriteString("\n")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "INVENTORY.md"), []byte(b.String()), 0o644); err != nil {
-		return dir, err
-	}
-	return dir, nil
-}
+// ---- session report ----------------------------------------------------
+//
+// Note the deliberate asymmetry: the dock writes NO inventory sidecar onto an
+// adopted drive (adopted media are read-only — the inventory lives in the catalog
+// snapshot alone). Tool-WRITTEN media still carry their sidecar at seal time. See
+// docs/ARCHITECTURE.md.
 
 // SessionReportMarkdown is the exportable documentation trail: every drive's
 // serial/label/contents summary plus running coverage of the selected archives.
