@@ -43,14 +43,15 @@ type MountInfo struct {
 // DockCandidate is a newly-appeared drive offered for ingest: where it mounted,
 // what the OS says it is, and whether we've seen this physical drive before.
 type DockCandidate struct {
-	Path               string `json:"path"`
-	Label              string `json:"label,omitempty"`
-	SizeBytes          int64  `json:"size_bytes,omitempty"`
-	Serial             string `json:"serial,omitempty"`
-	Model              string `json:"model,omitempty"`
-	VolumeID           int    `json:"volume_id,omitempty"`
-	AlreadyProcessed   bool   `json:"already_processed"`    // known drive with mirror data for these archives → offer re-verify
-	ProcessedInSession bool   `json:"processed_in_session"` // already ingested in THIS session
+	Path               string         `json:"path"`
+	Label              string         `json:"label,omitempty"`
+	SizeBytes          int64          `json:"size_bytes,omitempty"`
+	Serial             string         `json:"serial,omitempty"`
+	Model              string         `json:"model,omitempty"`
+	VolumeID           int            `json:"volume_id,omitempty"`
+	AlreadyProcessed   bool           `json:"already_processed"`    // known drive with mirror data for these archives → offer re-verify
+	ProcessedInSession bool           `json:"processed_in_session"` // already ingested in THIS session
+	PlanWork           []PlanWorkItem `json:"plan_work,omitempty"`  // compiled plans this drive can advance
 }
 
 // ---- session lifecycle -------------------------------------------------
@@ -119,6 +120,7 @@ func (a *App) DockCandidates(sessionID int) ([]DockCandidate, error) {
 			c.VolumeID = v.ID
 			c.AlreadyProcessed = a.volumeHasMirror(v.ID, ds.ArchiveIDs)
 			c.ProcessedInSession = inSession[v.ID]
+			c.PlanWork = a.plansPendingForVolume(v.ID) // offer "Execute plan work from this drive"
 		}
 		out = append(out, c)
 	}

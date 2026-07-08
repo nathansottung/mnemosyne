@@ -947,6 +947,154 @@ func api(mux *http.ServeMux, app *App) {
 			"open_total": app.Store.OpenConflictCount(c.CollectionID)})
 	})
 
+	// ---- Plans (cold-drive reorganization) --------------------------------
+	mux.HandleFunc("GET /api/plans", func(w http.ResponseWriter, r *http.Request) {
+		plans := app.Store.Plans()
+		rows := make([]map[string]any, 0, len(plans))
+		for _, p := range plans {
+			row := map[string]any{"plan": p}
+			if len(p.Mapping) > 0 {
+				row["coverage"] = app.PlanCoverage(p)
+			}
+			rows = append(rows, row)
+		}
+		jsonOut(w, rows)
+	})
+	mux.HandleFunc("POST /api/plans", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		name := strings.TrimSpace(s(b, "name"))
+		if name == "" {
+			jsonErr(w, 400, fmt.Errorf("plan name required"))
+			return
+		}
+		tid := int(f(b, "template_id"))
+		if app.Store.Template(tid) == nil {
+			jsonErr(w, 400, fmt.Errorf("choose a template for the plan"))
+			return
+		}
+		p := app.Store.AddPlan(&Plan{Name: name, ArchiveIDs: intList(b, "archive_ids"),
+			TemplateID: tid, DestinationRoot: filepath.ToSlash(s(b, "destination_root"))})
+		jsonOut(w, p)
+	})
+	mux.HandleFunc("GET /api/plans/{id}", func(w http.ResponseWriter, r *http.Request) {
+		p := app.Store.Plan(pathID(r))
+		if p == nil {
+			jsonErr(w, 404, fmt.Errorf("plan not found"))
+			return
+		}
+		rep, _ := app.PlanPreview(p.ID)
+		out := map[string]any{"plan": p, "report": rep, "unrouted": app.planUnrouted(app.planFiles(p))}
+		if len(p.Mapping) > 0 {
+			out["coverage"] = app.PlanCoverage(p)
+		}
+		jsonOut(w, out)
+	})
+	mux.HandleFunc("POST /api/plans/{id}/update", func(w http.ResponseWriter, r *http.Request) {
+		p := app.Store.Plan(pathID(r))
+		if p == nil {
+			jsonErr(w, 404, fmt.Errorf("plan not found"))
+			return
+		}
+		b := body(r)
+		if v := strings.TrimSpace(s(b, "name")); v != "" {
+			p.Name = v
+		}
+		if _, ok := b["destination_root"]; ok {
+			p.DestinationRoot = filepath.ToSlash(s(b, "destination_root"))
+		}
+		if _, ok := b["template_id"]; ok {
+			p.TemplateID = int(f(b, "template_id"))
+			p.Status, p.Mapping = PlanDraft, nil // template change → recompile
+		}
+		if _, ok := b["archive_ids"]; ok {
+			p.ArchiveIDs = intList(b, "archive_ids")
+			p.Status, p.Mapping = PlanDraft, nil
+		}
+		app.Store.UpdatePlan(p)
+		jsonOut(w, p)
+	})
+	mux.HandleFunc("POST /api/plans/{id}/delete", func(w http.ResponseWriter, r *http.Request) {
+		app.Store.DeletePlan(pathID(r))
+		jsonOut(w, map[string]any{"ok": true})
+	})
+	// One browsable level of the virtual destination tree (from the mapping only).
+	mux.HandleFunc("GET /api/plans/{id}/tree", func(w http.ResponseWriter, r *http.Request) {
+		p := app.Store.Plan(pathID(r))
+		if p == nil {
+			jsonErr(w, 404, fmt.Errorf("plan not found"))
+			return
+		}
+		jsonOut(w, app.planTree(p, r.URL.Query().Get("path")))
+	})
+	// Dry-run compile gate: freezes the mapping only if unrouted=0 and no conflicts.
+	mux.HandleFunc("POST /api/plans/{id}/compile", func(w http.ResponseWriter, r *http.Request) {
+		rep, err := app.CompilePlan(pathID(r))
+		if err != nil {
+			jsonErr(w, 404, err)
+			return
+		}
+		jsonOut(w, map[string]any{"report": rep, "plan": app.Store.Plan(pathID(r))})
+	})
+	// Manual placement override (drag): {hash, dest}. Empty dest clears it.
+	mux.HandleFunc("POST /api/plans/{id}/override", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		if err := app.SetOverride(pathID(r), s(b, "hash"), s(b, "dest")); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"ok": true})
+	})
+	// Folder drag: re-home everything under src to dst as persisted overrides.
+	mux.HandleFunc("POST /api/plans/{id}/move-folder", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		n, err := app.MoveFolder(pathID(r), s(b, "src"), s(b, "dst"))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"moved": n})
+	})
+	mux.HandleFunc("POST /api/plans/{id}/park", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		if err := app.SetParked(pathID(r), s(b, "hash"), bl(b, "parked")); err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, map[string]any{"ok": true})
+	})
+	// Offer at execution setup: adopt an already-partially-populated destination.
+	mux.HandleFunc("POST /api/plans/{id}/adopt-destination", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		jsonOut(w, runJob(app, "plan", "Adopt destination", func(p func(float64, string)) (map[string]any, error) {
+			return app.AdoptDestination(id, p)
+		}))
+	})
+	// Execute the compiled plan's pending work this docked drive can supply.
+	mux.HandleFunc("POST /api/plans/{id}/execute", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		b := body(r)
+		mount, serial := s(b, "mount_path"), s(b, "serial")
+		if strings.TrimSpace(mount) == "" {
+			jsonErr(w, 400, fmt.Errorf("mount_path (the docked source drive) required"))
+			return
+		}
+		jsonOut(w, runJob(app, "plan", "Execute plan from "+mount, func(p func(float64, string)) (map[string]any, error) {
+			res, err := app.ExecutePlanFromDrive(id, mount, serial, p)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"result": res, "message": res.Message, "coverage": res.Coverage}, nil
+		}))
+	})
+	mux.HandleFunc("POST /api/plans/{id}/close", func(w http.ResponseWriter, r *http.Request) {
+		p, err := app.ClosePlan(pathID(r))
+		if err != nil {
+			jsonErr(w, 404, err)
+			return
+		}
+		jsonOut(w, p)
+	})
+
 	// format sustainability — the registry and the per-archive census (0 = all).
 	mux.HandleFunc("GET /api/formats", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, app.formatRegistry())

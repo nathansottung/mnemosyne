@@ -513,6 +513,47 @@ type Conflict struct {
 	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
 }
 
+// Plan statuses. A plan is authored against snapshots (drives unplugged), gated by
+// a dry-run compile, then executed serial-bound and in any order over weeks.
+const (
+	PlanDraft     = "DRAFT"     // being authored; mapping computed live
+	PlanCompiled  = "COMPILED"  // dry-run passed; mapping frozen, ready to execute
+	PlanExecuting = "EXECUTING" // at least one drive's work has run
+	PlanClosed    = "CLOSED"    // finished (or abandoned); final report recorded
+)
+
+// Plan is the keystone: a persisted, future file structure authored against drive
+// SNAPSHOTS while the drives sit unplugged, executed later in any order. It maps
+// every in-scope file BY CONTENT HASH to a planned destination path (so a hash
+// shared across drives is copied once), remembers manual drag overrides that
+// survive template edits, and tracks which hashes are already satisfied so
+// execution is resumable across restarts and weeks.
+type Plan struct {
+	ID              int    `json:"id"`
+	Name            string `json:"name"`
+	ArchiveIDs      []int  `json:"archive_ids,omitempty"` // scope (empty = every snapshot)
+	TemplateID      int    `json:"template_id"`
+	DestinationRoot string `json:"destination_root"` // may not exist yet — validated only at execution
+	Status          string `json:"status"`
+	DestVolumeID    int    `json:"dest_volume_id,omitempty"` // volume the reorganized copies are recorded on
+	// Overrides are manual placements (hash → planned rel path) from dragging in the
+	// virtual tree; they win over the template and PERSIST across template edits.
+	Overrides map[string]string `json:"overrides,omitempty"`
+	// Parked hashes are explicitly excluded from the "unrouted must be 0" compile gate
+	// (the operator chose to leave them out of this move).
+	Parked map[string]bool `json:"parked,omitempty"`
+	// Mapping is the frozen hash → planned rel path, written at compile time so the
+	// plan is stable even if the template later changes. Empty until compiled.
+	Mapping map[string]string `json:"mapping,omitempty"`
+	// Satisfied marks hashes whose bytes are now at the destination (first drive to
+	// carry a shared hash satisfies it; later drives confirm). Drives execution
+	// resumability and the coverage math.
+	Satisfied  map[string]bool `json:"satisfied,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+	CompiledAt *time.Time      `json:"compiled_at,omitempty"`
+	ClosedAt   *time.Time      `json:"closed_at,omitempty"`
+}
+
 // TapeAlertFlag is one active TapeAlert bit reported by a tape drive, rendered
 // in plain language. Severity is one of: clean, warn, error (info flags are
 // dropped). TapeAlert is the drive's own self-report — a diagnostic SIGNAL, like
@@ -665,7 +706,7 @@ func (r *DriftReport) Changes() int {
 // Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
 // ("Schema versioning"): persisted fields are append-only, removal needs a
 // migration + a major bump, and every field must tolerate being absent.
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 // schemaMigration transforms the in-memory catalog UP TO the version named by To.
 // Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
@@ -703,6 +744,10 @@ var schemaMigrations = []schemaMigration{
 	// first-class record. Additive; the bump makes older builds refuse to write (they
 	// would drop pending/resolved conflict decisions). Empty body.
 	{To: 5, Fn: func(c *catalog) {}},
+	// 5 → 6: Plans (template-driven cold-drive reorganization) became first-class.
+	// Additive; the bump makes older builds refuse to write (they'd drop plans and
+	// their execution progress). Empty body.
+	{To: 6, Fn: func(c *catalog) {}},
 }
 
 // migrateLocations is the 1→2 step: fold every volume's free-text Location + Offsite
@@ -771,7 +816,10 @@ type catalog struct {
 	Templates []*Template `json:"templates,omitempty"`
 	// Conflicts: true same-logical-file/different-bytes disagreements awaiting (or
 	// carrying) a human decision. Additive in schema v5. See Conflict.
-	Conflicts  []*Conflict  `json:"conflicts_review,omitempty"`
+	Conflicts []*Conflict `json:"conflicts_review,omitempty"`
+	// Plans: template-driven cold-drive reorganizations authored against snapshots and
+	// executed serial-bound in any order. Additive in schema v6. See Plan.
+	Plans      []*Plan      `json:"plans,omitempty"`
 	TapeChecks []TapeHealth `json:"tape_checks"` // append-only tape-drive diagnostic snapshots, newest last
 	// Protection profiles (the 3-2-1 model), their per-archive/per-folder
 	// assignments, and the latest recomputed status summary per collection.

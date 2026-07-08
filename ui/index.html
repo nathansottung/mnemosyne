@@ -185,6 +185,7 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   <a href="#dock" data-v="dock">Dock</a>
   <a href="#events" data-v="events">Events</a>
   <a href="#templates" data-v="templates">Templates</a>
+  <a href="#plans" data-v="plans">Plans</a>
   <a href="#conflicts" data-v="conflicts">Conflicts</a>
   <a href="#keys" data-v="keys">Keys</a>
   <a href="#jobs" data-v="jobs">Jobs</a>
@@ -2067,10 +2068,15 @@ async function refreshCandidates(sid){
     const btn=reverify
       ? `<button class="btn ghost" onclick="dockReverifyDlg(${sid},'${esc(c.path)}')">Re-verify…</button>`
       : `<button class="btn" onclick="dockIngest(${sid},'${esc(c.path)}','')">Ingest this drive</button>`;
+    // If a compiled plan has pending work this drive can supply, offer to execute it.
+    const planBtns=(c.plan_work||[]).map(pw=>`<button class="btn" style="background:var(--warn)" onclick="planExecFromDock(${pw.plan_id},'${esc(c.path)}','${esc(c.serial||'')}')" title="${commaN(pw.pending)} pending file(s)">▶ Execute “${esc(pw.name)}” (${commaN(pw.pending)})</button>`).join(' ');
     return `<div class="row" style="align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">
-      <div style="flex:1"><span class="mono">${esc(c.path)}</span> ${reverify?'<span class="etag due">seen before</span>':''}${c.processed_in_session?'<span class="etag">this session</span>':''}<div class="dim" style="font-size:11.5px">${bits||'identity not resolved (external bridge?)'}</div></div>${btn}</div>`;
+      <div style="flex:1"><span class="mono">${esc(c.path)}</span> ${reverify?'<span class="etag due">seen before</span>':''}${c.processed_in_session?'<span class="etag">this session</span>':''}<div class="dim" style="font-size:11.5px">${bits||'identity not resolved (external bridge?)'}</div></div>${planBtns}${btn}</div>`;
   }).join('');
 }
+async function planExecFromDock(planId,path,serial){
+  try{const r=await api('POST','/api/plans/'+planId+'/execute',{mount_path:path,serial});
+    toast('Executing plan work from this drive — see Jobs');loc('jobs')}catch(e){toast(e.message,1)}}
 function dockReverifyDlg(sid,path){dlg(`<h1>Re-verify drive</h1>
   <div class="dim mono" style="font-size:11.5px;margin-bottom:8px">${esc(path)}</div>
   <div class="dim" style="margin-bottom:8px">Level B re-hashes the drive's full contents (content match). A/C are cheaper, path-based, and <b>advisory</b> — they cannot satisfy protection.</div>
@@ -2486,6 +2492,104 @@ async function resolveConflict(id,resolution,canonicalFileId){
   try{await api('POST','/api/conflicts/'+id+'/resolve',{resolution,canonical_file_id:canonicalFileId});toast('Conflict resolved');vConflicts()}catch(e){toast(e.message,1)}
 }
 
+/* ================= Plans ================= */
+const PLAN_STATUS={DRAFT:['draft','var(--ink-3)'],COMPILED:['compiled','var(--act)'],EXECUTING:['executing','var(--warn)'],CLOSED:['done','var(--ok)']};
+function planStatusBadge(st){const[t,c]=PLAN_STATUS[st]||[st,'var(--ink-3)'];return `<span class="etag" style="color:${c};border-color:${c}">${t}</span>`}
+async function vPlans(){
+  const rows=await api('GET','/api/plans');
+  let h=`${hdr('Plans','author a future structure against snapshots — execute drive-by-drive, any order','plans')}
+  <div class="panel"><div class="row"><button class="btn" onclick="newPlanDlg()">New plan…</button></div>
+    <div class="dim" style="font-size:11.5px;margin-top:6px">A plan maps every in-scope file (by content hash) to a destination path using a template. Drives can be unplugged while you author it; execute later, one drive at a time, in any order — a shared file is copied once.</div></div>
+  <div class="panel"><h2>Plans (${rows.length})</h2>`;
+  if(!rows.length)h+='<div class="empty">No plans yet.</div>';
+  else{h+='<table><tr><th>Plan</th><th>Status</th><th>Destination</th><th>Coverage</th></tr>';
+    for(const r of rows){const p=r.plan,cov=r.coverage;
+      h+=`<tr style="cursor:pointer" onclick="vPlanDetail(${p.id})"><td><b>${esc(p.name)}</b></td><td>${planStatusBadge(p.status)}</td>
+        <td class="mono" style="font-size:11px">${esc(p.destination_root||'—')}</td>
+        <td>${cov?`${cov.pct}% <span class="dim">(${cov.satisfied}/${cov.total})</span>`:'<span class="dim">not compiled</span>'}</td></tr>`}
+    h+='</table>'}
+  $('#view').innerHTML=h+'</div>';
+}
+function newPlanDlg(){Promise.all([api('GET','/api/templates'),api('GET','/api/collections').catch(()=>[])]).then(([td,cs])=>{
+  dlg(`<h1>New plan</h1>
+    <label>Name</label><input id="np_name" class="full" placeholder="NAS Move">
+    <label>Template</label><select id="np_tmpl" class="full">${(td.templates||[]).map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
+    <label>Scope — archives (none = every snapshot)</label>
+    <div style="max-height:120px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px">${(cs||[]).map(c=>`<label class="row" style="gap:6px"><input type="checkbox" class="np_arch" value="${c.id}" style="width:auto">${esc(c.name)}</label>`).join('')||'<span class="dim">no archives</span>'}</div>
+    <label>Destination root (may not exist yet — validated at execution)</label><input id="np_dest" class="full" placeholder="Y:\\NAS\\Photos or /mnt/nas/photos">${browseBtn('np_dest')}
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Create plan</button></div>`,
+  async()=>{const arch=[...document.querySelectorAll('.np_arch:checked')].map(e=>parseInt(e.value));
+    const p=await api('POST','/api/plans',{name:$('#np_name').value.trim(),template_id:parseInt($('#np_tmpl').value),archive_ids:arch,destination_root:$('#np_dest').value.trim()});
+    toast('Plan created');vPlanDetail(p.id)})})}
+async function vPlanDetail(id){if(location.hash!=='#plans')location.hash='#plans';
+  const d=await api('GET','/api/plans/'+id);const p=d.plan,rep=d.report||{},unrouted=d.unrouted||[],cov=d.coverage;
+  let h=`<h1>${esc(p.name)} ${planStatusBadge(p.status)}</h1>
+    <div class="crumb mono" style="font-size:11px">→ ${esc(p.destination_root||'(no destination set)')}</div>
+    <div class="row" style="margin:10px 0"><button class="btn ghost" onclick="loc('plans')">← all plans</button>
+      <button class="btn ghost" onclick="editPlanDlg(${p.id})">Edit…</button>
+      <button class="btn" onclick="compilePlan(${p.id})">Compile (dry-run)</button>
+      ${p.status!=='DRAFT'?`<button class="btn ghost" onclick="adoptDest(${p.id})">Adopt existing destination…</button>`:''}
+      ${p.status!=='DRAFT'?`<button class="btn ghost" onclick="execPlanDlg(${p.id})">Execute from a drive…</button>`:''}
+      <button class="btn ghost danger" onclick="delPlan(${p.id})">Delete</button></div>`;
+  // Compile report
+  h+=`<div class="panel" style="border-left:3px solid ${rep.compilable?'var(--ok)':'var(--warn)'}">
+    <h2>Dry-run</h2>
+    <div style="font-size:15px;font-weight:600">${rep.compilable?'✓ Ready to compile':'⛔ Not ready'} — ${commaN(rep.files)} files · ${GB(rep.bytes)} GB</div>
+    <div class="dim" style="font-size:12px;margin-top:4px">${rep.unrouted||0} unrouted · ${rep.parked||0} parked · ${rep.conflicts||0} unresolved conflict(s)${rep.dedupe_files?` · ${commaN(rep.dedupe_files)} de-duped by overlap (${GB(rep.dedupe_bytes)} GB saved)`:''}</div>`;
+  if(rep.conflicts>0)h+=`<div class="err" style="margin-top:6px">Resolve conflicts in scope first — <a href="#conflicts" style="color:var(--act)">Conflicts queue →</a></div>`;
+  for(const n of (rep.notes||[]))h+=`<div class="dim mono" style="font-size:11px">${esc(n)}</div>`;
+  h+='</div>';
+  // Coverage (compiled/executing)
+  if(cov)h+=`<div class="panel"><h2>Coverage</h2><div style="font-size:15px;font-weight:600">${cov.pct}% — ${cov.satisfied}/${cov.total} placed</div>
+    ${cov.remaining>0?`<div class="dim" style="margin-top:4px">${cov.remaining} remaining · live on: <b>${(cov.remaining_drives||[]).map(esc).join(', ')||'—'}</b></div>`:'<div class="dim" style="margin-top:4px">Complete.</div>'}</div>`;
+  // Virtual tree
+  h+=`<div class="panel"><h2>Virtual destination tree <span class="dim" style="font-weight:400;font-size:11.5px">· from the mapping, no disk access</span></h2><div id="plantree"><div class="dim">Loading…</div></div></div>`;
+  // Unrouted bucket
+  if(unrouted.length){h+=`<div class="panel" style="border-left:3px solid var(--warn)"><h2>Unrouted (${unrouted.length})</h2>
+    <div class="dim" style="font-size:11.5px;margin-bottom:6px">These files match no route. Edit the template, assign an event, drag them in the tree, or park them to compile.</div>
+    <table><tr><th>File</th><th class="num">Size</th><th></th></tr>`;
+    for(const u of unrouted.slice(0,200))h+=`<tr><td class="mono" style="font-size:11px">${esc(u.rel_path)}</td><td class="num">${GB(u.size_bytes)} GB</td>
+      <td><button class="btn ghost" style="font-size:10.5px" onclick="parkFile(${p.id},'${esc(u.hash)}')">Park</button>
+        <button class="btn ghost" style="font-size:10.5px" onclick="overrideFile(${p.id},'${esc(u.hash)}','${esc(u.rel_path)}')">Place…</button></td></tr>`;
+    h+='</table></div>';}
+  $('#view').innerHTML=h;
+  planTree(id,'');
+}
+async function planTree(id,path){const el=$('#plantree');if(!el)return;
+  let r;try{r=await api('GET','/api/plans/'+id+'/tree?path='+encodeURIComponent(path||''))}catch(e){el.innerHTML='<div class="err">'+esc(e.message)+'</div>';return}
+  const crumbs=(r.crumbs||[]).map((c,i,a)=>i===a.length-1?`<b>${esc(c.name)}</b>`:`<a href="#" onclick="planTree(${id},'${esc(c.path)}');return false" style="color:var(--act)">${esc(c.name)}</a>`).join(' <span class="dim">/</span> ');
+  let h=`<div style="font-size:12px;margin-bottom:6px">${crumbs}</div>`;
+  if(!(r.children||[]).length)h+='<div class="dim">No routed files at this level.</div>';
+  else{h+='<table style="width:100%"><tr><th></th><th>Name</th><th class="num">Size</th><th class="num">Files</th></tr>';
+    for(const c of r.children){const dot=c.status==='SATISFIED'?'var(--ok)':'var(--warn)';
+      const nm=c.is_dir?`<a href="#" onclick="planTree(${id},'${esc(c.path)}');return false" style="color:var(--act)">${esc(c.name)}/</a>`:esc(c.name);
+      h+=`<tr><td style="width:14px"><span title="${c.status}" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${dot}"></span></td><td>${nm}</td><td class="num dim">${GB(c.size)} GB</td><td class="num dim">${c.is_dir?commaN(c.files):''}</td></tr>`}
+    h+='</table>';}
+  el.innerHTML=h;
+}
+async function compilePlan(id){try{const r=await api('POST','/api/plans/'+id+'/compile',{});
+  if(r.report&&r.report.compilable)toast('Compiled — '+commaN(r.report.files)+' files ready');else toast('Not compilable — '+(r.report.unrouted||0)+' unrouted, '+(r.report.conflicts||0)+' conflicts',1);
+  vPlanDetail(id)}catch(e){toast(e.message,1)}}
+async function parkFile(id,hash){try{await api('POST','/api/plans/'+id+'/park',{hash,parked:true});toast('Parked');vPlanDetail(id)}catch(e){toast(e.message,1)}}
+function overrideFile(id,hash,rel){const dest=prompt('Planned destination path for '+rel+':',rel);if(dest==null)return;
+  api('POST','/api/plans/'+id+'/override',{hash,dest}).then(()=>{toast('Placed');vPlanDetail(id)}).catch(e=>toast(e.message,1))}
+function editPlanDlg(id){api('GET','/api/plans/'+id).then(d=>{const p=d.plan;
+  dlg(`<h1>Edit plan</h1><label>Name</label><input id="ep_name" class="full" value="${esc(p.name)}">
+    <label>Destination root</label><input id="ep_dest" class="full" value="${esc(p.destination_root||'')}">${browseBtn('ep_dest')}
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Save</button></div>`,
+  async()=>{await api('POST','/api/plans/'+id+'/update',{name:$('#ep_name').value.trim(),destination_root:$('#ep_dest').value.trim()});toast('Saved');vPlanDetail(id)})})}
+async function delPlan(id){if(!confirm('Delete this plan? Nothing on disk is affected.'))return;
+  try{await api('POST','/api/plans/'+id+'/delete',{});toast('Deleted');loc('plans')}catch(e){toast(e.message,1)}}
+function adoptDest(id){if(!confirm('Scan the destination root and mark files already present (by content) as satisfied?'))return;
+  api('POST','/api/plans/'+id+'/adopt-destination',{}).then(r=>waitJob(r.job_id)).then(()=>{toast('Destination adopted');vPlanDetail(id)}).catch(e=>toast(e.message,1))}
+function execPlanDlg(id){dlg(`<h1>Execute plan work from a drive</h1>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Dock the source drive and give its mounted path. Only the files THIS drive can supply are copied (copy-then-verify into the planned tree). Any order; resumable. Its bytes are re-checked against the snapshot as they read.</div>
+  <label>Mounted path of the source drive</label><input id="ex_mount" class="full" placeholder="E:\\ or /mnt/drive">${browseBtn('ex_mount')}
+  <label>Serial (blank = detect)</label><input id="ex_serial" class="full" placeholder="optional">
+  <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Execute from this drive</button></div>`,
+  async()=>{const r=await api('POST','/api/plans/'+id+'/execute',{mount_path:$('#ex_mount').value.trim(),serial:$('#ex_serial').value.trim()});
+    toast('Execution started — see Jobs');loc('jobs')})}
+
 /* ---------------- shell ---------------- */
 let dlgGo=null;
 function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog');d.id='dlg';document.body.append(d)}
@@ -2493,7 +2597,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,conflicts:vConflicts,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,keys:vKeys,jobs:vJobs,settings:vSettings};
 function loc(v){location.hash='#'+v}
 function route(){const v=(location.hash||'#home').slice(1);
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));

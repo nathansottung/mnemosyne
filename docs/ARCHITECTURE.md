@@ -65,6 +65,12 @@ conflicts.go   Same-logical-file/different-bytes review queue: DetectConflicts
                classifies collisions (second-shooter auto-pass vs true conflict),
                ReconcileConflicts keeps the queue idempotent, ResolveConflict folds a
                decision into File.Versions. Nothing auto-preferred; nothing discarded.
+plans.go       The keystone: a Plan maps every in-scope file BY HASH to a planned
+               destination path (from snapshots, drives unplugged), gated by a
+               dry-run compile, then executed serial-bound and any-order —
+               copy-then-verify into the planned tree, source re-checked against its
+               snapshot hash, deduped (first drive satisfies), resumable across
+               restarts. Sources read-only; only the destination is written.
 mirror.go      MirrorToVolume: native mirror backup — copy an archive's files to a
                volume as PLAIN FILES (copy-then-verify via .mnemo_tmp → atomic
                rename), recorded as verified file-level copies (same Chunk.Mirror
@@ -578,6 +584,54 @@ bytes*, there is no "newer" to prefer — so the disagreement goes to a human.
   conflict sits in scope (count + one click to the queue). A *keep-both* resolution
   leaves two files that compile to **two** disambiguated placements. Search and the
   Event view badge files that carry retained alternate versions.
+
+## Plans — cold-drive reorganization, authored against snapshots
+
+The keystone (`plans.go`). Everything before it makes drives *knowable while
+unplugged* (snapshots), *routable* (templates/events/EXIF), and *trustworthy*
+(conflicts). A **Plan** uses all three to author a future file structure against
+the snapshots — drives in the shoebox — and then execute it later, one drive at a
+time, in any order, over weeks.
+
+- **Content-addressed mapping.** A plan maps every in-scope file **by content
+  hash** to a planned destination path (`planFiles` unions the drive snapshots by
+  hash; the template routes supply the path, Events/EXIF supply the tokens). Because
+  the unit is the hash, a file that lives on several drives is **one** mapping
+  entry — copied once, from whichever drive shows up first. Manual **drag
+  overrides** (`SetOverride`/`MoveFolder`) win over the template and persist across
+  template edits; any edit reverts a compiled plan to draft.
+
+- **The virtual tree** (`planTree`) is browsable entirely from the mapping — no
+  disk — so the operator sees the destination structure before a byte moves.
+  Files the template can't place land in the **Unrouted** bucket, cleared by
+  editing routes, assigning an Event, dragging, or **parking** them.
+
+- **The dry-run compile gate** (`CompilePlan`) refuses unless unrouted = 0 (parked
+  excepted) **and** no unresolved conflicts sit in scope. It freezes the hash→path
+  `Mapping` (stable against later template edits) and reports totals, per-source-
+  drive workload (*"DRIVE-04 owes 5,112 files / 1.9 TB"*), and dedupe savings
+  (*"3,100 satisfied by overlap with DRIVE-02"*).
+
+- **Serial-bound, any-order, resumable execution** (`ExecutePlanFromDrive`). Work
+  is keyed by the source drive's snapshot; when a known serial with pending work is
+  docked, the dock offers *"Execute plan work from this drive."* Each pending file
+  the drive holds is copied into its planned path via **copy-then-hash-verify**
+  (reusing `mirrorCopyFile`/`atomicRename`), and the source is **re-checked against
+  its snapshot hash as it reads** — a mismatch loudly flags *"drive differs from its
+  snapshot"* and skips the file to review, never guessed. The **first** drive to
+  carry a shared hash satisfies it; later drives just **confirm**. Progress lives in
+  the persisted `Satisfied` set, so execution resumes mid-drive and across process
+  restarts and weeks. `PlanCoverage` reports *"71% · remaining files live on:
+  DRIVE-06, DRIVE-09."*
+
+- **Destinations may be partial.** `AdoptDestination` scans an already-populated
+  destination root and marks any plan hash already present (by content) as
+  satisfied, so a hand-started or interrupted move isn't redone.
+
+- **Completion.** Destination files are recorded as verified copies on the plan's
+  destination volume (`recordPlanDestCopies`); the **source drives keep their
+  historical copies — never wiped, never modified** (they're only ever `os.Open`ed
+  for reading). At 100% the plan closes with a final report.
 
 ## Dependencies
 
