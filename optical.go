@@ -28,26 +28,33 @@ func isOpticalKind(kind string) bool { return opticalKinds[strings.ToUpper(strin
 // burn time (see BurnNext).
 const defaultBurnCommand = `xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject`
 
-// dvdisasterAugmentHint is the documented, optional pre-burn command that adds an
-// RS02 ECC layer INTO an ISO image before it is burned. Shown in docs and the
-// RESTORE.txt ECC note; Mnemosyne never runs it automatically (the operator opts
-// in), because it changes the two-command folder burn into an image-based flow.
+// dvdisasterAugmentHint documents the ALTERNATIVE manual flow: augment an ISO with
+// an embedded ECC layer BEFORE burning, so the ECC rides inside the disc itself.
+// This differs from Mnemosyne's automatic path (burn_ecc), which computes an
+// external <name>.ecc from the disc AFTER it verifies. Kept as reference for
+// operators who prefer the embedded style; Mnemosyne never runs it automatically.
 const dvdisasterAugmentHint = `xorriso -as mkisofs -V "{LABEL}" -o {LABEL}.iso "{SRC}"  &&  dvdisaster -i {LABEL}.iso -mRS02 -c   # then burn {LABEL}.iso`
 
 // opticalEccParagraph is appended to RESTORE.txt for optical packages. It states
 // the belt-and-suspenders truth: dvdisaster is an OPTIONAL extra layer, and par2
-// repair of the payload works whether or not it was ever applied.
-func opticalEccParagraph(eccEnabled bool) string {
-	applied := "This disc MAY carry a dvdisaster ECC layer"
+// repair of the payload works whether or not it was ever applied. The ECC file for
+// a disc is <name>.ecc; because it is computed AFTER the disc verifies, it rides on
+// the NEXT disc in the set or is kept in staging (per burn_ecc_carry) — never on
+// the disc it protects.
+func opticalEccParagraph(name string, eccEnabled bool) string {
+	ecc := name + ".ecc"
+	applied := "This disc MAY be covered by a dvdisaster ECC file"
 	if eccEnabled {
-		applied = "This disc was intended to carry a dvdisaster ECC layer"
+		applied = "This disc is intended to be covered by a dvdisaster ECC file"
 	}
 	return `
-OPTICAL ECC (optional, second layer) — ` + applied + `.
-dvdisaster (dvdisaster.net) adds sector-geometry Reed–Solomon ECC over the whole
-disc image, healing scratches that wipe out runs of physical sectors. If an .ecc
-file or an RS02-augmented image is present:
-     dvdisaster -i <this-disc-or-image> -e NAME.ecc -r      (recover the image)
+OPTICAL ECC (optional, second layer) — ` + applied + ` named ` + ecc + `.
+dvdisaster (open source, dvdisaster.jcea.es) adds sector-geometry Reed–Solomon ECC
+over the whole disc image, healing scratches that wipe out runs of physical sectors.
+Because ` + ecc + ` is computed after this disc is verified, it lives on the NEXT
+disc in the set or in the operator's staging folder — not on this disc. If this disc
+develops read errors and the ECC file is at hand:
+     dvdisaster -d <this-drive> -e ` + ecc + ` -f      (repair the disc from its ECC)
 It is a COMPLEMENT to par2, not a replacement. **par2 repair of the payload works
 regardless** — you never need dvdisaster to restore this package:
      par2 repair PAYLOAD.par2

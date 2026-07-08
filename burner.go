@@ -229,6 +229,16 @@ func (a *App) BurnNext(id int, progress func(float64, string)) (map[string]any, 
 		verified = true
 	}
 
+	// Optional disc-level ECC (dvdisaster). Only after a proven-readable disc — there
+	// is no point protecting a disc we haven't verified. Fully non-fatal: a missing
+	// tool, unknown device, or encode failure forfeits only the extra layer, never the
+	// burn (par2 repair of the payload works regardless).
+	if verified && cfg.burnEccOn() {
+		if eccPath, err := a.generateDiscEcc(c, cfg, progress); err == nil && eccPath != "" && cfg.BurnEccCarry {
+			a.carryEccToNextDisc(q, disc, c, eccPath)
+		}
+	}
+
 	now := time.Now().UTC()
 	disc.BurnedAt = &now
 	set("DONE", "")
@@ -255,6 +265,41 @@ func (a *App) ResetBurnQueue(id int) (int, error) {
 	a.Store.UpdateBurnQueue(q)
 	a.Store.Log("burnqueue", fmt.Sprintf("%s: reset %d failed disc(s) to PENDING", q.Name, n))
 	return n, nil
+}
+
+// carryEccToNextDisc copies a freshly-generated .ecc into the NEXT pending disc's
+// staged folder so it is burned onto the following disc in the set (a disc's ECC
+// can never live on the disc it protects — it is computed only after that disc is
+// done). Best-effort and non-fatal: if there is no next disc or its staged folder
+// is gone, the .ecc simply stays in staging.
+func (a *App) carryEccToNextDisc(q *BurnQueue, current *BurnDisc, c *Chunk, eccPath string) {
+	var next *BurnDisc
+	seen := false
+	for _, d := range q.Discs {
+		if d == current {
+			seen = true
+			continue
+		}
+		if seen && d.Status == "PENDING" {
+			next = d
+			break
+		}
+	}
+	if next == nil {
+		a.Store.Log("ecc", c.Name+": no next disc to carry ECC onto — kept in staging")
+		return
+	}
+	nc := a.Store.Chunk(next.ChunkID)
+	if nc == nil || nc.StagedDir == "" {
+		a.Store.Log("ecc", c.Name+": next disc has no staged folder yet — ECC kept in staging")
+		return
+	}
+	dst := filepath.Join(nc.StagedDir, filepath.Base(eccPath))
+	if err := copyFile(eccPath, dst); err != nil {
+		a.Store.Log("ecc", fmt.Sprintf("%s: could not carry ECC onto %s (%v) — kept in staging", c.Name, nc.Name, err))
+		return
+	}
+	a.Store.Log("ecc", fmt.Sprintf("%s: ECC carried onto next disc %s (%s)", c.Name, nc.Name, dst))
 }
 
 // runShell runs a burn command line through the platform shell. Exit code 0

@@ -824,17 +824,25 @@ command line rather than clicks in a GUI:
 xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject
 ```
 
-(ImgBurn on Windows and growisofs on Linux still work; the Settings page has a
+(growisofs on Linux and ImgBurn on Windows still work; the Settings page has a
 one-click "Use xorriso default".) See [Optical burn queue](#optical-burn-queue).
 
-**Optional second layer — [dvdisaster](https://dvdisaster.jcea.es/):** turn on
-*"Note dvdisaster ECC"* in Settings to add sector-geometry Reed–Solomon ECC over
-the whole disc image (build the ISO with `xorriso -as mkisofs`, augment it with
-`dvdisaster -mRS02 -c`, then burn). It heals scratches that wipe out runs of
-physical sectors — a layer **par2 can't provide** because par2 protects the
-payload *file*, not the disc geometry. It is strictly complementary and never
-required: **par2 repair of the payload works regardless**, and every disc's
-`RESTORE.txt` says so in plain words. The three-tool restore never depends on it.
+**Why discs get two kinds of repair data.** A disc can lose data two different
+ways, so it earns two different layers. **par2** (already beside every payload)
+protects the *contents* — corrupt bytes anywhere in the payload file are
+reconstructed from its Reed–Solomon parity. But a scratch or a bad patch of dye
+kills a whole *run of neighbouring sectors* at once, damage tied to the disc's
+physical geometry rather than to any one file. That is what the **optional**
+[dvdisaster](https://dvdisaster.jcea.es/) layer covers: set `burn_ecc` to `rs02`
+or `rs03` in Settings and, after each disc *verifies*, Mnemosyne reads it back and
+writes a `<name>.ecc` error-correction file over the disc geometry — the layer par2
+cannot provide, because par2 protects the payload *file*, not the sectors under it.
+The `.ecc` is computed after the disc is finished, so it rides onto the next disc
+in the set or stays in staging (`burn_ecc_carry`). dvdisaster is detected like
+`smartctl` and hides behind an install hint when absent. It is strictly
+complementary and never required: **par2 repair of the payload works regardless**,
+every disc's `RESTORE.txt` says so in plain words, and the three-tool restore
+(par2 → gpg → tar) never depends on it.
 
 ---
 

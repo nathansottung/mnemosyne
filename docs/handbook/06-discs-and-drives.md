@@ -22,7 +22,15 @@ Discs are handy for small, cheap, shelf-stable copies. Mnemosyne burns them from
 Mnemosyne uses a separate burning program on your computer to actually write discs. You tell it which one to use, once.
 
 1. Open the **Settings** tab.
-2. Find the burn command setting and point it at your burning program. On Windows, ImgBurn is a common free choice.
+2. Find the burn command setting and point it at your burning program. The recommended default is **xorriso** — one free, actively-maintained, cross-platform program. On the Settings page, click **Use xorriso default** to fill it in:
+
+   ```
+   xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject
+   ```
+
+   `{SRC}` is the package's staged folder and `{LABEL}` is the package name — Mnemosyne fills those in for each disc. Install xorriso with `apt install xorriso` (Linux) or `brew install xorriso` (macOS).
+
+   Other burners work too: **growisofs** on Linux, and **ImgBurn** (a common free choice) on Windows. Whatever you pick, the burn command just needs to write the `{SRC}` folder to the disc and return success (exit code 0).
 
 ![Settings showing the burn command configured](../img/06-discs-and-drives-burncmd.png)
 
@@ -62,6 +70,20 @@ You should now see squares turn green one by one as you burn and label each disc
 ### About reboots and coasters
 
 A burn queue is tough. If the app or your PC restarts in the middle of a burn, the queue is still there when you come back. The disc that was burning resets to **pending** (grey). That half-burned disc may be a **coaster** (a ruined disc), so throw it away and burn that one onto a fresh blank.
+
+### Optional: an extra armour layer for discs (dvdisaster ECC)
+
+Discs die differently from drives. A scratch or a bad patch of dye kills a **run of neighbouring sectors** all at once — a kind of damage that a per-file repair can't always see coming. Every package already carries **par2** repair data, which protects the *contents* of the payload file. **dvdisaster** adds a second, different kind of armour: Reed–Solomon error correction computed over the disc's whole *sector geometry*, so even a scratch that wipes out a band of physical sectors can be healed.
+
+This layer is **completely optional and never required to restore**. Your files come back from par2 + tar (+ gpg if encrypted) whether or not dvdisaster was ever used — the RESTORE.txt on every disc says this in plain words. dvdisaster is just belt-and-suspenders for the physical disc.
+
+To turn it on:
+
+1. Install **dvdisaster** (open source — `apt install dvdisaster` on Linux, `brew install dvdisaster` on macOS, or dvdisaster.jcea.es on Windows). Like the drive-health tool, if it isn't installed the feature simply hides, with an install hint in **Settings → External tools**.
+2. In **Settings → Optical burning**, set **Disc-level ECC** to **RS02** or **RS03**.
+3. Optionally tell it which optical drive to read (blank works when your burn command already names one, like `/dev/sr0`).
+
+After each disc **verifies**, Mnemosyne reads it back and writes an error-correction file named `<package>.ecc`. Because that file is made *after* the disc is finished, it can't live on the disc it protects — so it either **rides onto the next disc in the set** (tick "Carry onto the next disc") or **stays in your staging folder**, your choice. Keep those `.ecc` files with your discs; if a disc later develops read errors, dvdisaster can use its `.ecc` to repair it.
 
 ---
 

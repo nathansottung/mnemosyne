@@ -1844,6 +1844,7 @@ async function vSettings(){
     <table><tr><td>tar</td><td>${tool('tar')}</td></tr><tr><td>gpg</td><td>${tool('gpg')}</td></tr>
     <tr><td>par2</td><td>${tool('par2')}</td></tr>
     <tr><td>smartctl <span class="dim" style="font-size:11px">(optional · drive health)</span></td><td>${p.smartctl&&p.smartctl.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.smartctl.path||'')}</span>`:`<span class="dim">not installed — drive-health signals hidden. smartmontools.org · <span class="mono">choco/apt/brew install smartmontools</span>. Complements hash verification; never replaces it.</span>`}</td></tr>
+    <tr><td>dvdisaster <span class="dim" style="font-size:11px">(optional · disc ECC)</span></td><td>${p.dvdisaster&&p.dvdisaster.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.dvdisaster.path||'')}</span>`:`<span class="dim">not installed — disc-level ECC hidden. dvdisaster.jcea.es · <span class="mono">apt/brew install dvdisaster</span>. Complements par2 over the disc geometry; par2 repair works regardless.</span>`}</td></tr>
     <tr><td>tape diag <span class="dim" style="font-size:11px">(optional · read-only)</span></td><td>${p.tape_tool&&p.tape_tool.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.tape_tool.tool||'')} · ${esc(p.tape_tool.bin||'')}</span>`:`<span class="dim">not installed — tape-drive diagnostics hidden. IBM ITDT (free, Fix Central) · sg3_utils (<span class="mono">apt/brew install sg3-utils</span>) · HPE L&amp;TT. Reads drive health only — never moves the tape or writes.</span>`}</td></tr>
     <tr><td>LTFS tape</td><td>${ltfsCell}</td></tr></table>
     ${(p.hints||[]).map(x=>`<div class="err" style="margin-top:8px">${esc(x)}</div>`).join('')}</div>
@@ -1901,10 +1902,23 @@ async function vSettings(){
   <div class="panel"><h2>Optical burning</h2>
     <label>Burn command — <span class="mono dim">{SRC}</span> = package staged folder, <span class="mono dim">{LABEL}</span> = package name. Exit code 0 = success.</label>
     <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject'>
-    <div class="dim" style="font-size:11.5px;margin-top:4px"><b>xorriso</b> is the recommended default burner — free, maintained, cross-platform, scriptable (<span class="mono">apt/brew install xorriso</span>). <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="document.getElementById('bc').value='xorriso -outdev /dev/sr0 -volid \\'{LABEL}\\' -blank as_needed -map \\'{SRC}\\' / -commit -eject'">Use xorriso default</button></div>
-    <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="oecc" type="checkbox" ${cfg.optical_ecc?'checked':''}> Note dvdisaster ECC layer on optical packages — sector-geometry Reed–Solomon over the whole disc, healing scratches beyond what par2 sees. Optional &amp; complementary; <b>par2 repair works regardless</b>. The RESTORE.txt on each disc explains it.</label>
+    <div class="dim" style="font-size:11.5px;margin-top:4px"><b>xorriso</b> is the recommended default burner on Linux/macOS — free, maintained, cross-platform, scriptable (<span class="mono">apt/brew install xorriso</span>). <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="document.getElementById('bc').value='xorriso -outdev /dev/sr0 -volid \\'{LABEL}\\' -blank as_needed -map \\'{SRC}\\' / -commit -eject'">Use xorriso default</button> <span class="mono dim">growisofs</span> (Linux) and <span class="mono dim">ImgBurn</span> (Windows) also work.</div>
     <label>Verify mount (optional) — after burning, hash the package's payload <span class="mono dim">&lt;mount&gt;/&lt;name&gt;.tar</span> (plaintext) or <span class="mono dim">.tar.gpg</span> (encrypted) and compare to its enc_hash. Blank = skip.</label>
     <input id="bv" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_verify_mount||'')}" placeholder="E:\\ or /mnt/optical">
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+      <label>Disc-level ECC (<span class="mono dim">dvdisaster</span>, optional second layer) — after a disc <b>verifies</b>, generate a Reed–Solomon error-correction file <span class="mono dim">&lt;name&gt;.ecc</span> over the whole disc geometry, healing scratches that wipe out runs of physical sectors. This is a layer <b>par2 can't provide</b> (par2 protects the payload file, not sector geometry). Strictly complementary — <b>par2 repair works regardless, and restore never needs dvdisaster</b>; every disc's RESTORE.txt says so.</label>
+      <select id="becc" class="full">
+        <option value="off" ${(!cfg.burn_ecc||cfg.burn_ecc==='off')?'selected':''}>Off — no ECC file (par2 still protects the payload)</option>
+        <option value="rs02" ${cfg.burn_ecc==='rs02'?'selected':''}>RS02 — dvdisaster Reed–Solomon (widely compatible)</option>
+        <option value="rs03" ${cfg.burn_ecc==='rs03'?'selected':''}>RS03 — dvdisaster Reed–Solomon (newer, parallel encode)</option>
+      </select>
+      <div class="row" style="gap:8px;margin-top:8px">
+        <div style="flex:1"><label>ECC device (blank = derived from the burn command, e.g. <span class="mono dim">/dev/sr0</span>)</label>
+        <input id="beccd" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_ecc_device||'')}" placeholder="/dev/sr0  or  H:"></div></div>
+      <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="becccarry" type="checkbox" ${cfg.burn_ecc_carry?'checked':''}> Carry each disc's <span class="mono dim">.ecc</span> onto the NEXT disc in the set — an ECC file can't live on the disc it protects (it's computed after that disc is done). Unchecked = keep it in the staging folder.</label>
+      <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="oecc" type="checkbox" ${cfg.optical_ecc?'checked':''}> Also note the ECC layer in RESTORE.txt even when not auto-generating (for operators who augment discs by hand).</label>
+      <div class="dim" style="font-size:11px;margin-top:4px">dvdisaster is detected like smartctl; when it isn't installed, ECC generation is skipped with a Preflight install hint (<span class="mono">apt/brew install dvdisaster</span> · dvdisaster.jcea.es).</div>
+    </div>
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>`;
   $('#view').innerHTML=h;
   escrowStatus();
@@ -1945,7 +1959,8 @@ async function saveCfg(){
     versions_retained:parseInt($('#vr').value)||0,
     escrow_on_media:$('#eom').value,escrow_include_readers:$('#eir').checked,
     burn_command:$('#bc').value.trim(),burn_verify_mount:$('#bv').value.trim(),
-    optical_ecc:$('#oecc').checked});
+    optical_ecc:$('#oecc').checked,burn_ecc:$('#becc').value,
+    burn_ecc_device:$('#beccd').value.trim(),burn_ecc_carry:$('#becccarry').checked});
     toast('Settings saved');lamp();vSettings()}catch(e){toast(e.message,1)}}
 
 /* ---- folder picker: a read-only server-side browser on every path field ----

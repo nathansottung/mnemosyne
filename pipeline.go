@@ -47,7 +47,10 @@ type Config struct {
 	ThrottleMbps          float64           `json:"throttle_mbps"` // 0 = unthrottled; caps writer-side MB/s (thermal control)
 	BurnCommand           string            `json:"burn_command"`
 	BurnVerifyMount       string            `json:"burn_verify_mount"`
-	OpticalEcc            bool              `json:"optical_ecc"` // note dvdisaster ECC as an intended extra layer on optical packages (docs + RESTORE.txt); par2 works regardless
+	OpticalEcc            bool              `json:"optical_ecc"`     // note dvdisaster ECC as an intended extra layer on optical packages (docs + RESTORE.txt); par2 works regardless
+	BurnEcc               string            `json:"burn_ecc"`        // dvdisaster disc-level ECC generated AFTER a burn verifies: "off" (default) | "rs02" | "rs03". Complement to par2; restore never requires it.
+	BurnEccDevice         string            `json:"burn_ecc_device"` // optical device dvdisaster reads to compute the .ecc (e.g. /dev/sr0, H:); blank = derived from the burn command, else the layer is skipped
+	BurnEccCarry          bool              `json:"burn_ecc_carry"`  // true = copy each disc's .ecc into the NEXT pending disc's staged folder (it rides on the next disc); false = keep it in staging
 	VerifyDueMonths       int               `json:"verify_due_months"`
 	RequiredCopies        int               `json:"required_copies"`                // redundancy goal; fewer verified copies = under-protected
 	FinalizeVerifyDays    int               `json:"finalize_verify_days"`           // finalize: every copy on the volume must have verified within this many days
@@ -233,6 +236,15 @@ func (a *App) computePreflight() map[string]any {
 		smart["hint"] = smartInstallHint
 	}
 	out["smartctl"] = smart
+	// dvdisaster (disc-level ECC) — OPTIONAL and informational; never affects "ok".
+	// Present = the Burn tab can auto-generate a per-disc .ecc after verify; absent =
+	// the feature hides behind an install hint. It complements par2, never replaces it.
+	dp, derr := a.tool("dvdisaster")
+	dvd := map[string]any{"ok": derr == nil, "path": dp}
+	if derr != nil {
+		dvd["hint"] = dvdisasterInstallHint
+	}
+	out["dvdisaster"] = dvd
 	// Tape diagnostics tool (ITDT / tapeinfo / sg_logs / HPE L&TT) — OPTIONAL and
 	// informational; never affects "ok". Reads drive health only.
 	out["tape_tool"] = a.TapeToolStatus()
@@ -972,7 +984,7 @@ func (a *App) BuildChunk(id int, progress func(float64, string)) error {
 			return fail(fmt.Errorf("encrypting private manifest: %w", err))
 		}
 	}
-	writeRestoreTxt(work, c, cfg.OpticalEcc)
+	writeRestoreTxt(work, c, cfg.eccIntended())
 	writeBagItTags(work, c) // BagIt tag files beside the package (institutional legibility)
 
 	c.StagedDir = work
@@ -1210,7 +1222,7 @@ func appendOpticalNote(t string, c *Chunk, eccEnabled bool) string {
 	if !isOpticalKind(c.MediaKind) {
 		return t
 	}
-	return t + opticalEccParagraph(eccEnabled)
+	return t + opticalEccParagraph(c.Name, eccEnabled)
 }
 
 // appendPrivacyNote adds the one paragraph RESTORE.txt needs when this medium's
