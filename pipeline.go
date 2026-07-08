@@ -245,6 +245,11 @@ func (a *App) computePreflight() map[string]any {
 		dvd["hint"] = dvdisasterInstallHint
 	}
 	out["dvdisaster"] = dvd
+	// stenc (drive-level tape AES) — OPTIONAL, Linux only, informational; never
+	// affects "ok". Present = the Tape Drive panel can read/manage the drive key;
+	// absent (or non-Linux) = hidden behind an OS-aware hint. It is OUTSIDE the gpg
+	// restore story — awareness, not dependence.
+	out["stenc"] = a.StencStatus()
 	// Tape diagnostics tool (ITDT / tapeinfo / sg_logs / HPE L&TT) — OPTIONAL and
 	// informational; never affects "ok". Reads drive health only.
 	out["tape_tool"] = a.TapeToolStatus()

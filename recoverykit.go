@@ -267,7 +267,7 @@ func writeVolumesTable(b *strings.Builder, volm map[int]*Volume) {
 	if len(enc) > 0 {
 		b.WriteString("\n> ### 🔒 DRIVE-ENCRYPTED MEDIA — READ THIS\n>\n> " + driveEncWarning + "\n>\n")
 		for _, v := range enc {
-			line := "> - **" + mdCell(v.Label) + "**"
+			line := "> - This medium **ALSO requires a drive-level key** — **" + mdCell(v.Label) + "**"
 			if v.Barcode != "" {
 				line += " (barcode `" + mdCell(v.Barcode) + "`)"
 			}
@@ -276,6 +276,7 @@ func writeVolumesTable(b *strings.Builder, volm map[int]*Volume) {
 			} else {
 				line += " — **drive key location NOT recorded** — find it before you need it."
 			}
+			line += " (see `stenc`; this is separate from — and required in addition to — the gpg passphrase)."
 			b.WriteString(line + "\n")
 		}
 	}

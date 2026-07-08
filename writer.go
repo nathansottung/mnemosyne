@@ -321,6 +321,9 @@ func (a *App) WriteChunk(id int, destDir string, bufferGB float64, blockMB int, 
 	// bad read-back marks only this copy failed — the package stays healthy if
 	// the staged payload or another verified copy is intact.
 	a.Store.RecordCopy(c, volumeID, dest, ok)
+	// Awareness: if this landed on a tape whose drive is actively encrypting (stenc),
+	// record it on the volume so kits/inventories shout about the drive-key risk.
+	a.noteTapeDriveEncryption(volumeID)
 	note := "write read-back"
 	if !ok {
 		note = "write read-back: hash mismatch medium=" + rb

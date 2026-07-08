@@ -920,6 +920,43 @@ and links each unchecked step to the exact spot.
   `NAME.manifest.json.gpg` on a found tape and decrypts it with the keystore —
   and if the keystores are gone too, RESTORE.txt documents the manual `gpg -d`.
 
+### Two layers of encryption — and why gpg is the portable one
+
+Some tape operators run their **drive's built-in AES** (LTO hardware encryption,
+managed on Linux with [`stenc`](https://github.com/scsitape/stenc)) *alongside*
+Mnemosyne's application-layer gpg. Mnemosyne **supports awareness of this layer,
+not dependence on it** — and the distinction is the whole point:
+
+| | **gpg (application layer)** | **Drive-level AES (hardware layer)** |
+|---|---|---|
+| Where the ciphertext is | the `.tar.gpg` **file** on the medium | the **raw bytes** the drive records |
+| What reads it back | *any* drive + `gpg` + the passphrase | *only* a compatible drive with the **drive key** loaded |
+| In the restore story? | **yes** — QR card, paper key, keystore all carry it | **no** — the drive key lives entirely outside Mnemosyne |
+| If the key is lost | the package is one of *N* verified copies; other layers stand | the tape is **scrap** — `gpg`, `tar`, and `par2` all fail; par2 can't even see the data to repair it |
+
+gpg is the **portable** layer: the ciphertext is an ordinary file, and multiple
+independent implementations (GnuPG, Sequoia) can open it on any machine, forever.
+Drive-level AES is a hardware property of one key in one drive family — powerful,
+but a decade-scale single point of failure that no amount of par2 or gpg can undo.
+
+So Mnemosyne treats the hardware layer as **awareness, never dependence**:
+
+- **stenc is optional and detected** (Linux; on Windows/macOS the drive key is a
+  vendor-tool concern). When present with a drive attached, the **Tape Drive**
+  panel reads and shows the drive's encryption status (on/off, key loaded).
+- **Setting or clearing the drive key** is a clearly-marked *advanced* action
+  behind an explicit warning — *"a tape written with it cannot be read by any
+  drive without this key configured; your packages remain gpg-protected
+  regardless; most users should leave this off."* It is **never enabled silently**.
+- **Volumes remember it.** A tape written while drive AES was active is recorded
+  with `drive_encryption: true`, and the **volume inventory + Recovery Kit** say
+  so prominently — *"this tape ALSO requires drive-level key `<label>` — see
+  stenc"* — with the one instruction that matters: **preserve the drive key
+  separately, or the tape is unrecoverable.**
+
+Restore **never requires** the drive layer: the guarantee is always par2 → gpg →
+tar, and gpg is the layer that travels.
+
 ---
 
 ## FAQ

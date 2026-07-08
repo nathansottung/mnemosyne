@@ -1291,6 +1291,7 @@ func api(mux *http.ServeMux, app *App) {
 	mux.HandleFunc("GET /api/tape/status", func(w http.ResponseWriter, r *http.Request) {
 		st := app.TapeToolStatus()
 		st["last"] = app.Store.LastTapeCheck()
+		st["stenc"] = app.StencStatus() // drive-level AES awareness (optional, Linux)
 		jsonOut(w, st)
 	})
 	mux.HandleFunc("POST /api/tape/check", func(w http.ResponseWriter, r *http.Request) {
@@ -1305,6 +1306,55 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		jsonOut(w, map[string]any{"available": true, "snapshot": th})
+	})
+	// Drive-level (hardware) tape AES via stenc — AWARENESS, not dependence. This
+	// endpoint reads the drive's current encryption status (SPIN, read-only). Absent
+	// stenc (or non-Linux) it returns availability + an OS-aware hint, never an error.
+	mux.HandleFunc("GET /api/tape/encryption", func(w http.ResponseWriter, r *http.Request) {
+		st := app.StencStatus()
+		if st["available"] == true {
+			if enc, err := app.DriveEncryptionStatus(r.URL.Query().Get("device")); err == nil {
+				st["status"] = enc
+			} else {
+				st["error"] = err.Error()
+			}
+		}
+		jsonOut(w, st)
+	})
+	// Set or clear the drive key via stenc (SPOUT — a control command, never tape
+	// movement). Explicitly gated: the caller must pass confirm:true, having shown
+	// the operator the warning. This is OUTSIDE the gpg restore story; never silent.
+	mux.HandleFunc("POST /api/tape/drive-key", func(w http.ResponseWriter, r *http.Request) {
+		if !app.stencAvailable() {
+			jsonOut(w, map[string]any{"available": false, "hint": stencInstallHint()})
+			return
+		}
+		b := body(r)
+		if !bl(b, "confirm") {
+			jsonErr(w, 400, fmt.Errorf("refusing to change the drive key without explicit confirmation (confirm:true)"))
+			return
+		}
+		action := strings.ToLower(strings.TrimSpace(s(b, "action")))
+		dev := s(b, "device")
+		var err error
+		switch action {
+		case "set":
+			err = app.SetDriveKey(dev, s(b, "key_file"), int(f(b, "algorithm")))
+		case "clear", "off":
+			err = app.ClearDriveKey(dev)
+		default:
+			jsonErr(w, 400, fmt.Errorf("action must be 'set' or 'clear'"))
+			return
+		}
+		if err != nil {
+			jsonErr(w, 500, err)
+			return
+		}
+		out := map[string]any{"ok": true, "action": action, "warning": driveEncWarning}
+		if enc, e := app.DriveEncryptionStatus(dev); e == nil {
+			out["status"] = enc
+		}
+		jsonOut(w, out)
 	})
 
 	// dock — guided, resumable ingest of a stack of legacy drives, one at a time

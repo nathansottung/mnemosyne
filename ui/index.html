@@ -1351,14 +1351,69 @@ function tapeHealthBody(th){
   return h;
 }
 function tapePanel(tape){
-  if(!tape||(!tape.available&&!tape.last))return ''; // feature hidden; install hint lives in Settings
+  const stenc=tape&&tape.stenc;
+  const showStenc=stenc&&stenc.available;
+  if(!tape||(!tape.available&&!tape.last&&!showStenc))return ''; // feature hidden; install hint lives in Settings
   let h=`<div class="panel"><div class="row" style="align-items:center"><h2 style="flex:1">Tape drive <span class="dim" style="font-weight:400;font-size:12px">· optional diagnostics</span></h2>`;
   if(tape.available)h+=`<button class="btn ghost" onclick="checkTape()">Check now</button>`;
   h+=`</div>`;
   if(tape.last)h+=`<div style="margin-top:4px">${tapeSevBadge(tape.last.severity)} ${tapeHealthBody(tape.last)}</div>`;
-  else h+=`<div class="dim" style="font-size:12px">Tool detected (${esc(tape.tool||'')} on ${esc(tape.device||'')}). No reading yet — <b>Check now</b> with a drive attached. Reads drive health only; never moves the tape.</div>`;
+  else if(tape.available)h+=`<div class="dim" style="font-size:12px">Tool detected (${esc(tape.tool||'')} on ${esc(tape.device||'')}). No reading yet — <b>Check now</b> with a drive attached. Reads drive health only; never moves the tape.</div>`;
+  if(showStenc)h+=driveEncPanel(stenc);
   return h+`</div>`;
 }
+/* Drive-level (hardware) AES via stenc — awareness, not dependence. Read-only
+   status here; the set/clear-key action lives behind an explicit warning dialog. */
+function driveEncPanel(stenc){
+  return `<div id="stencbox" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+    <div class="row" style="align-items:center"><div style="flex:1"><b>Drive-level AES</b> <span class="dim" style="font-size:11px">· stenc on ${esc(stenc.device||'')} · OUTSIDE the gpg restore story</span></div>
+      <button class="btn ghost" style="font-size:11px" onclick="checkDriveEnc()">Read status</button>
+      <button class="btn ghost" style="font-size:11px" onclick="driveKeyDlg()">Set / clear key…</button></div>
+    <div id="stencstatus" class="dim" style="font-size:12px;margin-top:6px">Not read yet — <b>Read status</b> to see whether the drive is encrypting and a key is loaded. This is separate from gpg; <b>gpg is the portable layer and always applies.</b></div>
+  </div>`;
+}
+function driveEncStatusHtml(st){
+  if(!st)return '<span class="dim">No status.</span>';
+  const on=st.encrypting, key=st.key_loaded;
+  const badge=on?`<span class="stamp FAILED">ENCRYPTING</span>`:`<span class="stamp VERIFIED">off</span>`;
+  let s=`${badge} drive encryption <b>${on?'ON':'off'}</b> · key ${key?'<b>loaded</b>':'not loaded'}${st.method?' · '+esc(st.method):''}`;
+  if(on)s+=`<div class="err" style="margin-top:6px;font-size:11.5px">Tapes written now carry <b>hardware ciphertext</b>. Without this <b>drive key</b>, no tool reads them — gpg included. Mnemosyne records the drive-key requirement on any volume written while this is on; <b>preserve the drive key separately.</b></div>`;
+  return s;
+}
+async function checkDriveEnc(){
+  const el=$('#stencstatus');if(el)el.innerHTML='<span class="dim">Reading drive encryption status…</span>';
+  try{const r=await api('GET','/api/tape/encryption');
+    if(r.available===false){if(el)el.innerHTML=esc(r.hint||'stenc not available');return;}
+    if(r.error){if(el)el.innerHTML='<span class="dim">Could not read the drive: '+esc(r.error)+' (is a tape loaded?)</span>';return;}
+    if(el)el.innerHTML=driveEncStatusHtml(r.status);
+  }catch(e){if(el)el.innerHTML='<span class="dim">'+esc(e.message)+'</span>';}
+}
+/* Advanced, explicitly-warned set/clear of the DRIVE key. Never silent. */
+function driveKeyDlg(){dlg(`<h1>⚠ Drive-level encryption key (advanced)</h1>
+  <div class="err" style="font-size:12px;margin-bottom:12px"><b>Drive-level encryption is OUTSIDE Mnemosyne's restore story.</b> A tape written with it <b>cannot be read by ANY drive</b> without this key configured — not gpg, not tar, and par2 cannot repair what it cannot read. Your packages remain <b>gpg-protected regardless</b>; <b>most users should leave this off.</b> Mnemosyne never stores this key — you are responsible for preserving it separately.</div>
+  <label>Action</label>
+  <select id="dkact" class="full" onchange="document.getElementById('dksetrow').style.display=this.value==='set'?'block':'none'">
+    <option value="set">Set key ON — start encrypting future writes</option>
+    <option value="clear">Clear key — stop encrypting future writes</option>
+  </select>
+  <div id="dksetrow" style="margin-top:10px">
+    <label>Key file (a file containing the raw drive key — kept OUTSIDE Mnemosyne)</label>
+    <input id="dkfile" class="full" style="font:12px var(--mono)" placeholder="/secure/offline/drive.key">
+    <label style="margin-top:8px">Algorithm index (stenc <span class="mono">-a</span>; blank = 1 / AES-256-GCM)</label>
+    <input id="dkalg" class="full" type="number" min="1" step="1" placeholder="1">
+  </div>
+  <label class="row" style="gap:8px;align-items:center;margin-top:12px"><input id="dkconfirm" type="checkbox"> I understand the drive key is <b>required to ever read these tapes</b> and is <b>not</b> part of the gpg/Recovery-Kit restore story.</label>
+  <div class="row" style="margin-top:16px"><button class="btn danger" onclick="go()">Apply to drive</button></div>`,
+  async()=>{
+    if(!$('#dkconfirm').checked)throw new Error('Tick the confirmation to proceed');
+    const action=$('#dkact').value;
+    const b={action,confirm:true};
+    if(action==='set'){b.key_file=$('#dkfile').value.trim();b.algorithm=parseInt($('#dkalg').value)||1;
+      if(!b.key_file)throw new Error('A key file is required to set the drive key');}
+    const r=await api('POST','/api/tape/drive-key',b);
+    toast(action==='set'?'Drive AES ON — preserve the drive key separately!':'Drive AES cleared for future writes',action==='set');
+    if($('#stencstatus'))$('#stencstatus').innerHTML=driveEncStatusHtml(r.status);
+  });}
 /* "Check before a big write" nudge for the write dialog — shows the last tape
    diagnostic's age and a one-click refresh when a tape tool is available. */
 function tapeNudge(tape){
@@ -1845,6 +1900,7 @@ async function vSettings(){
     <tr><td>par2</td><td>${tool('par2')}</td></tr>
     <tr><td>smartctl <span class="dim" style="font-size:11px">(optional · drive health)</span></td><td>${p.smartctl&&p.smartctl.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.smartctl.path||'')}</span>`:`<span class="dim">not installed — drive-health signals hidden. smartmontools.org · <span class="mono">choco/apt/brew install smartmontools</span>. Complements hash verification; never replaces it.</span>`}</td></tr>
     <tr><td>dvdisaster <span class="dim" style="font-size:11px">(optional · disc ECC)</span></td><td>${p.dvdisaster&&p.dvdisaster.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.dvdisaster.path||'')}</span>`:`<span class="dim">not installed — disc-level ECC hidden. dvdisaster.jcea.es · <span class="mono">apt/brew install dvdisaster</span>. Complements par2 over the disc geometry; par2 repair works regardless.</span>`}</td></tr>
+    <tr><td>stenc <span class="dim" style="font-size:11px">(optional · drive AES)</span></td><td>${p.stenc&&p.stenc.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.stenc.bin||'')}</span> <span class="dim">· manages the DRIVE key (outside gpg — awareness only)</span>`:`<span class="dim">${esc((p.stenc&&p.stenc.hint)||'stenc not available — drive-level encryption is managed via vendor tools.')}</span>`}</td></tr>
     <tr><td>tape diag <span class="dim" style="font-size:11px">(optional · read-only)</span></td><td>${p.tape_tool&&p.tape_tool.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.tape_tool.tool||'')} · ${esc(p.tape_tool.bin||'')}</span>`:`<span class="dim">not installed — tape-drive diagnostics hidden. IBM ITDT (free, Fix Central) · sg3_utils (<span class="mono">apt/brew install sg3-utils</span>) · HPE L&amp;TT. Reads drive health only — never moves the tape or writes.</span>`}</td></tr>
     <tr><td>LTFS tape</td><td>${ltfsCell}</td></tr></table>
     ${(p.hints||[]).map(x=>`<div class="err" style="margin-top:8px">${esc(x)}</div>`).join('')}</div>
