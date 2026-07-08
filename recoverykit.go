@@ -75,6 +75,25 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 		return nil, err
 	}
 
+	// Structure companion: the hash-keyed "what should exist and where" for each
+	// archive — the organization scheme, printable, so it survives the catalog. It
+	// carries paths + hashes but ZERO file content.
+	progress(0.64, "structure companion")
+	var structDocs []string
+	for _, c := range a.Store.Collections() {
+		exp, err := a.StructureExport(c.ID)
+		if err != nil || len(exp.Files) == 0 {
+			continue
+		}
+		fn := "STRUCTURE-" + safeName(c.Name) + ".md"
+		if err := os.WriteFile(filepath.Join(kit, fn), []byte(StructureMarkdown(exp)), 0o644); err == nil {
+			structDocs = append(structDocs, fn)
+		}
+		// The machine-readable twins ride along too (re-importable on a fresh machine).
+		_ = os.WriteFile(filepath.Join(kit, "STRUCTURE-"+safeName(c.Name)+".json"), exportJSON(exp), 0o644)
+		_ = os.WriteFile(filepath.Join(kit, "STRUCTURE-"+safeName(c.Name)+".csv"), StructureCSV(exp), 0o644)
+	}
+
 	// Escrow Bundle: the archive preserves its own reader. The Kit always gets the
 	// FULL bundle (source + binaries + toolchain) — it is the canonical, off-site
 	// belt-and-suspenders home. Never fail the kit over it: a missing cache just
@@ -144,7 +163,7 @@ func (a *App) BuildRecoveryKit(outputDir string, progress func(float64, string))
 	return map[string]any{
 		"output_dir": kit, "chunks": len(chunks), "keys": len(keys),
 		"qr_cards": qrWritten, "warning": recoveryKitWarning, "warnings": warnings,
-		"escrow": escrowSummary,
+		"escrow": escrowSummary, "structure_docs": structDocs,
 	}, nil
 }
 

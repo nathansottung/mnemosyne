@@ -823,6 +823,29 @@ Archivematica as institutional endpoints.
 
 ---
 
+## Portable structure & plan exports
+
+The catalog's *knowledge* — what files exist, where each physically lives, and
+where a move would put them — travels as small, hash-keyed documents:
+
+- **Structure Export** (per archive, JSON with a CSV twin and a printable Markdown
+  companion): every file's SHA-256, size, role, event, capture date, every known
+  location (volume serial + path + location name + last verified), and its planned
+  path if a plan maps it. Import it into a fresh install and search, locations, and
+  events answer exactly as on the original machine — it reconstructs the
+  *knowledge*, not the data.
+- **Plan Export** (JSON): a compiled reorganization, per source-drive **serial** —
+  the pending/satisfied work with hashes and destinations. Import it on another
+  machine and that machine can carry the move out; the serial binding makes it safe
+  (a drive only advances the plan when its real serial matches).
+
+> **These exports contain paths and hashes but ZERO file content — no images, no
+> bytes.** It is safe to email your organization scheme or print it; it cannot
+> reconstruct your data, only the map of what should exist and where. The Markdown
+> companion (`STRUCTURE-<archive>.md`) is included in every Recovery Kit.
+
+---
+
 ## Terminology
 
 Mnemosyne uses professional archival vocabulary aligned with the **OAIS

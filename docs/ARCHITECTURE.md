@@ -71,6 +71,12 @@ plans.go       The keystone: a Plan maps every in-scope file BY HASH to a planne
                copy-then-verify into the planned tree, source re-checked against its
                snapshot hash, deduped (first drive satisfies), resumable across
                restarts. Sources read-only; only the destination is written.
+exports.go     Hash-keyed PORTABLE documents. StructureExport (per archive: every
+               file's hash/size/role/event/capture/locations/planned-path as JSON +
+               CSV + printable Markdown) and PlanExport (a compiled plan per source
+               serial). ImportStructure rebuilds the KNOWLEDGE in a fresh catalog;
+               ImportPlan lets another machine execute the move. Paths + hashes only,
+               never file content.
 mirror.go      MirrorToVolume: native mirror backup — copy an archive's files to a
                volume as PLAIN FILES (copy-then-verify via .mnemo_tmp → atomic
                rename), recorded as verified file-level copies (same Chunk.Mirror
@@ -632,6 +638,32 @@ time, in any order, over weeks.
   destination volume (`recordPlanDestCopies`); the **source drives keep their
   historical copies — never wiped, never modified** (they're only ever `os.Open`ed
   for reading). At 100% the plan closes with a final report.
+
+## Portable exports — the knowledge, hash-keyed
+
+`exports.go` makes the catalog's *knowledge* travel independently of its data.
+Everything is keyed by **content hash**, so a copy found anywhere can be matched
+back, and an import reconstructs the graph rather than the bytes.
+
+- **Structure Export** (per archive) lists every file's SHA-256, size, role, event,
+  capture date, every known physical location (volume serial + path + location name
+  + last verified), and its planned path if a plan maps it — as JSON, a CSV twin,
+  and a printable Markdown companion ("what should exist and where"). The kit
+  generator writes `STRUCTURE-<archive>.{md,json,csv}` into every Recovery Kit.
+  `ImportStructure` rebuilds the archive, its events, the volumes/locations, the
+  files (hash/role/event/capture), and content-addressed copies — so **search,
+  locations, and events answer the same** on a fresh machine.
+
+- **Plan Export** serializes a compiled plan per source-drive **serial** (the
+  pending/satisfied work with hashes + destinations, plus the per-serial source file
+  list). `ImportPlan` recreates the plan *and the snapshots it needs*, so a
+  **different machine can execute the move** — the serial binding makes it safe: a
+  drive only advances the plan when its real serial matches.
+
+- **Zero file content.** Exports carry paths and hashes, never bytes — safe to email
+  or print; they can reconstruct the *map*, never the images. The round-trip is
+  covered end-to-end (`exports_test.go`): export from one data dir, import into a
+  fresh one, and search / locations / plan answers match.
 
 ## Dependencies
 

@@ -146,6 +146,13 @@ func defaultDataDir() string {
 
 // ---- helpers ------------------------------------------------------------
 
+// download writes bytes as a named file attachment (export downloads).
+func download(w http.ResponseWriter, contentType, filename string, body []byte) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+	_, _ = w.Write(body)
+}
+
 func jsonOut(w http.ResponseWriter, v any) {
 	// A nil slice marshals to `null`, which makes the browser blow up on
 	// `.length`/`.map` for an empty list (e.g. an empty catalog). Emit `[]` so
@@ -1093,6 +1100,62 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		jsonOut(w, p)
+	})
+
+	// ---- Portable exports / imports (hash-keyed, zero file content) -------
+	// Structure Export for an archive as json (default), csv, or md.
+	mux.HandleFunc("GET /api/collections/{id}/structure-export", func(w http.ResponseWriter, r *http.Request) {
+		exp, err := app.StructureExport(pathID(r))
+		if err != nil {
+			jsonErr(w, 404, err)
+			return
+		}
+		base := "structure-" + safeName(exp.Archive)
+		switch strings.ToLower(r.URL.Query().Get("format")) {
+		case "csv":
+			download(w, "text/csv; charset=utf-8", base+".csv", StructureCSV(exp))
+		case "md", "markdown":
+			download(w, "text/markdown; charset=utf-8", base+".md", []byte(StructureMarkdown(exp)))
+		default:
+			download(w, "application/json; charset=utf-8", base+".json", exportJSON(exp))
+		}
+	})
+	// Import a Structure Export (JSON body) into a NEW archive in this catalog.
+	mux.HandleFunc("POST /api/import/structure", func(w http.ResponseWriter, r *http.Request) {
+		var exp StructureExport
+		if err := json.NewDecoder(r.Body).Decode(&exp); err != nil {
+			jsonErr(w, 400, fmt.Errorf("not a valid structure export: %w", err))
+			return
+		}
+		res, err := app.ImportStructure(exp)
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, res)
+	})
+	// Plan Export (JSON) — the compiled, serial-bound plan for another machine.
+	mux.HandleFunc("GET /api/plans/{id}/export", func(w http.ResponseWriter, r *http.Request) {
+		exp, err := app.PlanExport(pathID(r))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		download(w, "application/json; charset=utf-8", "plan-"+safeName(exp.Name)+".json", exportJSON(exp))
+	})
+	// Import a Plan Export (JSON body) so this machine can execute the move.
+	mux.HandleFunc("POST /api/import/plan", func(w http.ResponseWriter, r *http.Request) {
+		var exp PlanExport
+		if err := json.NewDecoder(r.Body).Decode(&exp); err != nil {
+			jsonErr(w, 400, fmt.Errorf("not a valid plan export: %w", err))
+			return
+		}
+		res, err := app.ImportPlan(exp)
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, res)
 	})
 
 	// format sustainability — the registry and the per-archive census (0 = all).

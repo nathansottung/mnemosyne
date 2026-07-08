@@ -888,6 +888,13 @@ async function vVault(){
     <input id="newname" placeholder="New archive name (e.g. Photography Business)" style="flex:1;min-width:220px">
     <button class="btn" onclick="addColl()">Create archive</button>
   </div></div>
+  <div class="panel"><div class="row" style="align-items:baseline"><h2 style="flex:1">Portable exports <span class="dim" style="font-weight:400;font-size:11.5px">· the organization scheme, hash-keyed</span></h2>
+      <button class="btn ghost" onclick="importDlg()">Import…</button></div>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">📄 A Structure Export lists every file's hash, role, event, capture date, and where it lives — <b>no file content</b>. <b>Safe to email your organization scheme; it contains no images.</b> Import into a fresh install to reconstruct the knowledge (not the data).</div>
+    ${cs.length?`<table><tr><th>Archive</th><th>Structure export</th></tr>${cs.map(c=>`<tr><td>${esc(c.name)}</td><td>
+      <a class="btn ghost" style="font-size:11px" href="${mediaURL('/api/collections/'+c.id+'/structure-export?format=json')}" target="_blank">JSON</a>
+      <a class="btn ghost" style="font-size:11px" href="${mediaURL('/api/collections/'+c.id+'/structure-export?format=csv')}" target="_blank">CSV</a>
+      <a class="btn ghost" style="font-size:11px" href="${mediaURL('/api/collections/'+c.id+'/structure-export?format=md')}" target="_blank">Markdown</a></td></tr>`).join('')}</table>`:'<div class="dim">No archives yet.</div>'}</div>
   <div class="panel"><h2>Find a file — path, hash, extension, protection status</h2>
     <div class="row">
       <input id="q" placeholder="path contains…" oninput="doSearch()" style="flex:2;min-width:180px">
@@ -2530,6 +2537,7 @@ async function vPlanDetail(id){if(location.hash!=='#plans')location.hash='#plans
       <button class="btn" onclick="compilePlan(${p.id})">Compile (dry-run)</button>
       ${p.status!=='DRAFT'?`<button class="btn ghost" onclick="adoptDest(${p.id})">Adopt existing destination…</button>`:''}
       ${p.status!=='DRAFT'?`<button class="btn ghost" onclick="execPlanDlg(${p.id})">Execute from a drive…</button>`:''}
+      ${p.status!=='DRAFT'?`<a class="btn ghost" href="${mediaURL('/api/plans/'+p.id+'/export')}" target="_blank" title="Portable, serial-bound — another machine can execute it. No file content.">Export plan (JSON)</a>`:''}
       <button class="btn ghost danger" onclick="delPlan(${p.id})">Delete</button></div>`;
   // Compile report
   h+=`<div class="panel" style="border-left:3px solid ${rep.compilable?'var(--ok)':'var(--warn)'}">
@@ -2589,6 +2597,17 @@ function execPlanDlg(id){dlg(`<h1>Execute plan work from a drive</h1>
   <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Execute from this drive</button></div>`,
   async()=>{const r=await api('POST','/api/plans/'+id+'/execute',{mount_path:$('#ex_mount').value.trim(),serial:$('#ex_serial').value.trim()});
     toast('Execution started — see Jobs');loc('jobs')})}
+
+/* ---- portable export / import ---- */
+function importDlg(){dlg(`<h1>Import a portable export</h1>
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Load a <b>Structure Export</b> (rebuilds an archive's knowledge in this catalog) or a <b>Plan Export</b> (lets this machine execute a move — serial binding keeps it safe). These files contain paths &amp; hashes only, never file content.</div>
+  <input id="imp_file" type="file" accept=".json,application/json" class="full">
+  <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Import</button></div>`,
+  async()=>{const fi=$('#imp_file');if(!fi||!fi.files||!fi.files[0])throw new Error('choose a .json export');
+    const txt=await fi.files[0].text();let obj;try{obj=JSON.parse(txt)}catch(e){throw new Error('not valid JSON')}
+    if(obj.format==='mnemosyne-structure'){const r=await api('POST','/api/import/structure',obj);toast('Imported archive “'+r.archive+'” — '+r.files+' file(s)');loc('vault')}
+    else if(obj.format==='mnemosyne-plan'){const r=await api('POST','/api/import/plan',obj);toast('Imported plan “'+r.name+'” — '+r.files+' file(s)');loc('plans')}
+    else throw new Error('unrecognized export (expected a Mnemosyne structure or plan export)')})}
 
 /* ---------------- shell ---------------- */
 let dlgGo=null;
