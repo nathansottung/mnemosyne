@@ -78,9 +78,18 @@ details.adv>summary:hover{color:var(--ink)}
 .modepick button{background:var(--panel);border:none;border-right:1px solid var(--line);padding:8px 16px;font:600 12.5px var(--sans);color:var(--ink-2);cursor:pointer}
 .modepick button:last-child{border-right:none}
 .modepick button.on{background:var(--act);color:var(--act-ink)}
-nav .moretools{display:block;width:100%;text-align:left;background:none;border:none;color:#7f938a;cursor:pointer;
-  padding:6px 22px 8px;font:11.5px var(--sans)}
-nav .moretools:hover{color:#cfd6d0}
+/* the single "how much to see" control at the foot of the nav (replaces per-group
+   reveals — one roll-up mechanism, no double nesting) */
+nav .navmode{display:flex;margin:16px 16px 0;border:1px solid #3a4a42;border-radius:6px;overflow:hidden}
+nav .navmode button{flex:1;background:none;border:none;border-right:1px solid #3a4a42;color:#8fa398;
+  padding:6px 4px;font:600 10.5px var(--mono);letter-spacing:.02em;cursor:pointer}
+nav .navmode button:last-child{border-right:none}
+nav .navmode button:hover{color:#cfd6d0;background:#28352f}
+nav .navmode button.on{background:#28352f;color:#fff}
+nav .navmode-lbl{padding:14px 22px 4px;font:600 9px/1 var(--mono);letter-spacing:.16em;color:#5f7167}
+/* "start here" cue on the Home item while the catalog is still empty */
+nav a .navstart{display:inline-block;margin-left:7px;background:#b9c8bf;color:#1c241f;font:700 9px/1 var(--mono);
+  letter-spacing:.04em;padding:2px 6px;border-radius:9px;vertical-align:1px}
 table{width:100%;border-collapse:collapse}
 th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
   text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}
@@ -181,11 +190,14 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 .tprof{font:10.5px var(--mono);color:var(--ink-3)}
 .tprof.explicit{color:var(--ink-2);font-weight:600}
 
-/* ---- view header + inline help ---- */
+/* ---- view header + inline help ----
+   NOTE: the round info affordance is a <button class="help"> and MUST be scoped to
+   button.help — a bare `.help` here would also capture the plain help SENTENCES
+   (`<div class="help">`) and squash them into a 20px circle (text overlap). */
 .hd{display:flex;align-items:center;gap:9px}
-.help{background:transparent;border:1px solid var(--line);color:var(--ink-3);border-radius:50%;
-  width:20px;height:20px;padding:0;font:700 12px var(--sans);line-height:1;flex-shrink:0}
-.help:hover{border-color:var(--act);color:var(--act)}
+button.help{background:transparent;border:1px solid var(--line);color:var(--ink-3);border-radius:50%;
+  width:20px;height:20px;padding:0;margin:0;font:700 12px var(--sans);line-height:1;flex-shrink:0;cursor:pointer}
+button.help:hover{border-color:var(--act);color:var(--act)}
 
 /* ---- destructive / sensitive actions ---- */
 .btn.danger{background:transparent;color:var(--bad);border:1px solid var(--bad)}
@@ -228,9 +240,9 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
   display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff}
 .opt.multi .box{border-radius:5px}
 .opt.on .box{background:var(--act);border-color:var(--act)}
-.opt .ot{font:600 14px var(--sans);color:var(--ink)}
-.opt .od{font-size:12px;color:var(--ink-3);margin-top:2px}
-.opt .oneed{font-size:11.5px;color:var(--act);margin-top:6px}
+.opt .ot{display:block;font:600 14px var(--sans);color:var(--ink);line-height:1.3}
+.opt .od{display:block;font-size:12px;color:var(--ink-3);margin-top:3px;line-height:1.45}
+.opt .oneed{display:block;font-size:11.5px;color:var(--act);margin-top:6px;line-height:1.45}
 .opt .oneed a{color:var(--act)}
 .setup .acts{display:flex;align-items:center;gap:10px;margin-top:22px}
 .setup .acts .sp{flex:1}
@@ -893,6 +905,7 @@ async function censusDlg(cid,name){
 function homeBytes(n){const gb=(n||0)/1e9;if(gb>=1000)return (gb/1000).toFixed(2)+' TB';if(gb>=10)return gb.toFixed(0)+' GB';return gb.toFixed(1)+' GB'}
 async function vHome(){
   const home=await api('GET','/api/home');
+  if(_navStart!==!!home.empty){_navStart=!!home.empty;renderNav();} // keep the "start here" cue in sync
   // Truly-empty catalog (no archives, no drives): the very first time, run the setup
   // interview; once setup is done (or skipped), show the checklist scoped to the answers.
   if(home.empty){
@@ -3452,34 +3465,44 @@ function modeAtLeast(need){return modeRank(_uiMode)>=modeRank(need)}
 function navCollapsedState(){try{return JSON.parse(localStorage.getItem('navCollapsed')||'{}')||{}}catch(e){return {}}}
 function navSetCollapsed(id,collapsed){const s=navCollapsedState();s[id]=collapsed;try{localStorage.setItem('navCollapsed',JSON.stringify(s))}catch(e){}}
 function navGroupCollapsed(g){const s=navCollapsedState();return (id=>id in s?s[id]:g.situational)(g.id);}
-function navMoreState(){try{return JSON.parse(localStorage.getItem('navMore')||'{}')||{}}catch(e){return {}}}
-function navToggleMore(id){const s=navMoreState();s[id]=!s[id];try{localStorage.setItem('navMore',JSON.stringify(s))}catch(e){}renderNav();}
+// ONE roll-up mechanism: collapsible groups. How MANY tools show is the mode
+// (Essentials / More / Everything), chosen once at the foot of the nav — no
+// per-group "show more" reveal, so there is no second layer of nesting.
+let _navStart=false; // show the "start here" cue on Home while the catalog is empty
 function renderNav(){
   const box=$('#navgroups');if(!box)return;
   const active=(location.hash||'#home').slice(1);
   const guided=_uiMode==='guided';
-  const more=navMoreState();
-  const link=([v,label,desc])=>`<a href="#${v}" data-v="${v}" title="${esc(desc)}" data-desc="${esc(desc)}"${v===active?' class="on"':''}>${esc(label)}</a>`;
+  const link=([v,label,desc])=>`<a href="#${v}" data-v="${v}" title="${esc(desc)}" data-desc="${esc(desc)}"${v===active?' class="on"':''}>${esc(label)}${(v==='home'&&_navStart)?'<span class="navstart">start here</span>':''}</a>`;
   box.innerHTML=NAV_GROUPS.map(g=>{
-    const vis=g.items.filter(it=>modeAtLeast(it[3]||'guided'));
-    const hid=g.items.filter(it=>!modeAtLeast(it[3]||'guided')); // only non-empty in Guided
-    const activeHidden=hid.some(it=>it[0]===active);
-    const revealed=!guided||more[g.id]===true||activeHidden; // Guided is the only mode that hides
-    const shown=revealed?g.items:vis;
-    if(shown.length===0&&!(guided&&hid.length))return ''; // nothing relevant in this mode
-    const hasActive=g.items.some(it=>it[0]===active);
-    const collapsed=guided?false:(navGroupCollapsed(g)&&!hasActive); // never hide the page you're on
-    let inner=shown.map(link).join('');
-    if(guided&&hid.length){
-      inner+=revealed
-        ? `<button class="moretools" type="button" onclick="navToggleMore('${g.id}')">− Show fewer</button>`
-        : `<button class="moretools" type="button" onclick="navToggleMore('${g.id}')">+ Show more tools (${hid.length})</button>`;
-    }
+    // Guided trims each group to its core items; Standard/Everything show all.
+    const items=guided?g.items.filter(it=>modeAtLeast(it[3]||'guided')):g.items;
+    if(!items.length)return ''; // nothing to show for this group in this mode
+    const hasActive=items.some(it=>it[0]===active);
+    // Situational groups roll up by default (remembered), but never the page you're on.
+    // Guided keeps everything open — few items, so no surprise-hidden core tools.
+    const collapsed=!guided&&navGroupCollapsed(g)&&!hasActive;
     return `<div class="grp${collapsed?' collapsed':''}" data-grp="${g.id}">
       <button class="grphdr" type="button" aria-expanded="${collapsed?'false':'true'}" onclick="navToggle('${g.id}')"><span class="caret">▾</span>${g.id}</button>
-      <div class="grpitems">${inner}</div></div>`;
-  }).join('');
+      <div class="grpitems">${items.map(link).join('')}</div></div>`;
+  }).join('')+navModeControl();
   navBindLongPress();
+}
+// The single verbosity control — how much of the app to show. Replaces the old
+// per-group "Show more tools" reveals so the sidebar has one roll-up, not two.
+function navModeControl(){
+  const opt=(m,l,d)=>`<button type="button" class="${_uiMode===m?'on':''}" title="${esc(d)}" onclick="setUIMode('${m}')">${l}</button>`;
+  return `<div class="navmode-lbl">HOW MUCH TO SHOW</div>
+    <div class="navmode" role="group" aria-label="How much to show">
+      ${opt('guided','Essentials','Core journey only')}
+      ${opt('standard','More','Full navigation')}
+      ${opt('complete','All','Everything, dense')}
+    </div>`;
+}
+// Track the empty-catalog state so Home can wear a "start here" cue. Cheap; called
+// at startup and whenever the overview is (re)computed.
+async function refreshStartHere(){
+  try{const h=await api('GET','/api/home');const empty=!!h.empty;if(empty!==_navStart){_navStart=empty;renderNav();}}catch(e){}
 }
 function navToggle(id){
   const el=document.querySelector(`.grp[data-grp="${id}"]`);if(!el)return;
@@ -3532,7 +3555,7 @@ function route(){const v=(location.hash||'#home').slice(1);
 window.addEventListener('hashchange',route);
 // Load the saved view mode before the first paint, then render.
 (async()=>{try{const c=await api('GET','/api/config');if(c&&c.config&&c.config.ui_mode)_uiMode=c.config.ui_mode;}catch(e){}
-  renderNav();route();})();
+  renderNav();route();refreshStartHere();})();
 lamp();setInterval(lamp,20000);activity();
 // Sidebar version comes from the one source of truth (/api/health), never hardcoded.
 api('GET','/api/health').then(h=>{const w=$('#wordsub');if(w&&h&&h.version)w.textContent='archival vault · '+h.version}).catch(()=>{});
