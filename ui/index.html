@@ -295,6 +295,11 @@ button.help:hover{border-color:var(--act);color:var(--act)}
 .wwhat{font-size:12.5px;line-height:1.5;color:var(--ink-2);margin-top:2px}
 .wherelink{display:inline-block;font-size:12px;color:var(--act);text-decoration:none}
 .wherelink:hover{text-decoration:underline}
+/* ---- Card check verdict banner ---- */
+.ccban{border-radius:7px;padding:13px 16px;margin-bottom:16px;font-size:14.5px;line-height:1.5;border:1px solid}
+.ccban.ccok{background:rgba(46,94,78,.10);border-color:var(--ok);color:var(--ink)}
+.ccban.ccbad{background:rgba(160,49,35,.08);border-color:var(--bad);color:var(--ink)}
+.ccban.ccneutral{background:var(--panel);border-color:var(--line);color:var(--ink-2)}
 </style>
 </head>
 <body>
@@ -354,6 +359,7 @@ const HELP={
   packages:['Packages — the archival units','A Package is one self-contained, media-sized unit: a tar of files + par2 parity + manifest + RESTORE.txt (an OAIS AIP in plain English). The lifecycle rail reads PLANNED → BUILDING → STAGED → WRITING → WRITTEN → VERIFIED; red means FAILED. Build a package, then Write it to a volume with read-back verification. Packages too big for one medium are spanned across several, one tape at a time.'],
   burn:['Burn — the optical disc queue','Optical media can\'t stream continuously, so discs are fed one at a time. A burn queue holds one disc per package and survives reboots (a disc caught mid-burn resets to pending — it may be a coaster). Click "Burn next disc", wait, then write the package name on the physical disc. Square colours: green = done, red = failed, amber = in progress, grey = pending.'],
   volumes:['Volumes — where the bytes physically live','A Volume is a physical medium you can hold: a tape, drive, or disc, with a barcode, kind, an Onsite/Offsite flag (the "1" in 3-2-1), and free-text location ("office safe"). Each Copy records which package sits on which volume and when it last verified. Scan a barcode into the lookup box to jump straight to a medium\'s contents — no mounting needed. When a volume is done, Finalize seals it: it enforces preconditions (recent verify, free-space buffer, SMART), writes a seal record + inventory onto the medium, marks it SEALED (further writes need an audit-logged unseal), and opens the printable label — the "close the box and label it" moment.'],
+  cardcheck:['Check a card — is it already backed up?','Plug in an SD/CF card or a drive and Mnemosyne reads it (never writes, never adds it as a source) and checks every file BY CONTENT against your entire inventory — archives, packaged copies, and every drive you have inventoried. You get the answer that matters before a reformat: which frames are already safe (and where they live), and which are new and still need copying off. Matching is by SHA-256, so a file counts as backed up the moment its content is found anywhere, no matter its name or folder on the card.'],
   dock:['Dock — ingest a stack of legacy drives, one at a time','Pick the Archive(s) to reconcile against, then dock drives one by one. Mnemosyne watches for each newly-inserted drive, and on one click does everything hands-off: identifies the drive by serial, hashes every file and matches it by CONTENT against your archives, records the matches as verified copies, and writes an inventory sidecar onto the drive itself. It is strictly read-only toward your sources — NAS folders are only ever hashed. A re-inserted drive is recognized by serial and re-verified, not re-adopted. The session survives closing the app; resume it days later.'],
   keys:['Keys — encryption secrets','Encrypted packages use per-package random ~288-bit passphrases that live ONLY in keystore files — the catalog stores fingerprints, never the secret. Encrypted builds refuse to run until ≥2 keystores on different devices are registered and in sync. Print a QR card per key, and export a Recovery Kit for the fireproof box.'],
   jobs:['Jobs — background work','Long operations (scan, build, write, verify, reconcile, recovery kit) run in the background so the UI stays responsive. It is safe to navigate away; this list refreshes automatically while anything is still running.'],
@@ -2607,6 +2613,73 @@ function whereRow(r){
   return `<div class="wrow"><div class="wname">${esc(r.name)}</div><div class="wwhat">${esc(r.what)}</div>${paths}${note}${warn}</div>`;
 }
 
+/* ================= Check a card — "is it already backed up?" ================= */
+async function vCardCheck(){
+  let mounts=[];try{mounts=await api('GET','/api/mounts')||[];}catch(e){}
+  window._ccmounts=mounts;
+  let h=hdr('Check a card','is it already backed up? — read-only, nothing is ever written','cardcheck');
+  h+=`<div class="purpose">Plug in an SD/CF card or a drive. Mnemosyne <b>reads it (never writes)</b> and checks every file <b>by content</b> against everything it knows — your archives, packages, and backup drives — so you can see what's already safe and what's new <b>before you reformat</b>.</div>`;
+  h+=`<div class="panel"><h2>Choose the card or drive</h2>`;
+  if(mounts.length)h+=`<div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">${mounts.map((m,i)=>`<button class="btn ghost" onclick="ccStart(window._ccmounts[${i}].path)">💳 ${esc(m.label||m.path)}${m.size_bytes?` <span class="dim">· ${GB(m.size_bytes)} GB</span>`:''}</button>`).join('')}</div>`;
+  else h+=`<div class="dim" style="font-size:11.5px;margin-bottom:8px">No removable drives detected right now — plug one in and reload, or type its path below.</div>`;
+  h+=`<label>…or enter the card / drive path</label>
+    <div class="row"><input id="ccpath" class="full" placeholder="E:\\  ·  /Volumes/UNTITLED  ·  /media/card" style="flex:1">
+      <button class="btn ghost" onclick="pickFolder((($('#ccpath')||{}).value||'').trim(),p=>{const el=$('#ccpath');if(el)el.value=p;})">📁 Browse…</button>
+      <button class="btn" onclick="ccStart((($('#ccpath')||{}).value||'').trim())">Check this card</button></div>
+    <div class="help">Reading only. Nothing on the card is changed, and it is never added as a source folder.</div></div>
+    <div id="ccresult"></div>`;
+  $('#view').innerHTML=h;
+}
+async function ccStart(path){
+  path=(path||'').trim();if(!path){toast('Pick a card or type its path first',1);return;}
+  const box=$('#ccresult');if(!box)return;
+  box.innerHTML=`<div class="panel"><b>Checking ${esc(path)}…</b>
+    <div class="bar" style="margin-top:8px"><div id="ccbar" style="width:2%"></div></div>
+    <div id="ccmsg" class="dim mono" style="font-size:11px;margin-top:6px">starting…</div></div>`;
+  let start;try{start=await api('POST','/api/card-check',{path});}catch(e){toast(e.message,1);box.innerHTML='';return;}
+  const jid=start.job_id;
+  for(;;){
+    await sleep(600);
+    let jobs;try{jobs=await api('GET','/api/jobs');}catch(e){continue;}
+    const j=(jobs||[]).find(x=>x.id===jid);if(!j)continue;
+    const bar=$('#ccbar');if(bar)bar.style.width=Math.max(2,Math.round((j.progress||0)*100))+'%';
+    const msg=$('#ccmsg');if(msg)msg.textContent=(j.label||'').split('—').slice(1).join('—').trim()||'working…';
+    if(j.status==='COMPLETED'){ccRender(j.result||{},path);return;}
+    if(j.status==='FAILED'){box.innerHTML=`<div class="panel"><div class="err">${esc((j.label||'card check failed').replace(/^.*ERROR:\s*/,''))}</div></div>`;return;}
+  }
+}
+function ccTile(k,v,u){return `<div class="htile"><div class="hk">${esc(k)}</div><div class="hv">${v}</div>${u?`<div class="hu">${esc(u)}</div>`:''}</div>`;}
+function ccRender(res,path){
+  const box=$('#ccresult');if(!box)return;
+  const tot=res.total_files||0,backedN=res.backed_up_files||0,newN=res.new_files||0;
+  let banner;
+  if(!tot)banner=`<div class="ccban ccneutral">No files found on ${esc(path)}.</div>`;
+  else if(res.safe_to_format)banner=`<div class="ccban ccok">✓ <b>Safe to format.</b> All <b>${commaN(tot)}</b> file(s) (${GB(res.total_bytes)} GB) on this card are already backed up.</div>`;
+  else banner=`<div class="ccban ccbad">⚠ <b>${commaN(newN)}</b> of ${commaN(tot)} file(s) (${GB(res.new_bytes)} GB) are <b>not backed up yet</b> — copy these off before you reformat.</div>`;
+  let h=banner+`<div class="hstrip">
+    ${ccTile('On the card',commaN(tot),GB(res.total_bytes)+' GB')}
+    ${ccTile('Already backed up',commaN(backedN),GB(res.backed_up_bytes)+' GB')}
+    ${ccTile('New / unsaved',commaN(newN),GB(res.new_bytes)+' GB')}
+    ${res.skipped?ccTile('Unreadable',commaN(res.skipped),'skipped'):''}
+  </div>`;
+  if((res.where||[]).length)h+=`<div class="panel"><h2>Where the already-backed-up files live</h2>
+    <div class="row" style="flex-wrap:wrap;gap:6px">${res.where.map(w=>`<span class="etag enc">${esc(w)}</span>`).join('')}</div></div>`;
+  if(newN){
+    h+=`<div class="panel" style="border-left:3px solid var(--bad)"><h2>Not backed up yet (${commaN(newN)})</h2>
+      <div class="dim" style="font-size:11.5px;margin-bottom:6px">Copy these somewhere safe — and into an archive — before reformatting. Nothing here is deleted; this is simply what the tool has never seen.</div>
+      <table><tr><th>File</th><th class="num">Size</th><th>Type</th></tr>`;
+    for(const f of (res.new||[]))h+=`<tr><td class="mono" style="font-size:11.5px">${esc(f.rel)}</td><td class="num">${GB(f.size)} GB</td><td class="dim">${esc(f.role||'')}</td></tr>`;
+    if(res.new_truncated)h+=`<tr><td colspan="3" class="dim">…and ${commaN(res.new_truncated)} more new file(s)</td></tr>`;
+    h+='</table></div>';
+  }
+  if((res.by_ext||[]).length){
+    h+=`<div class="panel"><h2>By file type</h2><table><tr><th>Type</th><th class="num">On card</th><th class="num">New</th></tr>`;
+    for(const e of res.by_ext)h+=`<tr><td class="mono">${esc(e.ext||'(none)')}</td><td class="num">${commaN(e.total)}</td><td class="num">${e.new?`<b style="color:var(--warn)">${commaN(e.new)}</b>`:'0'}</td></tr>`;
+    h+='</table></div>';
+  }
+  box.innerHTML=h;
+}
+
 async function vSettings(){
   const [c,ivdata,prof]=await Promise.all([api('GET','/api/config'),api('GET','/api/integrity'),api('GET','/api/profiles').catch(()=>[])]);
   const cfg=c.config||{};const ks=c.keystore_status||{};
@@ -3408,7 +3481,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,quarantine:vQuarantine,keys:vKeys,jobs:vJobs,settings:vSettings,where:vWhere};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,cardcheck:vCardCheck,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,quarantine:vQuarantine,keys:vKeys,jobs:vJobs,settings:vSettings,where:vWhere};
 function loc(v){location.hash='#'+v}
 
 /* ---- grouped, collapsible navigation with plain job-description tooltips ---- */
@@ -3430,6 +3503,7 @@ const NAV_GROUPS=[
     ['templates','Templates','Rules for where organized files should live','standard'],
   ]},
   {id:'INGEST',situational:true,items:[
+    ['cardcheck','Check a card',"Plug in an SD card or drive and see what's already backed up — before you format",'guided'],
     ['dock','Inventory drives',"Plug in a drive, get a complete record of what's on it",'guided'],
   ]},
   {id:'PROTECT',situational:false,items:[

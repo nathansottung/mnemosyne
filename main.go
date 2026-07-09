@@ -467,6 +467,32 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, app.DataMap())
 	})
 
+	// Mounted removable media (the card/drive picker for the card check).
+	mux.HandleFunc("GET /api/mounts", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, enumerateMounts())
+	})
+	// Card check: read a mounted card/drive and report, by content, what's already in
+	// the inventory and what's new — the "is it safe to reformat?" answer. Read-only.
+	mux.HandleFunc("POST /api/card-check", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		p := strings.TrimSpace(s(b, "path"))
+		if p == "" {
+			jsonErr(w, 400, fmt.Errorf("path required (the mounted card or drive)"))
+			return
+		}
+		resp := runJob(app, "cardcheck", "Check card "+p, func(prog func(float64, string)) (map[string]any, error) {
+			res, err := app.CardCheck(p, prog)
+			if res == nil {
+				return nil, err
+			}
+			bb, _ := json.Marshal(res)
+			var m map[string]any
+			_ = json.Unmarshal(bb, &m)
+			return m, err
+		})
+		jsonOut(w, resp)
+	})
+
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
 		cfg := app.LoadConfig()
 		jsonOut(w, map[string]any{"config": cfg, "keystore_status": app.KeystoreStatus()})
