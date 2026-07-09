@@ -276,6 +276,13 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 .membar{height:7px;border-radius:4px;background:var(--line);overflow:hidden;margin:4px 0;max-width:320px}
 .membar i{display:block;height:100%;background:var(--act)}
 .setinfo{font:12px var(--mono);color:var(--ink-2);background:var(--panel);border:1px solid var(--line-2);border-radius:5px;padding:7px 10px;word-break:break-all}
+/* ---- Where your data lives ---- */
+.wrow{padding:12px 0;border-bottom:1px solid var(--line-2)}
+.wrow:last-child{border-bottom:none}
+.wname{font:600 13.5px var(--sans);color:var(--ink)}
+.wwhat{font-size:12.5px;line-height:1.5;color:var(--ink-2);margin-top:2px}
+.wherelink{display:inline-block;font-size:12px;color:var(--act);text-decoration:none}
+.wherelink:hover{text-decoration:underline}
 </style>
 </head>
 <body>
@@ -339,6 +346,7 @@ const HELP={
   keys:['Keys — encryption secrets','Encrypted packages use per-package random ~288-bit passphrases that live ONLY in keystore files — the catalog stores fingerprints, never the secret. Encrypted builds refuse to run until ≥2 keystores on different devices are registered and in sync. Print a QR card per key, and export a Recovery Kit for the fireproof box.'],
   jobs:['Jobs — background work','Long operations (scan, build, write, verify, reconcile, recovery kit) run in the background so the UI stays responsive. It is safe to navigate away; this list refreshes automatically while anything is still running.'],
   settings:['Settings — one config file','Everything lives in one config.json in the data folder: paths to the external tools, the staging folder, keystore locations, redundancy goal, re-verify window, write throttle, and the optical burn command. Preflight at the top shows whether tar/gpg/par2 (and any LTFS tape) are ready.'],
+  where:['Where your data lives — the honesty map','One screen listing everything Mnemosyne ever writes — the catalog and its daily backups, config, keystores, staging, the destinations you pick, the small inventory/seal sidecars it puts ONLY on media it writes itself, and the reversible quarantine folders — followed by the equally prominent inverse: what it NEVER writes to (your source folders and drives you adopt). Every path is read from your live settings. The one enforcement rule (every write destination is checked against your sources and refused if it lands inside one) is backed by named tests you can run yourself.'],
 };
 function helpBtn(k){return `<button class="help" aria-label="Help: what the ${esc(k)} view is for" title="What is this view for?" onclick="showHelp('${k}')">i</button>`}
 // Each help panel links to the matching plain-language Handbook guide (opens on
@@ -349,7 +357,7 @@ const HELP_GUIDE={home:['00-what-is-this.md','What is this? & first run'],vault:
   packages:['03-your-first-backup.md','Your first backup'],burn:['06-discs-and-drives.md','Discs, mirrors & old drives'],
   volumes:['06-discs-and-drives.md','Discs, mirrors & old drives'],dock:['06-discs-and-drives.md','Adopting old drives'],
   keys:['09-the-recovery-kit.md','Keys & the Recovery Kit'],jobs:['07-checking-on-your-archive.md','Checking on your archive'],
-  settings:['02-set-up-safely.md','Set up safely']};
+  settings:['02-set-up-safely.md','Set up safely'],where:['10-where-your-data-lives.md','Where your data lives']};
 function showHelp(k){const e=HELP[k];if(!e)return;const g=HELP_GUIDE[k];
   const link=g?`<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line)"><a href="${HANDBOOK}${g[0]}" target="_blank" rel="noopener" style="color:var(--act);font-weight:600">📖 Handbook: ${esc(g[1])} →</a></div>`:'';
   dlg(`<h1>${esc(e[0])}</h1><div style="margin-top:8px;line-height:1.62;color:var(--ink-2)">${esc(e[1])}</div>${link}`,async()=>{})}
@@ -951,6 +959,9 @@ async function vHome(){
     }
     h+='</div>';
   }
+  // Footer: the honesty link — everything the tool writes, and what it never touches.
+  h+=`<div style="text-align:center;margin:18px 0 4px;padding-top:14px;border-top:1px solid var(--line-2)">
+    <a href="#where" class="wherelink">🗺 Where your data lives — everything this tool writes, and everywhere it refuses to</a></div>`;
   $('#view').innerHTML=h;
 }
 function clip(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
@@ -1165,6 +1176,7 @@ function renderSetupSummary(res){
     }
     h+=`</div>`;
   }
+  h+=`<div class="panel" style="border-left:3px solid var(--ok)"><div style="font-size:12.5px;color:var(--ink-2)">Want to know exactly where everything goes — and what this tool will never touch? <a href="#where" class="wherelink" onclick="_setup=null">🗺 Where your data lives →</a></div></div>`;
   h+=`<div class="acts" style="margin-top:4px">
       <button class="btn ghost" onclick="startSetup(${_setup&&_setup.fromSettings?'true':'false'})">← Run through again</button>
       <div class="sp"></div>
@@ -2258,12 +2270,40 @@ function jobArtifact(j){if(j.status!=='COMPLETED'||!j.result)return '';const r=j
   if(j.kind==='reconcile'&&r.collection_id)return ` <button class="btn ghost" style="font-size:11px;padding:1px 8px" onclick="vDrift(${r.collection_id},'')">View drift (${r.changes||0})</button>`;
   if(j.kind==='scan'&&r.files!=null)return ` <span class="dim" style="font-size:10.5px">${r.files} file(s) cataloged</span>`;
   return ''}
+// Honesty on the Jobs row: plainly name what a job WRITES and where — by kind, so
+// it's true whether the job is running or done. A concrete output path (from the
+// finished job's result) is appended when there is one. No behavior change.
+const JOB_WRITES={
+  scan:'reads your source folder (read-only); writes only to the catalog',
+  reconcile:'reads source folders (read-only); records what changed in the catalog',
+  build:'assembles the package in {staging}, then records it in the catalog — nothing to your sources',
+  write:'writes the package copy to the destination volume you chose, then re-reads it to verify',
+  copy:'writes the package copy to the destination volume you chose, then re-reads it to verify',
+  span:'writes the package across the destination media you chose, one at a time, each re-read to verify',
+  mirror:'copies plain files to the destination you chose, plus one inventory sidecar on that media — never your sources',
+  dock:'reads the adopted drive (read-only); records an inventory snapshot in the catalog — nothing to the drive',
+  finalize:'writes a seal sidecar (MNEMOSYNE_SEAL/) onto the volume being sealed',
+  recoverykit:'writes the Recovery Kit to the output folder you chose',
+  recompute:'updates protection status in the catalog only',
+  verify:'reads the media; updates verify records in the catalog — writes nothing to the media',
+  check:'reads the media; updates verify records in the catalog — writes nothing to the media',
+  escrow:'downloads tool binaries into the escrow cache folder',
+  burn:'writes a disc with your burn command, then re-reads it to verify',
+};
+function jobWrites(j,cfg){
+  let t=JOB_WRITES[j.kind];if(!t)return '';
+  t=t.replace('{staging}',(cfg&&cfg.staging_dir)?('staging ('+esc(cfg.staging_dir)+')'):'your staging folder');
+  const r=j.result||{};const p=r.output_dir||r.path||r.dir||r.staged_dir||(typeof r.sidecar==='string'?r.sidecar:'');
+  const where=p?` <span class="mono">→ ${esc(p)}</span>`:'';
+  return `<div class="dim" style="font-size:11px;margin-top:3px">✍ Writes: ${t}${where}</div>`;
+}
 async function vJobs(){
-  const js=await api('GET','/api/jobs')||[];
+  const [js,c]=await Promise.all([api('GET','/api/jobs').then(x=>x||[]),api('GET','/api/config').catch(()=>({}))]);
+  const cfg=(c&&c.config)||{};
   let h=`${hdr('Jobs','long operations run in the background — safe to navigate away','jobs')}<div class="panel">`;
   if(!js.length)h+='<div class="empty">No jobs yet — scans, builds, writes and verifies report their progress here.</div>';
   else{h+='<table><tr><th style="width:52%">Job</th><th>Progress</th><th>State</th></tr>';
-    for(const j of js)h+=`<tr><td>${esc(j.label)}${jobArtifact(j)}</td>
+    for(const j of js)h+=`<tr><td>${esc(j.label)}${jobArtifact(j)}${jobWrites(j,cfg)}</td>
       <td><div class="bar"><div style="width:${Math.round((j.progress||0)*100)}%"></div></div>${jobTelemetry(j)}</td>
       <td><span class="stamp ${j.status==='COMPLETED'?'VERIFIED':j.status==='FAILED'?'FAILED':'BUILDING'}">${esc(j.status)}</span></td></tr>`;
     h+='</table>'}
@@ -2430,6 +2470,35 @@ async function closeDock(id){try{await api('POST',`/api/dock/session/${id}/close
 // and Standard, the advanced knobs of each section fold behind an "Advanced" reveal.
 function advOpen(label){return _uiMode==='complete'?'':`<details class="adv"><summary>${esc(label||'Advanced options')}</summary>`}
 function advClose(){return _uiMode==='complete'?'':'</details>'}
+/* ================= Where your data lives (honesty surface) ================= */
+async function vWhere(){
+  let dm;try{dm=await api('GET','/api/data-map');}catch(e){$('#view').innerHTML=hdr('Where your data lives','','settings')+`<div class="panel"><div class="err">${esc(e.message)}</div></div>`;return;}
+  let h=hdr('Where your data lives','every place this tool writes — and everywhere it refuses to','where');
+  h+=`<div class="purpose">The whole truth about where Mnemosyne puts things. Nothing is hidden and nothing here is guesswork — every path is read straight from your live settings.</div>`;
+  h+='<div class="panel"><h2>What this tool writes</h2>';
+  for(const r of (dm.writes||[]))h+=whereRow(r);
+  h+='</div>';
+  h+='<div class="panel" style="border-left:3px solid var(--ok)"><h2>What it never writes to</h2>';
+  h+='<div class="help" style="margin-top:0">These are read-only to Mnemosyne, always — it opens them only to read and hash.</div>';
+  for(const r of (dm.never||[]))h+=whereRow(r);
+  h+=`<div class="advnote" style="background:rgba(46,94,78,.08);border-color:var(--ok);color:var(--ink-2);margin-top:12px">🛡 ${esc(dm.enforcement||'')}</div>`;
+  h+='</div>';
+  h+=`<div class="panel"><h2>Verify this claim</h2>
+    <div class="help" style="margin-top:0">${esc(dm.verify_note||'')}</div>
+    <ul style="margin:6px 0 0;padding-left:18px">${(dm.verify_tests||[]).map(t=>`<li style="font-size:12.5px;margin:4px 0"><span class="mono" style="font-size:11.5px">${esc(t)}</span></li>`).join('')}</ul>
+    <div class="dim" style="font-size:11.5px;margin-top:8px">These live in the source tree next to the code they guard. Read them, or run them.</div></div>`;
+  $('#view').innerHTML=h;
+}
+function whereRow(r){
+  let paths='';
+  if(r.path)paths=`<div class="setinfo" style="margin-top:5px">${esc(r.path)}</div>`;
+  else if(r.paths&&r.paths.length)paths=`<div class="setinfo" style="margin-top:5px">${r.paths.map(esc).join('<br>')}</div>`;
+  else if(r.paths)paths=`<div class="dim" style="font-size:11.5px;margin-top:4px">none registered yet</div>`;
+  const note=r.note?`<div class="dim" style="font-size:11.5px;margin-top:4px">${esc(r.note)}</div>`:'';
+  const warn=(r.missing&&r.warn)?`<div style="font-size:11.5px;color:var(--warn);margin-top:4px">⚠ ${esc(r.warn)}</div>`:'';
+  return `<div class="wrow"><div class="wname">${esc(r.name)}</div><div class="wwhat">${esc(r.what)}</div>${paths}${note}${warn}</div>`;
+}
+
 async function vSettings(){
   const [c,ivdata,prof]=await Promise.all([api('GET','/api/config'),api('GET','/api/integrity'),api('GET','/api/profiles').catch(()=>[])]);
   const cfg=c.config||{};const ks=c.keystore_status||{};
@@ -2457,6 +2526,7 @@ async function vSettings(){
 
   // ---- 2. Storage & Staging ----
   h+=`<div class="panel"><h2>Storage &amp; staging</h2>
+    <div style="margin:-2px 0 12px"><a href="#where" class="wherelink">🗺 Where your data lives → the full map of everything this tool writes, and what it never touches</a></div>
     <label>Data folder</label>
     <div class="setinfo" id="datadir">…</div>
     <div class="help">Where Mnemosyne keeps its catalog and settings (catalog.json, config.json). Shown read-only — it's chosen with the <span class="mono">-data</span> flag at startup. <b>Everything the app knows lives here; include it in your own backups.</b></div>
@@ -3230,7 +3300,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,quarantine:vQuarantine,keys:vKeys,jobs:vJobs,settings:vSettings};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,quarantine:vQuarantine,keys:vKeys,jobs:vJobs,settings:vSettings,where:vWhere};
 function loc(v){location.hash='#'+v}
 
 /* ---- grouped, collapsible navigation with plain job-description tooltips ---- */

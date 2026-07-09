@@ -17,6 +17,7 @@ Read these in order the first time:
 8. [Checking on your archive (the yearly ritual)](07-checking-on-your-archive.md)
 9. [Getting your files back](08-getting-files-back.md)
 10. [The Recovery Kit (your break-glass box)](09-the-recovery-kit.md)
+11. [Where your data lives (the honesty map)](10-where-your-data-lives.md)
 
 Reference:
 

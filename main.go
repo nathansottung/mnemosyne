@@ -461,6 +461,11 @@ func api(mux *http.ServeMux, app *App) {
 	mux.HandleFunc("GET /api/tools", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, app.ToolsView())
 	})
+	// "Where your data lives": the plain, honest map of everything the tool writes and
+	// what it promises never to touch. Pure surfacing — computed from live config.
+	mux.HandleFunc("GET /api/data-map", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.DataMap())
+	})
 
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
 		cfg := app.LoadConfig()
