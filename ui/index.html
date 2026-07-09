@@ -64,6 +64,23 @@ label+.help,select+.help,input+.help,textarea+.help{margin-top:3px}
 .hcard:hover{border-color:var(--ink-3)}
 .hcard-t{font:600 13.5px var(--sans);color:var(--ink);margin-bottom:2px}
 .hcard-ung{border-style:dashed;border-color:var(--act)}
+/* ---- view modes: purpose banner, advanced note, settings disclosure, mode picker ---- */
+.purpose{font-size:12.5px;line-height:1.45;color:var(--ink-2);background:var(--panel);border:1px solid var(--line);
+  border-left:3px solid var(--act);border-radius:5px;padding:9px 13px;margin:0 0 16px}
+.advnote{font-size:12px;color:var(--ink-2);background:rgba(154,107,31,.10);border:1px solid var(--warn);
+  border-radius:5px;padding:8px 12px;margin:0 0 16px}
+details.adv{margin:6px 0 12px;border-top:1px dashed var(--line);padding-top:8px}
+details.adv>summary{cursor:pointer;font:600 11.5px var(--sans);color:var(--ink-3);letter-spacing:.04em;list-style:none;user-select:none}
+details.adv>summary::before{content:'▸ ';font-size:10px}
+details.adv[open]>summary::before{content:'▾ '}
+details.adv>summary:hover{color:var(--ink)}
+.modepick{display:flex;gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;width:fit-content}
+.modepick button{background:var(--panel);border:none;border-right:1px solid var(--line);padding:8px 16px;font:600 12.5px var(--sans);color:var(--ink-2);cursor:pointer}
+.modepick button:last-child{border-right:none}
+.modepick button.on{background:var(--act);color:var(--act-ink)}
+nav .moretools{display:block;width:100%;text-align:left;background:none;border:none;color:#7f938a;cursor:pointer;
+  padding:6px 22px 8px;font:11.5px var(--sans)}
+nav .moretools:hover{color:#cfd6d0}
 table{width:100%;border-collapse:collapse}
 th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
   text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}
@@ -887,6 +904,7 @@ function gettingStarted(cfg,pre,archives,pkgs){
     ['Write a verified copy','Stream to a tape/drive/folder with read-back verification, then register the volume.',verified,'packages','Go to Packages →'],
   ];
   let h=hdr('Getting started','set up your first archive — the interface will guide you','home');
+  h+=modePicker();
   h+=`<div class="panel"><div class="dim" style="margin-bottom:6px">Each step detects its own state. Do them roughly in order; click through to the exact spot.</div>`;
   let n=0;
   for(const [t,d,done,target,label] of items){ n++;
@@ -2149,6 +2167,10 @@ function dockFailingDlg(sid,path,mode,level,res){
 async function closeDock(id){try{await api('POST',`/api/dock/session/${id}/close`);toast('Session closed');vDock()}catch(e){toast(e.message,1)}}
 
 /* ---------------- Settings ---------------- */
+// Advanced-settings disclosure: in Everything mode settings are flat/dense; in Guided
+// and Standard, the advanced knobs of each section fold behind an "Advanced" reveal.
+function advOpen(label){return _uiMode==='complete'?'':`<details class="adv"><summary>${esc(label||'Advanced options')}</summary>`}
+function advClose(){return _uiMode==='complete'?'':'</details>'}
 async function vSettings(){
   const [c,p]=await Promise.all([api('GET','/api/config'),api('GET','/api/preflight')]);
   const cfg=c.config||{};
@@ -2159,6 +2181,7 @@ async function vSettings(){
     ? `<span class="stamp VERIFIED">LTFS</span> LTFS tape mounted at <span class="mono">${esc((ltfs.mounts||[]).join(', '))}</span> ✓`
     : `<span class="dim">No LTFS mount detected — to write to LTO tape, install a free LTFS driver: IBM Storage Archive Single Drive Edition, HPE StoreOpen, or open-source LinearTapeFileSystem/ltfs (links in README). Not required for HDD or optical.</span>`;
   let h=`${hdr('Settings','how the app behaves — the tools, folders, and backup options it uses (saved to config.json in the data folder)','settings')}
+  ${modePicker()}
   <div class="panel"><h2>External tools</h2>
     <div class="help">The free command-line programs Mnemosyne uses to bundle, encrypt, and repair your backups — and to read drive health. The first three are required; the rest are optional and just add extra checks.</div>
     <table><tr><td>tar <span class="dim" style="font-size:11px">(bundles files into one archive)</span></td><td>${tool('tar')}</td></tr><tr><td>gpg <span class="dim" style="font-size:11px">(encrypts backups)</span></td><td>${tool('gpg')}</td></tr>
@@ -2177,6 +2200,7 @@ async function vSettings(){
     <label>Where your encryption passphrases live (keystores)</label>
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
     <div class="help">One folder per line, on at least two different physical devices. A keystore is a small file holding the passphrases that lock and unlock your encrypted backups; without them, encrypted backups can't be built or restored. Your secrets never touch the catalog.</div>
+    ${advOpen('Advanced backup options')}
     <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Hide the file list on encrypted media</label>
     <div class="help">Also encrypts the list of file names written to each tape or disc, so a lost one gives away nothing about what's on it. Encrypted backups only; your staging folder and catalog stay readable.</div>
     <div class="help" style="margin:12px 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:var(--ink-2)">Most people don't set the knobs below one by one — just pick a preset on the <a href="#integrity" style="color:var(--act)">Verify panel</a> (Archival / Balanced / Fast), for everything or per archive. <b>Re-reading every write to confirm it's good is always on and can't be turned off</b> — writing a backup you never checked would defeat the point.</div>
@@ -2242,8 +2266,11 @@ async function vSettings(){
     <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="eir" type="checkbox" ${cfg.escrow_include_readers?'checked':''}> Also include source code for file-format readers</label>
     <div class="help">Adds the source for tools that open your file types (like camera RAW readers). "Everything" mode only; adds size.</div>
     <div id="escrowStat" class="dim" style="font-size:11.5px;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:6px">Loading escrow cache status…</div>
+    ${advClose()}
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>
   <div class="panel"><h2>Discs — burning and repair</h2>
+    <div class="help">Only needed if you write backups to optical discs (Blu-ray/DVD). Skip this whole section if you use tape or hard drives.</div>
+    ${advOpen('Disc burning &amp; repair settings')}
     <label>Disc-burning command</label>
     <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject'>
     <div class="help">The command Mnemosyne runs to burn a disc. <span class="mono dim">{SRC}</span> is the folder to burn and <span class="mono dim">{LABEL}</span> is the disc name. <b>xorriso</b> is the recommended free burner on Linux/macOS (<span class="mono">apt/brew install xorriso</span>). <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="document.getElementById('bc').value='xorriso -outdev /dev/sr0 -volid \\'{LABEL}\\' -blank as_needed -map \\'{SRC}\\' / -commit -eject'">Use xorriso default</button> <span class="mono dim">growisofs</span> and <span class="mono dim">ImgBurn</span> (Windows) also work.</div>
@@ -2267,6 +2294,7 @@ async function vSettings(){
       <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="oecc" type="checkbox" ${cfg.optical_ecc?'checked':''}> Mention the repair layer in each disc's restore notes</label>
       <div class="help">For people who add the repair layer by hand — records that it exists so a future restorer knows to use it.</div>
     </div>
+    ${advClose()}
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>`;
   $('#view').innerHTML=h;
   escrowStatus();
@@ -2732,53 +2760,80 @@ function loc(v){location.hash='#'+v}
 // specific setup or problem) default collapsed — "nothing relevant → collapsed" —
 // while the two everyday groups start open. The user's manual expand/collapse is
 // remembered, and the group holding the current page is always shown open.
+// Each item: [view, label, one-line plain job description, min-mode].
+// min-mode is the LEAST verbose "How much do you want to see?" mode at which the item
+// shows in the nav by default. Core-journey items are 'guided' (always shown);
+// everything else is 'standard' — in Guided mode those sit behind a per-group "Show
+// more tools" reveal, but remain reachable by direct link and search.
 const NAV_GROUPS=[
   {id:'ORGANIZE',situational:false,items:[
-    ['home','Home','Your dashboard: the health of everything you keep, at a glance'],
-    ['vault','Archives','Your data, organized — browse archives and find any file'],
-    ['events','Events / Collections','Group files by the shoot, session, or project they belong to'],
-    ['templates','Templates','Rules for where organized files should live'],
+    ['home','Home','Your dashboard: the health of everything you keep, at a glance','guided'],
+    ['vault','Archives','Your data, organized — browse archives and find any file','guided'],
+    ['events','Events / Collections','Group files by the shoot, session, or project they belong to','standard'],
+    ['templates','Templates','Rules for where organized files should live','standard'],
   ]},
   {id:'INGEST',situational:true,items:[
-    ['dock','Inventory drives',"Plug in a drive, get a complete record of what's on it"],
+    ['dock','Inventory drives',"Plug in a drive, get a complete record of what's on it",'guided'],
   ]},
   {id:'PROTECT',situational:false,items:[
-    ['packages','Packages','Sealed, verified bundles ready for tape, disc, or drive'],
-    ['burn','Burn','Write discs, one at a time, resumable'],
-    ['plans','Plans','Reorganize cold drives into a clean structure, drive by drive'],
-    ['protection','Profiles',"Your safety goal — how many copies, media types, and offsite — and who's meeting it"],
+    ['packages','Packages','Sealed, verified bundles ready for tape, disc, or drive','guided'],
+    ['burn','Burn','Write discs, one at a time, resumable','standard'],
+    ['plans','Plans','Reorganize cold drives into a clean structure, drive by drive','standard'],
+    ['protection','Profiles',"Your safety goal — how many copies, media types, and offsite — and who's meeting it",'standard'],
   ]},
   {id:'CHECK',situational:true,items:[
-    ['integrity','Verify','How thoroughly to check your backups — and run those checks'],
-    ['conflicts','Conflicts','Two versions of one file disagree — pick which to keep'],
+    ['integrity','Verify','How thoroughly to check your backups — and run those checks','guided'],
+    ['conflicts','Conflicts','Two versions of one file disagree — pick which to keep','standard'],
   ]},
   {id:'RECOVER',situational:true,items:[
-    ['keys','Keys','The passphrases that unlock your encrypted backups — needed to restore'],
-    ['quarantine','Quarantine','Safely set files aside without ever deleting them'],
+    ['keys','Keys','The passphrases that unlock your encrypted backups — needed to restore','standard'],
+    ['quarantine','Quarantine','Safely set files aside without ever deleting them','standard'],
   ]},
   {id:'SYSTEM',situational:true,items:[
-    ['volumes','Volumes','Every tape, disc, and drive you have registered, and its health'],
-    ['locations','Locations','The physical places your media live — home, office, offsite'],
-    ['jobs','Jobs','Long-running tasks and their progress'],
-    ['settings','Settings','Set up tools, folders, and how the app behaves'],
+    ['volumes','Volumes','Every tape, disc, and drive you have registered, and its health','standard'],
+    ['locations','Locations','The physical places your media live — home, office, offsite','standard'],
+    ['jobs','Jobs','Long-running tasks and their progress','standard'],
+    ['settings','Settings','Set up tools, folders, and how the app behaves','guided'],
   ]},
 ];
+// view -> job description + min-mode, derived from the nav table.
+const viewDesc={},viewMin={};
+for(const g of NAV_GROUPS)for(const it of g.items){viewDesc[it[0]]=it[2];viewMin[it[0]]=it[3]||'guided';}
+// "How much do you want to see?" — purely presentational; changes visibility/verbosity, never data or behavior.
+let _uiMode='guided';
+const MODE_RANK={guided:0,standard:1,complete:2};
+function modeRank(m){return MODE_RANK[m]!=null?MODE_RANK[m]:0}
+function modeLabel(m){return m==='complete'?'Everything':m==='standard'?'Standard':'Guided'}
+function modeAtLeast(need){return modeRank(_uiMode)>=modeRank(need)}
 function navCollapsedState(){try{return JSON.parse(localStorage.getItem('navCollapsed')||'{}')||{}}catch(e){return {}}}
 function navSetCollapsed(id,collapsed){const s=navCollapsedState();s[id]=collapsed;try{localStorage.setItem('navCollapsed',JSON.stringify(s))}catch(e){}}
-function navGroupCollapsed(g){const s=navCollapsedState();
-  // Explicit user choice wins; otherwise situational groups start collapsed.
-  return (id=>id in s?s[id]:g.situational)(g.id);}
+function navGroupCollapsed(g){const s=navCollapsedState();return (id=>id in s?s[id]:g.situational)(g.id);}
+function navMoreState(){try{return JSON.parse(localStorage.getItem('navMore')||'{}')||{}}catch(e){return {}}}
+function navToggleMore(id){const s=navMoreState();s[id]=!s[id];try{localStorage.setItem('navMore',JSON.stringify(s))}catch(e){}renderNav();}
 function renderNav(){
   const box=$('#navgroups');if(!box)return;
   const active=(location.hash||'#home').slice(1);
+  const guided=_uiMode==='guided';
+  const more=navMoreState();
+  const link=([v,label,desc])=>`<a href="#${v}" data-v="${v}" title="${esc(desc)}" data-desc="${esc(desc)}"${v===active?' class="on"':''}>${esc(label)}</a>`;
   box.innerHTML=NAV_GROUPS.map(g=>{
+    const vis=g.items.filter(it=>modeAtLeast(it[3]||'guided'));
+    const hid=g.items.filter(it=>!modeAtLeast(it[3]||'guided')); // only non-empty in Guided
+    const activeHidden=hid.some(it=>it[0]===active);
+    const revealed=!guided||more[g.id]===true||activeHidden; // Guided is the only mode that hides
+    const shown=revealed?g.items:vis;
+    if(shown.length===0&&!(guided&&hid.length))return ''; // nothing relevant in this mode
     const hasActive=g.items.some(it=>it[0]===active);
-    const collapsed=navGroupCollapsed(g)&&!hasActive; // never hide the page you're on
-    const links=g.items.map(([v,label,desc])=>
-      `<a href="#${v}" data-v="${v}" title="${esc(desc)}" data-desc="${esc(desc)}"${v===active?' class="on"':''}>${esc(label)}</a>`).join('');
+    const collapsed=guided?false:(navGroupCollapsed(g)&&!hasActive); // never hide the page you're on
+    let inner=shown.map(link).join('');
+    if(guided&&hid.length){
+      inner+=revealed
+        ? `<button class="moretools" type="button" onclick="navToggleMore('${g.id}')">− Show fewer</button>`
+        : `<button class="moretools" type="button" onclick="navToggleMore('${g.id}')">+ Show more tools (${hid.length})</button>`;
+    }
     return `<div class="grp${collapsed?' collapsed':''}" data-grp="${g.id}">
       <button class="grphdr" type="button" aria-expanded="${collapsed?'false':'true'}" onclick="navToggle('${g.id}')"><span class="caret">▾</span>${g.id}</button>
-      <div class="grpitems">${links}</div></div>`;
+      <div class="grpitems">${inner}</div></div>`;
   }).join('');
   navBindLongPress();
 }
@@ -2798,12 +2853,43 @@ function navBindLongPress(){
     a.addEventListener('touchend',cancel);a.addEventListener('touchmove',cancel);a.addEventListener('touchcancel',cancel);
   });
 }
+// The "How much do you want to see?" picker (Settings top + first-run). Saving it
+// changes ONLY visibility/verbosity — never data or behavior.
+function modePicker(){
+  const opt=(m,label,desc)=>`<button type="button" class="${_uiMode===m?'on':''}" onclick="setUIMode('${m}')" title="${esc(desc)}">${label}</button>`;
+  return `<div class="panel"><h2>How much do you want to see?</h2>
+    <div class="modepick" role="group" aria-label="How much do you want to see?">
+      ${opt('guided','Guided','Core journey only; advanced tools tucked behind a reveal; a one-line purpose on every screen')}
+      ${opt('standard','Standard','Full navigation; advanced settings behind an “Advanced” disclosure')}
+      ${opt('complete','Everything','Everything visible and dense; no hand-holding')}
+    </div>
+    <div class="help" style="margin-top:8px">This changes only what's shown and how much is explained — <b>never your data, and never how the app works</b>. Switch anytime. Hidden tools still open from a link or search.</div>
+  </div>`;
+}
+async function setUIMode(m){if(!MODE_RANK[m])return;_uiMode=m;
+  try{await api('PUT','/api/config',{ui_mode:m})}catch(e){toast(e.message,1)}
+  route(); // re-renders nav + the current view at the new verbosity
+}
+// Mode chrome: in Guided, a one-line purpose on every screen; and whenever you open a
+// view above your current mode (via link/search), a small "advanced tool" note.
+function injectModeChrome(v){
+  const view=$('#view');if(!view)return;
+  let pre='';
+  if(!modeAtLeast(viewMin[v]||'guided'))
+    pre+=`<div class="advnote">🔧 This is an advanced tool — outside your “${esc(modeLabel(_uiMode))}” view, shown because you opened it directly. It works exactly as normal.</div>`;
+  if(_uiMode==='guided'&&viewDesc[v])
+    pre+=`<div class="purpose">${esc(viewDesc[v])}</div>`;
+  if(pre)view.insertAdjacentHTML('afterbegin',pre);
+}
 function route(){const v=(location.hash||'#home').slice(1);
-  // Re-render so the active item's group auto-expands and highlights correctly.
-  renderNav();
-  (views[v]||vHome)().catch(e=>toast(e.message,1))}
+  renderNav(); // active item's group auto-expands + highlights
+  Promise.resolve((views[v]||vHome)()).then(()=>injectModeChrome(v)).catch(e=>toast(e.message,1));
+}
 window.addEventListener('hashchange',route);
-renderNav();route();lamp();setInterval(lamp,20000);activity();
+// Load the saved view mode before the first paint, then render.
+(async()=>{try{const c=await api('GET','/api/config');if(c&&c.config&&c.config.ui_mode)_uiMode=c.config.ui_mode;}catch(e){}
+  renderNav();route();})();
+lamp();setInterval(lamp,20000);activity();
 // Sidebar version comes from the one source of truth (/api/health), never hardcoded.
 api('GET','/api/health').then(h=>{const w=$('#wordsub');if(w&&h&&h.version)w.textContent='archival vault · '+h.version}).catch(()=>{});
 </script>

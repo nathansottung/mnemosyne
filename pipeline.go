@@ -36,39 +36,53 @@ var MediaPresets = map[string]int64{
 // ---- config ------------------------------------------------------------
 
 type Config struct {
-	StagingDir            string            `json:"staging_dir"`
-	KeystorePaths         []string          `json:"keystore_paths"`
-	PrivateMedia          bool              `json:"private_media"` // encrypt the manifest written to media (hide filenames)
-	DeleteTarAfterEncrypt bool              `json:"delete_tar_after_encrypt"`
-	Par2Redundancy        int               `json:"par2_redundancy"`
-	Par2ExtraArgs         string            `json:"par2_extra_args"`
-	BufferGB              float64           `json:"buffer_gb"`
-	BlockMB               int               `json:"block_mb"`
-	ThrottleMbps          float64           `json:"throttle_mbps"` // 0 = unthrottled; caps writer-side MB/s (thermal control)
-	BurnCommand           string            `json:"burn_command"`
-	BurnVerifyMount       string            `json:"burn_verify_mount"`
-	OpticalEcc            bool              `json:"optical_ecc"`     // note dvdisaster ECC as an intended extra layer on optical packages (docs + RESTORE.txt); par2 works regardless
-	BurnEcc               string            `json:"burn_ecc"`        // dvdisaster disc-level ECC generated AFTER a burn verifies: "off" (default) | "rs02" | "rs03". Complement to par2; restore never requires it.
-	BurnEccDevice         string            `json:"burn_ecc_device"` // optical device dvdisaster reads to compute the .ecc (e.g. /dev/sr0, H:); blank = derived from the burn command, else the layer is skipped
-	BurnEccCarry          bool              `json:"burn_ecc_carry"`  // true = copy each disc's .ecc into the NEXT pending disc's staged folder (it rides on the next disc); false = keep it in staging
-	VerifyDueMonths       int               `json:"verify_due_months"`
-	RequiredCopies        int               `json:"required_copies"`                // redundancy goal; fewer verified copies = under-protected
-	FinalizeVerifyDays    int               `json:"finalize_verify_days"`           // finalize: every copy on the volume must have verified within this many days
-	BufferPct             float64           `json:"buffer_pct"`                     // finalize: min % of the drive left free to seal — full drives die young
-	SmartBlockFinalize    bool              `json:"smart_block_finalize"`           // finalize: block when SMART data exists and is failing/advisory
-	BuildVerify           string            `json:"build_verify"`                   // integrity tier: "full" (contents + round-trip), "contents", or "none" (unproven, amber)
-	RoutineVerifyLevel    string            `json:"routine_verify_level"`           // default routine re-verify level: "B" (full) or "C" (sample)
-	BarcodeScheme         string            `json:"barcode_scheme"`                 // prefix for auto-assigned volume barcodes, e.g. "NSP" -> NSP-0001
-	TapeTool              string            `json:"tape_tool"`                      // path to a tape-diagnostics CLI (itdt/tapeinfo/sg_logs/hp_ltt); blank = auto-probe PATH
-	TapeDevice            string            `json:"tape_device"`                    // tape drive device path, e.g. \\.\Tape0, /dev/nst0, /dev/sg1; blank = per-OS default
-	AuthToken             string            `json:"auth_token"`                     // bearer token required on every /api call when the server binds a non-localhost address (containers); env MNEMO_AUTH_TOKEN overrides
-	DriftInformational    []string          `json:"drift_informational_extensions"` // muted in reconcile, excluded from alarm totals
-	VersionsRetained      int               `json:"versions_retained"`              // per-file retained content-version cap; 0 = unlimited (default). Capping forgets only the catalog pointer to old bytes, never the media.
-	EscrowOnMedia         string            `json:"escrow_on_media"`                // escrow bundle written onto each finalized volume: "full" | "binaries-only" | "off" (default binaries-only, for space)
-	EscrowIncludeReaders  bool              `json:"escrow_include_readers"`         // include source tarballs of the format readers the census references (e.g. LibRaw)
-	EscrowCacheDir        string            `json:"escrow_cache_dir"`               // where fetched release binaries + toolchain source are cached; blank = <data>/escrow-cache
-	Tools                 map[string]string `json:"tools"`
+	StagingDir            string   `json:"staging_dir"`
+	KeystorePaths         []string `json:"keystore_paths"`
+	PrivateMedia          bool     `json:"private_media"` // encrypt the manifest written to media (hide filenames)
+	DeleteTarAfterEncrypt bool     `json:"delete_tar_after_encrypt"`
+	Par2Redundancy        int      `json:"par2_redundancy"`
+	Par2ExtraArgs         string   `json:"par2_extra_args"`
+	BufferGB              float64  `json:"buffer_gb"`
+	BlockMB               int      `json:"block_mb"`
+	ThrottleMbps          float64  `json:"throttle_mbps"` // 0 = unthrottled; caps writer-side MB/s (thermal control)
+	BurnCommand           string   `json:"burn_command"`
+	BurnVerifyMount       string   `json:"burn_verify_mount"`
+	OpticalEcc            bool     `json:"optical_ecc"`     // note dvdisaster ECC as an intended extra layer on optical packages (docs + RESTORE.txt); par2 works regardless
+	BurnEcc               string   `json:"burn_ecc"`        // dvdisaster disc-level ECC generated AFTER a burn verifies: "off" (default) | "rs02" | "rs03". Complement to par2; restore never requires it.
+	BurnEccDevice         string   `json:"burn_ecc_device"` // optical device dvdisaster reads to compute the .ecc (e.g. /dev/sr0, H:); blank = derived from the burn command, else the layer is skipped
+	BurnEccCarry          bool     `json:"burn_ecc_carry"`  // true = copy each disc's .ecc into the NEXT pending disc's staged folder (it rides on the next disc); false = keep it in staging
+	VerifyDueMonths       int      `json:"verify_due_months"`
+	RequiredCopies        int      `json:"required_copies"`                // redundancy goal; fewer verified copies = under-protected
+	FinalizeVerifyDays    int      `json:"finalize_verify_days"`           // finalize: every copy on the volume must have verified within this many days
+	BufferPct             float64  `json:"buffer_pct"`                     // finalize: min % of the drive left free to seal — full drives die young
+	SmartBlockFinalize    bool     `json:"smart_block_finalize"`           // finalize: block when SMART data exists and is failing/advisory
+	BuildVerify           string   `json:"build_verify"`                   // integrity tier: "full" (contents + round-trip), "contents", or "none" (unproven, amber)
+	RoutineVerifyLevel    string   `json:"routine_verify_level"`           // default routine re-verify level: "B" (full) or "C" (sample)
+	BarcodeScheme         string   `json:"barcode_scheme"`                 // prefix for auto-assigned volume barcodes, e.g. "NSP" -> NSP-0001
+	TapeTool              string   `json:"tape_tool"`                      // path to a tape-diagnostics CLI (itdt/tapeinfo/sg_logs/hp_ltt); blank = auto-probe PATH
+	TapeDevice            string   `json:"tape_device"`                    // tape drive device path, e.g. \\.\Tape0, /dev/nst0, /dev/sg1; blank = per-OS default
+	AuthToken             string   `json:"auth_token"`                     // bearer token required on every /api call when the server binds a non-localhost address (containers); env MNEMO_AUTH_TOKEN overrides
+	DriftInformational    []string `json:"drift_informational_extensions"` // muted in reconcile, excluded from alarm totals
+	VersionsRetained      int      `json:"versions_retained"`              // per-file retained content-version cap; 0 = unlimited (default). Capping forgets only the catalog pointer to old bytes, never the media.
+	EscrowOnMedia         string   `json:"escrow_on_media"`                // escrow bundle written onto each finalized volume: "full" | "binaries-only" | "off" (default binaries-only, for space)
+	EscrowIncludeReaders  bool     `json:"escrow_include_readers"`         // include source tarballs of the format readers the census references (e.g. LibRaw)
+	EscrowCacheDir        string   `json:"escrow_cache_dir"`               // where fetched release binaries + toolchain source are cached; blank = <data>/escrow-cache
+	// UIMode is a PURELY PRESENTATIONAL preference — "how much do you want to see?":
+	// "guided" (default; core journey only, advanced tools behind a reveal, a one-line
+	// purpose on every screen), "standard" (full nav, advanced settings behind an
+	// "Advanced" disclosure), or "complete" (everything visible, dense). It changes
+	// visibility and verbosity ONLY — never data, never behavior; the server does not
+	// branch on it.
+	UIMode string            `json:"ui_mode"`
+	Tools  map[string]string `json:"tools"`
 }
+
+// UI mode values (purely presentational).
+const (
+	UIModeGuided   = "guided"
+	UIModeStandard = "standard"
+	UIModeComplete = "complete"
+)
 
 func defaultConfig() Config {
 	// Defaults are the ARCHIVAL preset: full build-verify, 10% par2, routine level
@@ -76,7 +90,7 @@ func defaultConfig() Config {
 	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, Par2ExtraArgs: "-t0", BufferGB: 8, BlockMB: 64,
 		VerifyDueMonths: 12, RequiredCopies: 2, FinalizeVerifyDays: 30, BufferPct: 5, SmartBlockFinalize: true,
 		BuildVerify: "full", RoutineVerifyLevel: "B", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"},
-		EscrowOnMedia: EscrowBinariesOnly, Tools: map[string]string{}}
+		EscrowOnMedia: EscrowBinariesOnly, UIMode: UIModeGuided, Tools: map[string]string{}}
 }
 
 // buildVerifyMode normalises the configured build-verification tier to one of
