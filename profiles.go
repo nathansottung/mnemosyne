@@ -532,6 +532,55 @@ func (s *Store) fileDimsForCollection(collectionID int) map[int]fileDims {
 	return out
 }
 
+// FileStatuses returns the six-status protection verdict for every file in a
+// collection, keyed by file ID — the per-file view behind the "everything not fully
+// protected" incremental base. Same derivation the Protection tree uses, so the two
+// never disagree.
+func (s *Store) FileStatuses(collectionID int) map[int]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vols := map[int]*Volume{}
+	for _, v := range s.c.Volumes {
+		vols[v.ID] = v
+	}
+	locs := s.locationsMapLocked()
+	fileCopies := map[int]map[string]physCopy{}
+	for _, ch := range s.c.Chunks {
+		if ch.CollectionID != collectionID || ch.Status == "FAILED" {
+			continue
+		}
+		pcs := chunkPhysCopies(ch, vols, locs)
+		if len(pcs) == 0 {
+			continue
+		}
+		for _, cf := range ch.Files {
+			m := fileCopies[cf.FileID]
+			if m == nil {
+				m = map[string]physCopy{}
+				fileCopies[cf.FileID] = m
+			}
+			for sig, pc := range pcs {
+				m[sig] = pc
+			}
+		}
+	}
+	folderPath := map[int]string{}
+	for _, fo := range s.c.Folders {
+		if fo.CollectionID == collectionID {
+			folderPath[fo.ID] = filepath.ToSlash(fo.Path)
+		}
+	}
+	out := map[int]string{}
+	for _, f := range s.c.Files {
+		if f.CollectionID != collectionID {
+			continue
+		}
+		st, _, _ := s.fileProtectionLocked(f, fileCopies, folderPath)
+		out[f.ID] = st
+	}
+	return out
+}
+
 // fileProtectionLocked derives the six-status + detail + resolved profile for one
 // file, given precomputed volume/copy/folder-path maps. Caller holds s.mu. Shared
 // by the protection view and search so both speak the same six-status language.

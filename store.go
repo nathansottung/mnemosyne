@@ -655,6 +655,26 @@ type Audit struct {
 	Detail string    `json:"detail"`
 }
 
+// BackupSession records one incremental "back up changes" run: the delta that was
+// landed onto one volume, when, and how. Stateless by design — nothing downstream
+// depends on it to compute the NEXT delta (that's always recomputed from the catalog);
+// it is history + recognition only. Name is the ready-to-show one-liner
+// ("Incremental to ARCH-03 — 214 files, 8.1 GB, 2026-07-09").
+type BackupSession struct {
+	ID           int       `json:"id"`
+	CollectionID int       `json:"collection_id"`
+	VolumeID     int       `json:"volume_id"`
+	VolumeLabel  string    `json:"volume_label"`
+	Base         string    `json:"base"` // "volume" (not yet on this volume) | "protection" (below COMPLETE)
+	Mode         string    `json:"mode"` // "mirror" | "package"
+	Files        int       `json:"files"`
+	Bytes        int64     `json:"bytes"`
+	FolderIDs    []int     `json:"folder_ids,omitempty"` // folder scope (empty = whole archive)
+	At           time.Time `json:"at"`
+	Name         string    `json:"name"`
+	Dest         string    `json:"dest,omitempty"` // mirror destination path (mirror mode)
+}
+
 // DriftItem is one file that differs between the source folders now and what
 // the collection's chunks hold. MISSING/MODIFIED carry a restore pointer
 // (which chunk + which volumes hold the backed-up version).
@@ -930,6 +950,12 @@ type catalog struct {
 	// territory — never deleted by the tool, reversible via un-quarantine. Additive in
 	// schema v7. See QuarantineEntry / quarantine.go.
 	Quarantine []*QuarantineEntry `json:"quarantine,omitempty"`
+	// BackupSessions: the append-only history of incremental "back up changes" runs —
+	// each a named, stateless snapshot of "what was new that day" onto one volume. They
+	// carry no execution state (the delta is always recomputed from the catalog); they
+	// exist to show a Backup History and to feed Home's periodic-backup recognition
+	// natively. Additive; tolerated absent on older catalogs. See incremental.go.
+	BackupSessions []*BackupSession `json:"backup_sessions,omitempty"`
 }
 
 // compactThreshold is the file count above which the catalog is saved as compact
@@ -2342,6 +2368,35 @@ func (s *Store) DeleteTemplate(id int) {
 	}
 	s.c.Templates = out
 	_ = s.save()
+}
+
+// ---- backup sessions (incremental history) -----------------------------
+
+// AddBackupSession appends an incremental-run record (newest last) and persists.
+func (s *Store) AddBackupSession(b *BackupSession) *BackupSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b.ID = s.next("backup")
+	if b.At.IsZero() {
+		b.At = time.Now().UTC()
+	}
+	s.c.BackupSessions = append(s.c.BackupSessions, b)
+	_ = s.save()
+	return b
+}
+
+// BackupSessions returns the run history for a collection (0 = all), newest first.
+func (s *Store) BackupSessions(collectionID int) []*BackupSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*BackupSession
+	for _, b := range s.c.BackupSessions {
+		if collectionID == 0 || b.CollectionID == collectionID {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	return out
 }
 
 // starterTemplates is the built-in template SET installed on a fresh catalog — one

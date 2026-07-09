@@ -269,6 +269,35 @@ func (a *App) MirrorToVolume(collectionID int, folderIDs []int, destDir string, 
 	return res, nil
 }
 
+// copyVerifyToDest copies srcPath to destPath with the full copy-then-verify
+// discipline — stream to a .mnemo_tmp (hashing on the way), read the bytes back off
+// the destination and confirm they match, then atomically rename into place — so a
+// partial or corrupted file never appears under its real name. Returns the streamed
+// SHA-256 and byte count. The single verified landing path shared by full mirrors and
+// incremental "back up changes" runs.
+func copyVerifyToDest(srcPath, destPath string, th *throttler, onBytes func(int64)) (string, int64, error) {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return "", 0, err
+	}
+	tmp := destPath + mirrorTmpSuffix
+	streamHash, n, err := mirrorCopyFile(srcPath, tmp, th, onBytes)
+	if err != nil {
+		_ = os.Remove(tmp)
+		return "", n, err
+	}
+	// Read the bytes back off the destination and confirm byte-identity before the
+	// file gets its real name.
+	if rb, rerr := hashFileHex(tmp); rerr != nil || rb != streamHash {
+		_ = os.Remove(tmp)
+		return "", n, fmt.Errorf("read-back verification failed for %s", filepath.Base(destPath))
+	}
+	if err := atomicRename(tmp, destPath); err != nil {
+		_ = os.Remove(tmp)
+		return "", n, err
+	}
+	return streamHash, n, nil
+}
+
 // atomicRename renames tmp -> final, replacing any prior file at final so a
 // re-mirror overwrites cleanly (os.Rename already replaces on unix; on Windows
 // it fails if the target exists, so remove first).

@@ -256,7 +256,17 @@ func (a *App) HomeOverview(onlineVolumeIDs map[int]bool) HomeData {
 	}
 
 	// ---- incremental-backup recognition ----
+	// Two feeds, merged: content-containment against adopted-drive snapshots, PLUS the
+	// explicit incremental "back up changes" sessions (which name their target volume
+	// and archive directly — no heuristic needed).
 	data.Incremental = a.detectIncrementalBackups(archives, snapshots, archiveSha, archiveB3)
+	data.Incremental = append(data.Incremental, a.sessionIncrementals(archives, data.Incremental)...)
+	sort.Slice(data.Incremental, func(i, j int) bool {
+		if data.Incremental[i].ArchiveName != data.Incremental[j].ArchiveName {
+			return data.Incremental[i].ArchiveName < data.Incremental[j].ArchiveName
+		}
+		return data.Incremental[i].AsOf < data.Incremental[j].AsOf
+	})
 
 	// ---- remaining health signals ----
 	drifted := map[int]bool{}
@@ -357,6 +367,67 @@ func (a *App) detectIncrementalBackups(archives []*Collection, snapshots []*Volu
 		}
 		return out[i].AsOf < out[j].AsOf
 	})
+	return out
+}
+
+// sessionIncrementals turns explicit incremental "back up changes" sessions into
+// recognized backups — natively, since each session already names its volume and the
+// SOURCED archive it copied from. Skips (volume,archive) pairs already recognized by
+// the snapshot-containment feed so a drive is never listed twice. Periodic when a
+// volume received 2+ sessions, or when 2+ volumes back the same archive.
+func (a *App) sessionIncrementals(archives []*Collection, existing []HomeIncremental) []HomeIncremental {
+	sourced := map[int]*Collection{}
+	for _, c := range archives {
+		if !c.IsSourceless() {
+			sourced[c.ID] = c
+		}
+	}
+	if len(sourced) == 0 {
+		return nil
+	}
+	type key struct{ vol, arch int }
+	agg := map[key]*HomeIncremental{}
+	sessCount := map[key]int{}
+	archVols := map[int]map[int]bool{}
+	for _, s := range a.Store.BackupSessions(0) {
+		c := sourced[s.CollectionID]
+		if c == nil {
+			continue
+		}
+		k := key{s.VolumeID, s.CollectionID}
+		e := agg[k]
+		if e == nil {
+			e = &HomeIncremental{VolumeID: s.VolumeID, Label: nonEmpty(s.VolumeLabel, fmt.Sprintf("vol#%d", s.VolumeID)),
+				ArchiveID: s.CollectionID, ArchiveName: c.Name, ContainPct: 100}
+			agg[k] = e
+		}
+		e.MatchFiles += s.Files
+		if d := s.At.Format("2006-01-02"); d > e.AsOf {
+			e.AsOf = d
+		}
+		sessCount[k]++
+		if archVols[s.CollectionID] == nil {
+			archVols[s.CollectionID] = map[int]bool{}
+		}
+		archVols[s.CollectionID][s.VolumeID] = true
+	}
+	seen := map[key]bool{}
+	for _, e := range existing {
+		seen[key{e.VolumeID, e.ArchiveID}] = true
+	}
+	var out []HomeIncremental
+	for k, e := range agg {
+		if seen[k] {
+			continue
+		}
+		e.Periodic = sessCount[k] >= 2 || len(archVols[k.arch]) >= 2
+		if e.Periodic {
+			e.Badge = "looks like periodic backups of " + e.ArchiveName
+		} else {
+			e.Badge = "looks like a backup of " + e.ArchiveName
+		}
+		out = append(out, *e)
+	}
 	return out
 }
 

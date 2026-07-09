@@ -18,6 +18,7 @@ Read these in order the first time:
 9. [Getting your files back](08-getting-files-back.md)
 10. [The Recovery Kit (your break-glass box)](09-the-recovery-kit.md)
 11. [Where your data lives (the honesty map)](10-where-your-data-lives.md)
+12. [Keeping a backup current (the weekly ritual)](11-keeping-a-backup-current.md)
 
 Reference:
 

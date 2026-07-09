@@ -734,6 +734,64 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, map[string]any{"jobs": jobs})
 	})
+
+	// ---- incremental "back up changes" (see incremental.go) ----
+	// Preview the delta: file count, bytes, per-role breakdown, and a fit check.
+	register(mux, "POST /api/collections/{id}/backup-delta", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		if app.Store.Collection(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		b := body(r)
+		// volume_id may be 0 here (previewing before registering a volume inline) — a
+		// fresh volume holds nothing, so the delta is the whole in-scope set.
+		volID := int(f(b, "volume_id"))
+		d, err := app.BackupDeltaPreview(id, intList(b, "folder_ids"), volID, s(b, "base"), s(b, "mode"), s(b, "dest_dir"))
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, d)
+	})
+	// Run the incremental backup of the delta onto a volume (mirror or package).
+	register(mux, "POST /api/collections/{id}/backup-changes", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		coll := app.Store.Collection(id)
+		if coll == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		b := body(r)
+		vol := resolveVolume(app, b)
+		if vol <= 0 {
+			jsonErr(w, 400, fmt.Errorf("volume_id or new_volume required"))
+			return
+		}
+		if err := sealGuard(app, vol); err != nil {
+			jsonErr(w, 409, err)
+			return
+		}
+		folderIDs := intList(b, "folder_ids")
+		base, mode, dest, throttle := s(b, "base"), s(b, "mode"), s(b, "dest_dir"), f(b, "throttle_mbps")
+		label := fmt.Sprintf("Back up changes: %s → %s", coll.Name, nonEmpty(app.Store.Volume(vol).Label, "volume"))
+		resp := runJob(app, "incremental", label, func(p func(float64, string)) (map[string]any, error) {
+			res, err := app.BackupChanges(id, folderIDs, vol, base, mode, dest, throttle, p)
+			if res == nil {
+				return nil, err
+			}
+			return map[string]any{"files": res.Files, "bytes": res.Bytes, "mode": res.Mode, "base": res.Base,
+				"name": res.Name, "session_id": res.SessionID, "sidecar": res.Sidecar, "planned": res.Planned,
+				"message": res.Message, "dest": res.Dest, "changed": res.Changed, "failed": res.Failed}, err
+		})
+		resp["volume_id"] = vol
+		jsonOut(w, resp)
+	})
+	// The Backup History list on an archive (newest first).
+	register(mux, "GET /api/collections/{id}/backup-history", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.Store.BackupSessions(pathID(r)))
+	})
+
 	mux.HandleFunc("GET /api/search", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		cid, _ := strconv.Atoi(q.Get("collection_id"))

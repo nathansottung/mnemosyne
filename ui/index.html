@@ -1233,6 +1233,7 @@ async function vVault(){
   else{h+='<table><tr><th>Name</th><th class="num">Files</th><th class="num">Size</th><th class="num">Packages</th><th></th></tr>';
     for(const c of cs){const dr=c.drift;const sl=c.kind==='SOURCELESS';
       const srcActions=`<button class="btn ghost" onclick="scanDlg(${c.id},'${esc(c.name)}')">Scan folder…</button>
+      <button class="btn ghost" onclick="backupChangesDlg(${c.id},'${esc(c.name)}')">Back up changes…</button>
       <button class="btn ghost" onclick="mirrorDlg(${c.id},'${esc(c.name)}')">Mirror backup…</button>
       <button class="btn ghost" onclick="doReconcile(${c.id},'${esc(c.name)}')">Rescan & compare</button>`;
       const slActions=`<button class="btn ghost" onclick="adoptFolderDlg(${c.id},'${esc(c.name)}')">Adopt a drive…</button>`;
@@ -1241,6 +1242,7 @@ async function vVault(){
       <td class="num">${c.chunks}</td><td class="row" style="justify-content:flex-end">
       ${sl?slActions:srcActions}
       <button class="btn ghost" onclick="planDlg(${c.id},'${esc(c.name)}')">Plan packages…</button>
+      <button class="btn ghost" onclick="backupHistoryDlg(${c.id},'${esc(c.name)}')">Backup history…</button>
       <button class="btn ghost" onclick="vArchiveProtection(${c.id})">Protection…</button>
       <button class="btn ghost" onclick="tmOpen(${c.id})">Treemap…</button>
       <button class="btn ghost" onclick="censusDlg(${c.id},'${esc(c.name)}')">Formats…</button>
@@ -1291,6 +1293,99 @@ function addMirrorTarget(){
     <select class="mvol" style="flex:1">${opts}</select>
     <button class="btn ghost" onclick="this.parentNode.remove()" title="remove target">✕</button>`;
   c.appendChild(row);
+}
+
+/* ---- Incremental "Back up changes": copy only what's new/changed to a volume ----
+   Two plainly-labeled bases, a live delta preview (count, bytes, per-role, fit), and
+   a stateless run recorded as a named session. Output follows the volume kind (mirror
+   for drives, packages for tape/optical). Reuses the mirror + plan engines. */
+window._bcid=0;
+async function backupChangesDlg(id,name){
+  const [folders,vols]=await Promise.all([api('GET','/api/collections/'+id+'/folders'),api('GET','/api/volumes')]);
+  window._bcid=id;
+  window._bcvols=(vols||[]).map(r=>r.volume||r).filter(v=>v.label!=='(unregistered)');
+  const folderChecks=(folders||[]).length
+    ? folders.map(f=>`<label class="row" style="gap:8px;align-items:center"><input type="checkbox" class="bcfolder" value="${f.id}" checked style="width:auto" onchange="bcPreview()"> <span class="mono" style="font-size:11.5px">${esc(f.path)}</span> <span class="dim">· ${f.files} files · ${GB(f.bytes)} GB</span></label>`).join('')
+    : '<div class="dim">No folders scanned into this archive yet — scan one first.</div>';
+  const volOpts=(window._bcvols||[]).map(v=>`<option value="${v.id}" data-kind="${esc(v.kind||'')}">${esc(v.label)}${v.location?' · '+esc(v.location):''}${v.kind?' · '+esc(v.kind):''}</option>`).join('');
+  const bcBrowse=`<button type="button" class="btn ghost" style="padding:4px 10px;font-size:12px;margin-top:4px" onclick="pickFolder((($('#bcdest')||{}).value||'').trim(),p=>{const el=$('#bcdest');if(el)el.value=p;bcPreview();})">📁 Browse…</button>`;
+  dlg(`<h1>Back up changes — ${esc(name)}</h1>
+    <div class="dim" style="margin-bottom:10px">Copies only what's <b>new or changed</b> to a destination volume. The tool tracks every file individually, so there's no full-vs-incremental bookkeeping and an interrupted or skipped run just picks up what's still missing next time. 🛡 Sources are only read.</div>
+    <label>What to back up</label>
+    <label class="row" style="gap:8px;align-items:flex-start;margin-top:4px"><input type="radio" name="bcbase" value="volume" checked style="width:auto;margin-top:3px" onchange="bcPreview()"> <span><b>Everything not yet on this volume</b> — new + changed files this drive doesn't already hold. For rotating per-drive incrementals.</span></label>
+    <label class="row" style="gap:8px;align-items:flex-start;margin-top:6px"><input type="radio" name="bcbase" value="protection" style="width:auto;margin-top:3px" onchange="bcPreview()"> <span><b>Everything not fully protected</b> — files below their COMPLETE goal (their profile). For topping up overall protection.</span></label>
+    <label style="margin-top:12px">Destination volume</label>
+    <select id="bcvol" class="full" onchange="bcVolChange()">${volOpts}<option value="__new">＋ register a new volume…</option></select>
+    <div id="bcnew" style="display:none;margin-top:6px" class="row">
+      <input id="bcnewlabel" placeholder="new volume label (e.g. ARCH-03)" style="flex:2" oninput="bcPreview()">
+      <select id="bcnewkind" style="flex:1" onchange="bcPreview()"><option value="HDD">HDD</option><option value="SSD">SSD</option><option value="TAPE">TAPE</option><option value="OPTICAL">OPTICAL</option><option value="OTHER">OTHER</option></select>
+    </div>
+    <div id="bcdestrow"><label style="margin-top:10px">Folder on that volume to write into</label>
+      <input id="bcdest" class="full" placeholder="T:\\Backups\\Archive  or  /mnt/backup" oninput="bcPreview()">${bcBrowse}</div>
+    <details class="adv" style="margin-top:8px"><summary>Limit to specific folders (default: the whole archive)</summary>
+      <div style="max-height:130px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:6px">${folderChecks}</div></details>
+    <div id="bcpreview" class="panel" style="margin-top:12px"><div class="dim">Computing what’s new…</div></div>
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Back up changes</button></div>`,
+  async()=>{
+    const base=(document.querySelector('input[name=bcbase]:checked')||{}).value||'volume';
+    const folder_ids=bcScopedFolders();
+    const payload={base,dest_dir:(($('#bcdest')||{}).value||'').trim(),folder_ids};
+    const vsel=$('#bcvol').value;
+    if(vsel==='__new'){const lbl=($('#bcnewlabel').value||'').trim();if(!lbl){toast('Name the new volume first',1);throw new Error('vol');}
+      payload.new_volume={label:lbl,kind:$('#bcnewkind').value};}
+    else{const vid=parseInt(vsel)||0;if(!vid){toast('Pick a destination volume',1);throw new Error('vol');}payload.volume_id=vid;}
+    await api('POST','/api/collections/'+id+'/backup-changes',payload);
+    toast('Back up changes started — see Jobs');loc('jobs');
+  });
+  bcPreview();
+}
+function bcScopedFolders(){
+  const checked=[...document.querySelectorAll('.bcfolder:checked')].map(e=>parseInt(e.value));
+  const all=document.querySelectorAll('.bcfolder').length;
+  return (checked.length&&checked.length<all)?checked:[]; // [] = whole archive
+}
+function bcVolChange(){const isNew=($('#bcvol')||{}).value==='__new';const n=$('#bcnew');if(n)n.style.display=isNew?'flex':'none';bcPreview();}
+function bcCurrentMode(){
+  const vsel=($('#bcvol')||{}).value;
+  let k='';
+  if(vsel==='__new')k=(($('#bcnewkind')||{}).value||'').toUpperCase();
+  else{const sel=$('#bcvol');const opt=sel&&sel.selectedOptions&&sel.selectedOptions[0];k=((opt&&opt.dataset.kind)||'').toUpperCase();}
+  return (k==='TAPE'||k==='OPTICAL')?'package':'mirror';
+}
+let _bcT;
+function bcPreview(){clearTimeout(_bcT);_bcT=setTimeout(async()=>{
+  const el=$('#bcpreview');if(!el)return;
+  const base=(document.querySelector('input[name=bcbase]:checked')||{}).value||'volume';
+  const vsel=($('#bcvol')||{}).value;
+  const volume_id=(vsel==='__new')?0:(parseInt(vsel)||0);
+  const mode=bcCurrentMode();
+  const dest=(($('#bcdest')||{}).value||'').trim();
+  const dr=$('#bcdestrow');if(dr)dr.style.display=mode==='package'?'none':'';
+  try{const d=await api('POST','/api/collections/'+window._bcid+'/backup-delta',{base,volume_id,mode,dest_dir:dest,folder_ids:bcScopedFolders()});
+    el.innerHTML=bcPreviewHTML(d);
+  }catch(e){el.innerHTML='<div class="err">'+esc(e.message)+'</div>';}
+},250);}
+const BC_ROLE={ORIGINALS:'Originals',DELIVERABLES:'Deliverables',SIDECARS:'Sidecars','PROJECT-FILES':'Project files',OTHER:'Other'};
+function bcPreviewHTML(d){
+  if(d.already_current)return '<div style="color:var(--ok)">✓ Already current — nothing new to back up to this volume.</div>';
+  let h=`<div style="font-size:14px"><b>${commaN(d.files)}</b> file(s) · <b>${GB(d.bytes)} GB</b> to copy <span class="dim">· as ${d.mode==='package'?'media-sized packages (tape/optical)':'plain files (mirror)'}</span></div>`;
+  if((d.roles||[]).length)h+=`<div class="dim" style="font-size:11.5px;margin-top:4px">${d.roles.map(r=>`${BC_ROLE[r.role]||r.role}: ${commaN(r.files)} (${GB(r.bytes)} GB)`).join(' · ')}</div>`;
+  if(d.free_known)h+=`<div style="margin-top:6px;font-size:12px;color:${d.fits?'var(--ok)':'var(--bad)'}">${d.fits?'✓ Fits':'⚠ Too big'} — needs ${GB(d.bytes)} GB, ${GB(d.free_bytes)} GB free on the destination.</div>`;
+  else if(d.mode!=='package')h+=`<div class="dim" style="margin-top:6px;font-size:11.5px">Enter a destination folder to check it fits.</div>`;
+  if(d.mode==='package')h+=`<div class="dim" style="margin-top:6px;font-size:11.5px">Tape/optical: this plans the delta into packages; build &amp; write them from <b>Packages</b> to land verified copies.</div>`;
+  return h;
+}
+async function backupHistoryDlg(id,name){
+  const hist=await api('GET','/api/collections/'+id+'/backup-history')||[];
+  let h=`<h1>Backup history — ${esc(name)}</h1>`;
+  if(!hist.length)h+='<div class="empty">No incremental backups yet. Use “Back up changes…” to copy what’s new to a volume.</div>';
+  else{h+='<div class="dim" style="font-size:11.5px;margin-bottom:8px">Each run is a stateless snapshot of what was new that day. Nothing depends on remembering the last one — the delta is always recomputed from the catalog.</div>'
+    +'<table><tr><th>When</th><th>Volume</th><th>What</th><th class="num">Files</th><th class="num">Size</th></tr>';
+    for(const s of hist)h+=`<tr><td>${esc((s.at||'').slice(0,10))}</td><td>${esc(s.volume_label||('vol#'+s.volume_id))}</td>
+      <td class="dim">${s.base==='protection'?'top-up protection':'new to volume'}${s.mode==='package'?' · packages':''}</td>
+      <td class="num">${commaN(s.files)}</td><td class="num">${GB(s.bytes)} GB</td></tr>`;
+    h+='</table>';}
+  dlg(h,async()=>{});
 }
 async function vDrift(id,name){
   const d=await api('GET','/api/collections/'+id+'/drift');const c=d.counts||{};const info=d.info_counts||{};
