@@ -97,11 +97,14 @@ promise you have to trust.**
 
 Prebuilt, self-contained binaries for every release are on the
 **[Releases page](https://github.com/nathansottung/mnemosyne/releases/latest)** —
-pick the zip for your OS/architecture:
+pick the zip for your OS/architecture.
+
+**Supported platforms:** Windows (x64, ARM), Linux (x64, ARM — Raspberry Pi), macOS (Intel, Apple Silicon).
 
 | Zip | Platform |
 |-----|----------|
 | `mnemosyne-windows-amd64.zip` | Windows (x64) |
+| `mnemosyne-windows-arm64.zip` | Windows on ARM |
 | `mnemosyne-linux-amd64.zip`   | Linux server / NAS (x64) |
 | `mnemosyne-linux-arm64.zip`   | Raspberry Pi / ARM Linux |
 | `mnemosyne-darwin-arm64.zip`  | Apple Silicon macOS |

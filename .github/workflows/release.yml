@@ -33,8 +33,9 @@ jobs:
           # OVERWRITES the committed dev placeholder before the build compiles it in.
           git archive --format=tar.gz --prefix="mnemosyne-${TAG}/" -o escrow/mnemosyne-src.tar.gz HEAD
           cp "escrow/mnemosyne-src.tar.gz" "dist/mnemosyne-src-${TAG}.tar.gz"
-          # Pure-Go, static (CGO disabled) binaries for every supported target.
-          for target in windows/amd64 linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do
+          # Pure-Go, static (CGO disabled) binaries for every supported target:
+          # Windows (x64, ARM), Linux (x64, ARM), macOS (Intel, Apple Silicon).
+          for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do
             goos="${target%/*}"; goarch="${target#*/}"
             bin="mnemosyne-${goos}-${goarch}"
             [ "$goos" = "windows" ] && bin="${bin}.exe"
