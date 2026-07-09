@@ -53,6 +53,17 @@ h1{font:600 19px var(--sans);margin:0 0 4px}
 /* one plain help sentence under a setting label (the plain-language standard) */
 .help{font-size:11.5px;line-height:1.45;color:var(--ink-3);margin:2px 0 13px}
 label+.help,select+.help,input+.help,textarea+.help{margin-top:3px}
+/* ---- Home overview: totals strip + data cards ---- */
+.hstrip{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.htile{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.htile .hk{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.htile .hv{font:600 22px var(--sans);margin-top:3px;color:var(--ink)}
+.htile .hu{font-size:11px;color:var(--ink-3);margin-top:2px;line-height:1.35}
+.hcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.hcard{display:block;text-decoration:none;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.hcard:hover{border-color:var(--ink-3)}
+.hcard-t{font:600 13.5px var(--sans);color:var(--ink);margin-bottom:2px}
+.hcard-ung{border-style:dashed;border-color:var(--act)}
 table{width:100%;border-collapse:collapse}
 th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
   text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}
@@ -787,61 +798,75 @@ async function censusDlg(cid,name){
 }
 
 /* ---------------- Home / Dashboard ---------------- */
+function homeBytes(n){const gb=(n||0)/1e9;if(gb>=1000)return (gb/1000).toFixed(2)+' TB';if(gb>=10)return gb.toFixed(0)+' GB';return gb.toFixed(1)+' GB'}
 async function vHome(){
-  const [cs,chunks,cfgr,pre,adv,pr,cen]=await Promise.all([
-    api('GET','/api/collections'),api('GET','/api/chunks'),api('GET','/api/config'),api('GET','/api/preflight'),
-    api('GET','/api/space-advice').catch(()=>null),api('GET','/api/protection').catch(()=>null),api('GET','/api/census').catch(()=>null)]);
-  const archives=cs||[]; const pkgs=chunks||[]; const cfg=(cfgr&&cfgr.config)||{};
-  const required=cfg.required_copies||2; const months=cfg.verify_due_months||12;
-  // Empty catalog → guided first run.
-  if(!archives.length){ $('#view').innerHTML=gettingStarted(cfg,pre||{},archives,pkgs); return; }
-  const totalFiles=archives.reduce((a,c)=>a+(c.files||0),0);
-  const written=pkgs.filter(c=>currentCopies(c).length>0).length;
-  const verified=pkgs.filter(c=>verifiedCopies(c)>0).length;
-  const under=pkgs.filter(c=>currentCopies(c).length>0&&verifiedCopies(c)<required).length;
-  const due=dueCount(pkgs,months);
-  const byArch={}; for(const c of pkgs){(byArch[c.collection_id]=byArch[c.collection_id]||[]).push(c)}
-  let h=hdr('Home','archive health at a glance','home');
-  const protStripHTML=protStrip((pr&&pr.totals)||{});
-  if(protStripHTML)h+=`<a href="#protection" style="text-decoration:none;color:var(--ink-3);font:11px var(--mono);letter-spacing:.06em;text-transform:uppercase">Protection — 3-2-1 status →</a>`+protStripHTML;
-  if(cen&&cen.total_files)h+=`<div class="panel" style="padding:12px 16px"><div class="row" style="justify-content:space-between;align-items:center;gap:14px">
-    <div style="flex:1;min-width:0">${censusSummary(cen)}<div style="margin-top:6px;max-width:560px">${censusBar(cen)}</div></div>
-    <button class="btn ghost" onclick="censusDlg(0,'All archives')">Format census…</button></div></div>`;
-  if(under||due)h+=`<div class="row" style="margin-bottom:14px">
-    ${under?`<a class="btn danger" href="#packages">⚠ ${under} under-protected package${under>1?'s':''}</a>`:''}
-    ${due?`<a class="btn ghost" href="#packages">${due} package${due>1?'s':''} verify-due</a>`:''}</div>`;
-  const stage=(k,v,u,href)=>`<a class="stage" href="${href}" aria-label="${esc(k)}: ${v} ${esc(u)}"><div class="k">${esc(k)}</div><div class="v">${v}</div><div class="u">${esc(u)}</div></a>`;
-  h+=`<div class="pipemap" role="navigation" aria-label="pipeline stages">
-    ${stage('Catalog',totalFiles.toLocaleString(),`files · ${archives.length} archive${archives.length===1?'':'s'}`,'#vault')}
-    <div class="stagearrow" aria-hidden="true">→</div>
-    ${stage('Package',pkgs.length,`package${pkgs.length===1?'':'s'} planned`,'#packages')}
-    <div class="stagearrow" aria-hidden="true">→</div>
-    ${stage('Write',written,`on a volume`,'#volumes')}
-    <div class="stagearrow" aria-hidden="true">→</div>
-    ${stage('Verify',verified,`verified copies`,'#packages')}
-  </div>`;
-  if(adv){const pl=adv.plan||{};
-    h+=`<div class="dim" style="font:12px var(--mono);margin:2px 0 14px">Staging <b>${esc(adv.staging_dir||'(unset)')}</b> · ${GBn(adv.staging_free_bytes)} GB free · fits largest planned package: <b>${pl.fits?'yes':'no'}</b> ${adv.plan?spaceChip(pl.verdict):''} <span class="dim">(builds one package at a time; scratch is reused)</span></div>`;}
-  h+='<div class="panel"><h2>Archives</h2><table><tr><th>Archive</th><th class="num">Files</th><th>Packages</th><th>Protection</th><th>Drift</th><th class="num">Verify-due</th></tr>';
-  for(const a of archives){
-    const p=byArch[a.id]||[];
-    const sc={}; for(const c of p)sc[c.status]=(sc[c.status]||0)+1;
-    const stamps=[...STAGES,'FAILED'].filter(s=>sc[s]).map(s=>`<span class="stamp ${s}" title="${sc[s]} ${s}">${sc[s]}</span>`).join(' ')||'<span class="dim">none yet</span>';
-    const au=p.filter(c=>currentCopies(c).length>0&&verifiedCopies(c)<required).length;
-    const prot=p.filter(c=>verifiedCopies(c)>=required).length;
-    const ad=dueCount(p,months); const dr=a.drift;
-    h+=`<tr>
-      <td><a href="#vault" style="color:var(--act);text-decoration:none;font-weight:600">${esc(a.name)}</a></td>
-      <td class="num"><a href="#vault" style="color:var(--act);text-decoration:none">${(a.files||0).toLocaleString()}</a></td>
-      <td><a href="#packages" style="text-decoration:none" aria-label="${p.length} packages">${stamps}</a></td>
-      <td>${au?`<a href="#packages" class="etag due" style="text-decoration:none">${au} under-protected</a>`:prot?`<span class="etag enc">${prot} protected</span>`:'<span class="dim">—</span>'}</td>
-      <td>${dr&&dr.changes>0?`<a href="#" onclick="vDrift(${a.id},'${esc(a.name)}');return false" class="etag due" style="text-decoration:none">${dr.changes} changes</a>`:dr?'<span class="etag enc">in sync</span>':'<span class="dim" title="run Rescan &amp; compare in Vault">—</span>'}</td>
-      <td class="num">${ad?`<a href="#packages" class="etag due" style="text-decoration:none">${ad}</a>`:'<span class="dim">0</span>'}</td>
-    </tr>`;
+  const home=await api('GET','/api/home');
+  // Truly-empty catalog (no archives, no drives) → the guided first-run checklist.
+  if(home.empty){
+    const [cfgr,pre]=await Promise.all([api('GET','/api/config'),api('GET','/api/preflight')]);
+    $('#view').innerHTML=gettingStarted((cfgr&&cfgr.config)||{},pre||{},[],[]); return;
   }
-  h+='</table></div>';
+  const t=home.totals||{}, arcs=home.archives||[], ung=home.ungrouped, hl=home.health||{}, inc=home.incremental||[];
+  let h=hdr('Home','what this tool knows about all your data','home');
+
+  // (1) Totals strip.
+  const tile=(k,v,u)=>`<div class="htile"><div class="hk">${esc(k)}</div><div class="hv">${v}</div>${u?`<div class="hu">${esc(u)}</div>`:''}</div>`;
+  const volU=[]; if(t.volumes_online)volU.push(t.volumes_online+' connected now'); if(t.volumes_snapshot)volU.push(t.volumes_snapshot+' offline (from a snapshot)');
+  h+=`<div class="hstrip">
+    ${tile('Files known',commaN(t.files_known),'distinct content, deduped by hash')}
+    ${tile('Data known',homeBytes(t.bytes_known),'')}
+    ${tile('Drives & volumes',commaN(t.volumes_known),volU.join(' · ')||'none registered yet')}
+    ${tile('Locations',commaN(t.locations),'')}
+    ${tile('Last activity',t.last_activity_at?esc((t.last_activity_at||'').slice(0,10)):'—',t.last_activity_what?clip(t.last_activity_what,44):'')}
+  </div>`;
+
+  // (2) Your data — archive cards + a distinct ungrouped card.
+  h+='<div class="panel"><h2>Your data</h2>';
+  if(!arcs.length&&!ung)h+='<div class="dim">No archives yet.</div>';
+  h+='<div class="hcards">';
+  for(const a of arcs){
+    const prot=a.under_protected?`<span class="etag due">${commaN(a.under_protected)} under-protected</span>`
+      :a.protected?`<span class="etag enc">${commaN(a.protected)} protected</span>`:'<span class="dim" style="font-size:11px">no verified copies yet</span>';
+    h+=`<a class="hcard" href="#vault">
+      <div class="hcard-t">${esc(a.name)}${a.sourceless?' <span class="etag" style="font-size:9px">adopted</span>':''}</div>
+      <div class="dim" style="font-size:11.5px">${commaN(a.files)} files · ${homeBytes(a.bytes)}</div>
+      <div style="margin-top:7px">${prot}${a.drift_changes?` <a href="#" onclick="vDrift(${a.id},'${esc(a.name)}');return false" class="etag due" style="text-decoration:none">${commaN(a.drift_changes)} drift</a>`:''}</div>
+    </a>`;
+  }
+  if(ung){
+    h+=`<a class="hcard hcard-ung" href="#dock">
+      <div class="hcard-t">Ungrouped data</div>
+      <div style="font-size:12.5px;margin-top:2px"><b>${commaN(ung.files)}</b> files on <b>${ung.drives}</b> drive${ung.drives===1?'':'s'} aren't organized yet — <span style="color:var(--act)">group them →</span></div>
+      <div class="dim" style="font-size:11px;margin-top:4px">${homeBytes(ung.bytes)}${(ung.labels||[]).length?' · '+ung.labels.map(esc).join(', ')+(ung.drives>ung.labels.length?', …':''):''}</div>
+      <div class="dim" style="font-size:11px;margin-top:7px">Grouping only organizes the catalog — it never moves or changes files on your drives.</div>
+    </a>`;
+  }
+  h+='</div></div>';
+
+  // (3) Health strip — each a click-through.
+  const chips=[];
+  if(hl.under_protected)chips.push(`<a class="btn danger" href="#protection">⚠ ${commaN(hl.under_protected)} under-protected file${hl.under_protected===1?'':'s'}</a>`);
+  if(hl.drift_alarms)chips.push(`<a class="btn ghost" href="#vault">${commaN(hl.drift_alarms)} drift change${hl.drift_alarms===1?'':'s'} · ${hl.drift_archives} archive${hl.drift_archives===1?'':'s'}</a>`);
+  if(hl.verify_due)chips.push(`<a class="btn ghost" href="#packages">${commaN(hl.verify_due)} package${hl.verify_due===1?'':'s'} verify-due</a>`);
+  if(hl.failing_volumes)chips.push(`<a class="btn danger" href="#volumes">⚠ ${hl.failing_volumes} drive${hl.failing_volumes===1?'':'s'} reporting failing health</a>`);
+  if(hl.open_conflicts)chips.push(`<a class="btn ghost" href="#conflicts">${commaN(hl.open_conflicts)} unresolved conflict${hl.open_conflicts===1?'':'s'}</a>`);
+  h+=`<div class="panel"><h2>Health</h2>${chips.length?`<div class="row" style="flex-wrap:wrap;gap:8px">${chips.join('')}</div>`:'<div class="dim">✓ All clear — nothing needs your attention right now.</div>'}</div>`;
+
+  // (4) Incremental-backup recognition — adopted drives characterized against archives.
+  if(inc.length){
+    h+=`<div class="panel"><h2>Recognized backups</h2>
+      <div class="dim" style="font-size:11.5px;margin-bottom:8px">Adopted drives whose contents match one of your archives — characterized automatically, so your drive stack reads correctly without any extra tooling.</div>`;
+    for(const e of inc){
+      h+=`<div class="row" style="align-items:center;border-bottom:1px solid var(--line);padding:7px 0">
+        <div style="flex:1"><b>${esc(e.label)}</b> <span class="etag enc">${esc(e.badge)}</span>
+          <div class="dim" style="font-size:11px">${e.contain_pct}% of its content (${commaN(e.match_files)} files) is in ${esc(e.archive_name)}${e.as_of?` · newest file dated ${esc(e.as_of)}`:''}</div></div>
+        <a class="btn ghost" href="#volumes">View drive</a></div>`;
+    }
+    h+='</div>';
+  }
   $('#view').innerHTML=h;
 }
+function clip(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
 function gettingStarted(cfg,pre,archives,pkgs){
   const ok=x=>x&&x.ok;
   const tools=ok(pre.tar)&&ok(pre.gpg)&&ok(pre.par2);

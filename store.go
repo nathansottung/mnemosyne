@@ -1272,6 +1272,18 @@ func (s *Store) Log(action, detail string) {
 	_ = s.save()
 }
 
+// LastAudit returns the most recent audit-log entry (nil if the log is empty) —
+// the "last activity" the Home overview shows.
+func (s *Store) LastAudit() *Audit {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.c.Audit) == 0 {
+		return nil
+	}
+	a := s.c.Audit[len(s.c.Audit)-1]
+	return &a
+}
+
 // ---- collections / folders / files -----------------------------------
 
 func (s *Store) AddCollection(name string) *Collection {

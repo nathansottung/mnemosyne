@@ -409,6 +409,12 @@ func api(mux *http.ServeMux, app *App) {
 	mux.HandleFunc("GET /api/preflight", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, app.Preflight())
 	})
+	// The Home overview: "what does this tool know about ALL my data?" in one payload.
+	// The only live probe (which volumes are connected now) is injected here so the
+	// computation itself stays pure/testable.
+	mux.HandleFunc("GET /api/home", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.HomeOverview(app.onlineVolumeIDsCached()))
+	})
 	mux.HandleFunc("GET /api/media", func(w http.ResponseWriter, r *http.Request) { jsonOut(w, MediaPresets) })
 	mux.HandleFunc("GET /api/pathinfo", func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Query().Get("path")
