@@ -1081,7 +1081,7 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, app.QuarantineViewData())
 	})
 	// Preview the protection consequence of quarantining a path — shown BEFORE the
-	// user confirms ("this drops Henderson Wedding originals to 1 copy"). Also the
+	// user confirms ("this drops Smith Wedding originals to 1 copy"). Also the
 	// eligibility gate: a non-managed/source path returns an error, so the UI knows
 	// the action does not apply there.
 	mux.HandleFunc("GET /api/quarantine/consequence", func(w http.ResponseWriter, r *http.Request) {

@@ -35,7 +35,7 @@ func TestInferStructure_OrganizedTree(t *testing.T) {
 	// A human-sorted photos root: {year}/{event_type}/{event}/frames.jpg
 	base := time.Date(2019, 6, 15, 9, 0, 0, 0, time.UTC)
 	for i := 0; i < 4; i++ {
-		writeExifJPEG(t, root, fmt.Sprintf("2019/wedding/Henderson Wedding/DSC%03d.jpg", i),
+		writeExifJPEG(t, root, fmt.Sprintf("2019/wedding/Smith Wedding/DSC%03d.jpg", i),
 			base.Add(time.Duration(i)*time.Minute), fmt.Sprintf("HEN-%d", i))
 	}
 	sm := time.Date(2019, 8, 2, 14, 0, 0, 0, time.UTC)
@@ -58,18 +58,18 @@ func TestInferStructure_OrganizedTree(t *testing.T) {
 	for _, e := range inf.Events {
 		byName[e.Name] = e
 	}
-	hen, ok := byName["Henderson Wedding"]
+	hen, ok := byName["Smith Wedding"]
 	if !ok {
-		t.Fatalf("Henderson Wedding not harvested; got %v", byName)
+		t.Fatalf("Smith Wedding not harvested; got %v", byName)
 	}
 	if hen.EventType != "wedding" {
-		t.Errorf("Henderson type = %q, want wedding", hen.EventType)
+		t.Errorf("Smith type = %q, want wedding", hen.EventType)
 	}
 	if hen.Year != 2019 {
-		t.Errorf("Henderson year = %d, want 2019", hen.Year)
+		t.Errorf("Smith year = %d, want 2019", hen.Year)
 	}
 	if hen.CaptureStart.IsZero() || hen.CaptureStart.Year() != 2019 || hen.CaptureStart.Month() != 6 {
-		t.Errorf("Henderson capture range not harvested from EXIF: %v", hen.CaptureStart)
+		t.Errorf("Smith capture range not harvested from EXIF: %v", hen.CaptureStart)
 	}
 	if smf := byName["Smith Family"]; smf.EventType != "portrait" {
 		t.Errorf("Smith Family type = %q, want portrait", smf.EventType)
@@ -92,7 +92,7 @@ func TestClusterEvents_ChaoticDrive(t *testing.T) {
 	// Burst A: a wedding weekend, 13 frames across ~a day.
 	wed := time.Date(2019, 6, 15, 10, 0, 0, 0, time.UTC)
 	for i := 0; i < 13; i++ {
-		writeExifJPEG(t, drive, fmt.Sprintf("Henderson Wedding/DSC%03d.jpg", i),
+		writeExifJPEG(t, drive, fmt.Sprintf("Smith Wedding/DSC%03d.jpg", i),
 			wed.Add(time.Duration(i)*90*time.Minute), fmt.Sprintf("W-%d", i))
 	}
 	// Burst B: a baptism, months later, 12 frames in one afternoon.
@@ -124,7 +124,7 @@ func TestClusterEvents_ChaoticDrive(t *testing.T) {
 	for _, p := range props {
 		byType[p.EventType] = p
 	}
-	if w, ok := byType["wedding"]; !ok || w.FileCount != 13 || w.Name != "Henderson Wedding" {
+	if w, ok := byType["wedding"]; !ok || w.FileCount != 13 || w.Name != "Smith Wedding" {
 		t.Errorf("wedding burst wrong: %+v", byType["wedding"])
 	}
 	if b, ok := byType["baptism"]; !ok || b.FileCount != 12 || b.Name != "Baby Baptism" {
@@ -136,9 +136,9 @@ func TestMagnet_SuggestsStrayIntoHarvestedEvent(t *testing.T) {
 	app := dockApp(t)
 	coll := app.Store.AddCollectionKind("Union", ArchiveSourceless)
 
-	// A harvested event: the Henderson wedding weekend, 2019-06-15..16 (no members).
+	// A harvested event: the Smith wedding weekend, 2019-06-15..16 (no members).
 	ev := app.Store.AddEvent(&Event{
-		Name: "Henderson Wedding", EventType: "wedding", Year: 2019,
+		Name: "Smith Wedding", EventType: "wedding", Year: 2019,
 		CaptureStart: time.Date(2019, 6, 15, 0, 0, 0, 0, time.UTC),
 		CaptureEnd:   time.Date(2019, 6, 16, 23, 59, 59, 0, time.UTC),
 		CollectionID: coll.ID, Source: "HARVESTED",

@@ -52,7 +52,7 @@ func TestExportImport_StructureAndPlanRoundTrip(t *testing.T) {
 	coll := src.Store.AddCollectionKind("Photos", ArchiveSourceless)
 	loc := src.Store.AddLocation("Shoe Box #1", false, "")
 	vol := src.Store.AddVolume(Volume{Label: "DRIVE-01", Serial: "S1", Kind: "HDD", LocationID: loc.ID, Location: "Shoe Box #1"})
-	ev := src.Store.AddEvent(&Event{Name: "Henderson", EventType: "wedding", Year: 2019, CollectionID: coll.ID})
+	ev := src.Store.AddEvent(&Event{Name: "Smith", EventType: "wedding", Year: 2019, CollectionID: coll.ID})
 	shot := time.Date(2019, 6, 15, 10, 0, 0, 0, time.UTC)
 	ids, _ := src.Store.UpsertUnionFiles(coll.ID, []unionFile{
 		{RelPath: "a.jpg", Hash: "hashA", Size: 100, Role: RoleDeliverables, ShotAt: shot},
@@ -128,8 +128,8 @@ func TestExportImport_StructureAndPlanRoundTrip(t *testing.T) {
 			t.Errorf("hash %s: search answer differs\n src: %s\n dst: %s", hash, want, dstFP[hash])
 		}
 	}
-	// Event membership survived (hashA belongs to the Henderson event).
-	if !containsSub(dstFP["hashA"], "Henderson") {
+	// Event membership survived (hashA belongs to the Smith event).
+	if !containsSub(dstFP["hashA"], "Smith") {
 		t.Errorf("event membership lost on import: %q", dstFP["hashA"])
 	}
 
@@ -161,7 +161,7 @@ func TestExportImport_StructureAndPlanRoundTrip(t *testing.T) {
 		t.Error("CSV render missing hash")
 	}
 	md := StructureMarkdown(structExp)
-	if !containsSub(md, "NO file content") || !containsSub(md, "Henderson") {
+	if !containsSub(md, "NO file content") || !containsSub(md, "Smith") {
 		t.Errorf("markdown companion missing key content")
 	}
 }

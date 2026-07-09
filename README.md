@@ -796,7 +796,7 @@ the tool offers isn't deletion, it's a reversible **move**. Marking a file or fo
 `<destination_root>/_deleted/<original relative path>`, records *who* asked (implicitly
 you), *when*, and an optional reason in the catalog and audit log, and stops counting it
 toward protection — and it shows you that protection **consequence before you confirm**
-(*"this drops Henderson Wedding originals to 1 copy — proceed?"*). Because the original path
+(*"this drops Smith Wedding originals to 1 copy — proceed?"*). Because the original path
 is preserved verbatim under `_deleted`, **un-quarantine is a plain reverse move** that
 also re-credits the copy. Crucially, quarantine exists **only inside managed territory**
 — the destination roots Mnemosyne itself populated via Plans — enforced by the very same

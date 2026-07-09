@@ -1,6 +1,6 @@
 package main
 
-// events.go — Events are the unit people think in: "the Henderson wedding," not
+// events.go — Events are the unit people think in: "the Smith wedding," not
 // "these 8,000 files." This file turns raw files into proposed Events three ways
 // and then makes Events first-class:
 //

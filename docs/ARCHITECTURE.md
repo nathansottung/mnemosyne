@@ -515,7 +515,7 @@ against one or more Archives and remembers every drive it processed.
 ## Templates & Events — organizing what was adopted
 
 Files are the substrate; **Events** are the unit people actually think in ("the
-Henderson wedding," not "these 8,000 files"). This layer turns dated files into
+Smith wedding," not "these 8,000 files"). This layer turns dated files into
 events, and defines **Templates** that say where files *should* live.
 
 - **Media metadata on the File.** For any of this to work the archive `File` must

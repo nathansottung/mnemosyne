@@ -102,7 +102,7 @@ func TestConflictClasses_DetectResolveAndPlanGate(t *testing.T) {
 
 	// Keep-both compiles to TWO placements: assign both DSC2 versions to an event so
 	// they route, and confirm the destination collision is auto-disambiguated.
-	ev := app.Store.AddEvent(&Event{Name: "Henderson", EventType: "wedding", Year: 2019, CollectionID: coll.ID})
+	ev := app.Store.AddEvent(&Event{Name: "Smith", EventType: "wedding", Year: 2019, CollectionID: coll.ID})
 	app.Store.AssignFilesToEvent(dsc2.FileIDs, ev.ID)
 	pv := app.RoutePreview(tmpl, coll.ID)
 	if pv.Placed != 2 {

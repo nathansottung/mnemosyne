@@ -21,7 +21,7 @@ package main
 // (recorded on the plan's destination volume as mirror packages) are pulled from
 // the accounting on quarantine and restored on un-quarantine, so protection math is
 // always truthful — and the protection CONSEQUENCE of a quarantine is shown BEFORE
-// it is confirmed ("this drops Henderson Wedding originals to 1 copy — proceed?").
+// it is confirmed ("this drops Smith Wedding originals to 1 copy — proceed?").
 //
 // The tool NEVER empties _deleted. If the user manually clears it, the next scan
 // (any QuarantineView / ReconcileQuarantine pass) notices the bytes are gone, marks
@@ -176,7 +176,7 @@ func (s *Store) QuarantineEligible(absPath string) bool {
 // ConsequenceGroup is one Event/Role bucket of files a quarantine would touch, with
 // the protection copy count before and after (worst case across the group).
 type ConsequenceGroup struct {
-	Label        string `json:"label"` // "Henderson Wedding originals" etc.
+	Label        string `json:"label"` // "Smith Wedding originals" etc.
 	Files        int    `json:"files"`
 	CopiesBefore int    `json:"copies_before"` // min across the group
 	CopiesAfter  int    `json:"copies_after"`  // min across the group, after this copy is pulled
@@ -184,7 +184,7 @@ type ConsequenceGroup struct {
 
 // QuarantineConsequence is what a user is shown BEFORE confirming: how much would
 // move, and — per affected Event/Role — what it does to protection. Warnings are the
-// plain-language sentences ("this drops Henderson Wedding originals to 1 copy").
+// plain-language sentences ("this drops Smith Wedding originals to 1 copy").
 type QuarantineConsequence struct {
 	Path       string             `json:"path"`
 	Root       string             `json:"root"`
@@ -376,8 +376,8 @@ func (a *App) QuarantineConsequence(absPath string) (QuarantineConsequence, erro
 	return res, nil
 }
 
-// consequenceLabel names an affected group for the human sentence, e.g. "Henderson
-// Wedding RAWs", "Henderson Wedding files", or "RAWs" / "files" when no Event.
+// consequenceLabel names an affected group for the human sentence, e.g. "Smith
+// Wedding RAWs", "Smith Wedding files", or "RAWs" / "files" when no Event.
 func consequenceLabel(eventName, role string) string {
 	eventName = strings.TrimSpace(eventName)
 	roleWord := roleNoun(role)

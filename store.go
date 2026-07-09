@@ -441,7 +441,7 @@ type VolumeSnapshot struct {
 
 // Event is a first-class named happening — a wedding, a baptism, a family shoot —
 // that a set of files belong to. It is the unit people actually search for
-// ("Henderson"), the unit protection rolls up to ("this wedding: 1 copy — at
+// ("Smith"), the unit protection rolls up to ("this wedding: 1 copy — at
 // risk"), and the {event}/{event_type} a routing template fills. Membership is
 // recorded on the File (File.EventID), not here, so an event is a small record.
 // CaptureStart/End is the EXIF date span of its members (or a harvested folder's),

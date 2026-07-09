@@ -51,14 +51,14 @@ func quarantineScenario(t *testing.T) (*App, string, int) {
 		Files: sfs, TotalFiles: len(sfs), TotalBytes: total})
 
 	// Adopt into a sourceless archive and group as an Event so the consequence reads
-	// "Henderson Wedding originals".
-	coll := app.Store.AddCollectionKind("Henderson Wedding", ArchiveSourceless)
+	// "Smith Wedding originals".
+	coll := app.Store.AddCollectionKind("Smith Wedding", ArchiveSourceless)
 	var items []unionFile
 	for _, sf := range sfs {
 		items = append(items, unionFile{RelPath: sf.RelPath, Hash: sf.Hash, Size: sf.SizeBytes, Role: RoleOriginals})
 	}
 	ids, _ := app.Store.UpsertUnionFiles(coll.ID, items)
-	ev := app.Store.AddEvent(&Event{CollectionID: coll.ID, Name: "Henderson Wedding"})
+	ev := app.Store.AddEvent(&Event{CollectionID: coll.ID, Name: "Smith Wedding"})
 	app.Store.AssignFilesToEvent(ids, ev.ID)
 
 	// A plan reorganizes them into a fresh managed destination root, then executes.
@@ -106,8 +106,8 @@ func TestQuarantine_ManagedTerritoryRoundTrip(t *testing.T) {
 	if !cons.IsDir || cons.FileCount != 2 {
 		t.Fatalf("consequence: is_dir=%v files=%d, want dir with 2 files", cons.IsDir, cons.FileCount)
 	}
-	if len(cons.Warnings) != 1 || !strings.Contains(cons.Warnings[0], "Henderson Wedding originals to 1 copy") {
-		t.Fatalf("consequence warnings = %v, want one 'Henderson Wedding originals to 1 copy'", cons.Warnings)
+	if len(cons.Warnings) != 1 || !strings.Contains(cons.Warnings[0], "Smith Wedding originals to 1 copy") {
+		t.Fatalf("consequence warnings = %v, want one 'Smith Wedding originals to 1 copy'", cons.Warnings)
 	}
 	if cons.MinCopiesAfter != 1 {
 		t.Errorf("min copies after = %d, want 1", cons.MinCopiesAfter)

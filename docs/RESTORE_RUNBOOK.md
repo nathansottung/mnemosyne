@@ -20,11 +20,11 @@ byte-identical to the originals.
 ## What a package looks like on the medium
 
 ```
-NASA-C0003/
-  NASA-C0003.tar.gpg            the data: a POSIX tar, AES-256 encrypted
-  NASA-C0003.tar.gpg.par2       parity index (over the CIPHERTEXT)
-  NASA-C0003.tar.gpg.vol*.par2  parity blocks (~10% redundancy)
-  NASA-C0003.manifest.json      full file list, sizes, hashes, key_ref
+PHOTOS-C0003/
+  PHOTOS-C0003.tar.gpg            the data: a POSIX tar, AES-256 encrypted
+  PHOTOS-C0003.tar.gpg.par2       parity index (over the CIPHERTEXT)
+  PHOTOS-C0003.tar.gpg.vol*.par2  parity blocks (~10% redundancy)
+  PHOTOS-C0003.manifest.json      full file list, sizes, hashes, key_ref
   RESTORE.txt                   these instructions, package-specific
 ```
 
@@ -36,19 +36,19 @@ secrets are independent problems.
 
 ```bash
 # 1. verify, and repair only if needed (no passphrase required)
-par2 verify NASA-C0003.tar.gpg.par2
-par2 repair NASA-C0003.tar.gpg.par2
+par2 verify PHOTOS-C0003.tar.gpg.par2
+par2 repair PHOTOS-C0003.tar.gpg.par2
 
 # 2. decrypt (prompts for the passphrase of the key_ref in RESTORE.txt)
-gpg -d -o NASA-C0003.tar NASA-C0003.tar.gpg
+gpg -d -o PHOTOS-C0003.tar PHOTOS-C0003.tar.gpg
 
 # 3. extract all, or one file
-tar -xf NASA-C0003.tar
-tar -xf NASA-C0003.tar "2025/Smith Wedding/highlights/0042.NEF"
+tar -xf PHOTOS-C0003.tar
+tar -xf PHOTOS-C0003.tar "2025/Smith Wedding/highlights/0042.NEF"
 ```
 
 Low disk space? Pipe instead of staging the tar:
-`gpg -d NASA-C0003.tar.gpg | tar -x`
+`gpg -d PHOTOS-C0003.tar.gpg | tar -x`
 
 ## Where the keys are
 
@@ -71,7 +71,7 @@ the ciphertext. Any era's hashing tool can confirm medium integrity
 without touching a key:
 
 ```bash
-sha256sum NASA-C0003.tar.gpg     # compare to "ciphertext_hash" in the manifest
+sha256sum PHOTOS-C0003.tar.gpg     # compare to "ciphertext_hash" in the manifest
 ```
 
 ## Media-specific notes
