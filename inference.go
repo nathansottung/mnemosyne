@@ -203,7 +203,7 @@ func (a *App) InferStructure(root string) (*InferredStructure, error) {
 		if etype == "" {
 			etype = guessEventType(name, vocab)
 		}
-		start, end, imgCount, bytes := leafExifRange(reg, lf.files)
+		start, end, imgCount, bytes := a.leafDateRange(reg, lf.files)
 		if year == 0 && !start.IsZero() {
 			year = start.Year()
 		}
@@ -250,16 +250,18 @@ func patternFromRoles(roles []string) string {
 	return strings.Join(parts, "/") + "/"
 }
 
-// leafExifRange reads the EXIF capture dates of the image files directly in a leaf
-// and returns [min,max], the image count, and total bytes. Non-images and
-// unparseable files are ignored. Bounded per-file header read (see exif.go).
-func leafExifRange(reg map[string]FormatEntry, files []string) (start, end time.Time, imgCount int, bytes int64) {
+// leafDateRange reads the capture/created dates of the MEDIA files directly in a
+// leaf (images via EXIF, audio/video via ffprobe when available) and returns
+// [min,max], the dated-file count, and total bytes. Non-media and undatable files
+// are ignored. Discipline-neutral: a leaf of stems + masters ranges by their
+// created dates the same way a leaf of RAWs ranges by EXIF.
+func (a *App) leafDateRange(reg map[string]FormatEntry, files []string) (start, end time.Time, imgCount int, bytes int64) {
 	for _, p := range files {
-		role, _ := classifyRole(reg, p)
-		if role != RoleRAW && role != RoleEditedExport {
+		if mediaKindOf(p) == "" {
 			continue
 		}
-		shot, _ := extractShotMeta(p)
+		role, _ := classifyRole(reg, p)
+		shot, _ := a.extractMediaMeta(p, role)
 		if shot.IsZero() {
 			continue
 		}
@@ -278,8 +280,8 @@ func leafExifRange(reg map[string]FormatEntry, files []string) (start, end time.
 }
 
 // ProposeTemplateFromInference turns a detected structure into a saveable Template
-// (not persisted here). RAW/SIDECAR/CATALOG follow the detected pattern; edited
-// exports and video get sensible siblings the operator can tweak.
+// (not persisted here). ORIGINALS/SIDECARS/PROJECT-FILES follow the detected
+// pattern; deliverables get a sensible sibling the operator can tweak.
 func (a *App) ProposeTemplateFromInference(inf *InferredStructure, name string) *Template {
 	if strings.TrimSpace(name) == "" {
 		name = "Inferred structure"
@@ -292,11 +294,10 @@ func (a *App) ProposeTemplateFromInference(inf *InferredStructure, name string) 
 		Name:       name,
 		EventTypes: append([]string(nil), a.eventVocabulary()...),
 		Routes: map[string]string{
-			RoleRAW:          base,
-			RoleSidecar:      base,
-			RoleCatalog:      base,
-			RoleEditedExport: base,
-			RoleVideo:        strings.TrimRight(base, "/") + "/video/",
+			RoleOriginals:    base,
+			RoleSidecars:     base,
+			RoleProject:      base,
+			RoleDeliverables: base,
 		},
 	}
 }

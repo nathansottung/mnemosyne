@@ -237,7 +237,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 /* ---- inline help: one shared panel, content in one object (easy to edit) ---- */
 const HELP={
   home:['Home — archive health at a glance','This board shows the state of everything you keep. The strip across the top (Catalog → Package → Write → Verify) shows live totals for each stage of the pipeline and doubles as navigation — click a stage to go there. The table below breaks every archive down by package status, protection (verified copies vs. your goal), unresolved drift, and packages due for re-verification. Every number links straight to the relevant view.'],
-  vault:['Vault — archives & file search','An Archive is a body of work you keep together (e.g. "Personal", "Photography Business"). Scan folders into it — every file is SHA-256 hashed at the source. Plan groups files into media-sized packages; Rescan & compare detects what changed since you backed up. The search box answers the real questions: which package and which physical volume holds a given file — searchable by path, by SHA-256 (exact or prefix, to ask "is THIS file backed up?"), by extension, and by protection status, scoped to one archive (e.g. "show me every unprotected .NEF").'],
+  vault:['Vault — archives & file search','An Archive is a body of work you keep together (e.g. "Personal", "Client Work"). Scan folders into it — every file is SHA-256 hashed at the source. Plan groups files into media-sized packages; Rescan & compare detects what changed since you backed up. The search box answers the real questions: which package and which physical volume holds a given file — searchable by path, by SHA-256 (exact or prefix, to ask "is THIS file backed up?"), by extension, and by protection status, scoped to one archive (e.g. "show me every unprotected original").'],
   protection:['Protection — the 3-2-1 model, made explicit','The real 3-2-1 rule has THREE dimensions: how many copies, across how many distinct kinds of media, and how many offsite. A Profile expresses all three; you assign one to an Archive and, optionally, override it on any folder path (nearest-ancestor-wins). Every file then gets exactly one of six statuses — Unassigned, Not backed up, Partial, Complete, Over-complete, Out-of-policy — always shown as colour + icon + text. Only verified copies count toward requirements. Built-in profiles are immutable; duplicate one to start a custom policy.'],
   integrity:['Integrity — how hard each copy is proven','The app has many independent assurance knobs — build verification depth, par2 redundancy, routine verify level, the re-verify window, read-back. This panel unifies them into three presets: ARCHIVAL (prove everything — for anything irreplaceable), BALANCED, and FAST (skip proving contents — only for re-creatable data, and flagged amber). Pick one globally or override per archive; every individual knob stays editable, at which point the preset reads "Custom". Read-back after every write is always on and cannot be disabled. Each package\'s manifest and each volume inventory record the effective settings used, so the media self-document how much assurance they were built with.'],
   packages:['Packages — the archival units','A Package is one self-contained, media-sized unit: a tar of files + par2 parity + manifest + RESTORE.txt (an OAIS AIP in plain English). The lifecycle rail reads PLANNED → BUILDING → STAGED → WRITING → WRITTEN → VERIFIED; red means FAILED. Build a package, then Write it to a volume with read-back verification. Packages too big for one medium are spanned across several, one tape at a time.'],
@@ -636,7 +636,7 @@ function profileDlg(){profileForm(null)}
 function editProfile(p){profileForm(p)}
 function profileForm(p){const e=p||{required_copies:3,required_distinct_media_kinds:2,required_offsite_copies:1,verify_due_months:12,media_kinds_allowed:[]};
   dlg(`<h1>${p?'Edit profile':'New profile'}</h1>
-    <label>Name</label><input id="pf_name" class="full" value="${esc(e.name||'')}" placeholder="e.g. Wedding Masters">
+    <label>Name</label><input id="pf_name" class="full" value="${esc(e.name||'')}" placeholder="e.g. Master copies">
     <label>Description</label><input id="pf_desc" class="full" value="${esc(e.description||'')}" placeholder="what this policy is for">
     <div class="row"><div style="flex:1"><label>Required copies</label><input id="pf_c" class="full" type="number" min="0" value="${e.required_copies}"></div>
       <div style="flex:1"><label>Distinct media kinds</label><input id="pf_k" class="full" type="number" min="0" value="${e.required_distinct_media_kinds}"></div>
@@ -859,7 +859,7 @@ function gettingStarted(cfg,pre,archives,pkgs){
     ['Install the three tools','tar · gpg · par2 — the entire restore story. Preflight in Settings checks them.',tools,'settings','Open Settings →'],
     ['Set a staging folder','Big, fast scratch space where packages are built before being written to media.',staging,'settings','Open Settings →'],
     ['Register 2 keystores','On different devices. Encrypted builds refuse to run without them; secrets never touch the catalog.',keystores,'keys','Open Keys →'],
-    ['Create your first archive','A body of work you keep together — e.g. "Personal" or "Photography Business".',hasArchive,'vault','Go to Vault →'],
+    ['Create your first archive','A body of work you keep together — e.g. "Personal" or "Client Work".',hasArchive,'vault','Go to Vault →'],
     ['Scan a folder into it','Walks the folder and SHA-256-hashes every file — the root of the custody chain.',hasScan,'vault','Go to Vault →'],
     ['Plan & build a package','Group files into a media-sized unit, then Build it (tar → encrypt → par2).',built,p6[0],p6[1]],
     ['Write a verified copy','Stream to a tape/drive/folder with read-back verification, then register the volume.',verified,'packages','Go to Packages →'],
@@ -886,12 +886,12 @@ async function vVault(){
   ${under?`<div class="panel" style="border-left:3px solid var(--bad)"><b>${under}</b> package${under>1?'s are':' is'} under-protected — fewer than ${required} verified copies. Write another copy to a volume in a different location.</div>`:''}
   ${due?`<div class="panel" style="border-left:3px solid #9a7a10"><b>${due}</b> verified package${due>1?'s':''} due for re-verification (older than ${months} months). Open <a href="#packages" style="color:var(--act)">Packages → Verify a medium</a> and re-check the tape/disc.</div>`:''}
   <div class="panel"><div class="row">
-    <input id="newname" placeholder="New archive name (e.g. Photography Business)" style="flex:1;min-width:220px">
+    <input id="newname" placeholder="New archive name (e.g. Family Archive or Client Work)" style="flex:1;min-width:220px">
     <button class="btn" onclick="addColl()">Create archive</button>
   </div></div>
   <div class="panel"><div class="row" style="align-items:baseline"><h2 style="flex:1">Portable exports <span class="dim" style="font-weight:400;font-size:11.5px">· the organization scheme, hash-keyed</span></h2>
       <button class="btn ghost" onclick="importDlg()">Import…</button></div>
-    <div class="dim" style="font-size:11.5px;margin-bottom:8px">📄 A Structure Export lists every file's hash, role, event, capture date, and where it lives — <b>no file content</b>. <b>Safe to email your organization scheme; it contains no images.</b> Import into a fresh install to reconstruct the knowledge (not the data).</div>
+    <div class="dim" style="font-size:11.5px;margin-bottom:8px">📄 A Structure Export lists every file's hash, role, event, capture date, and where it lives — <b>no file content</b>. <b>Safe to email your organization scheme; it contains no file content.</b> Import into a fresh install to reconstruct the knowledge (not the data).</div>
     ${cs.length?`<table><tr><th>Archive</th><th>Structure export</th></tr>${cs.map(c=>`<tr><td>${esc(c.name)}</td><td>
       <a class="btn ghost" style="font-size:11px" href="${mediaURL('/api/collections/'+c.id+'/structure-export?format=json')}" target="_blank">JSON</a>
       <a class="btn ghost" style="font-size:11px" href="${mediaURL('/api/collections/'+c.id+'/structure-export?format=csv')}" target="_blank">CSV</a>
@@ -905,13 +905,13 @@ async function vVault(){
     <div class="row" style="margin-top:6px">
       <select id="qstatus" onchange="doSearch()"><option value="">any protection status</option>${PROT_ORDER.map(sx=>`<option value="${sx}">${PROT[sx].i} ${PROT[sx].t}</option>`).join('')}</select>
       <select id="qarch" onchange="doSearch()"><option value="">all archives</option>${cs.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-      <select id="qrole" onchange="doSearch()"><option value="">any role</option>${['RAW','EDITED-EXPORT','SIDECAR','CATALOG','VIDEO','OTHER'].map(r=>`<option value="${r}">${r}</option>`).join('')}</select>
+      <select id="qrole" onchange="doSearch()"><option value="">any role</option>${['ORIGINALS','DELIVERABLES','SIDECARS','PROJECT-FILES','OTHER'].map(r=>`<option value="${r}">${r}</option>`).join('')}</select>
     </div>
     <div class="row" style="margin-top:6px">
       <select id="qevent" onchange="doSearch()"><option value="">any event</option><option value="-1">— no event —</option></select>
-      <label class="dim" style="font-size:11.5px">shot from</label><input id="qfrom" type="date" onchange="doSearch()" style="font:12px var(--mono)">
+      <label class="dim" style="font-size:11.5px">captured from</label><input id="qfrom" type="date" onchange="doSearch()" style="font:12px var(--mono)">
       <label class="dim" style="font-size:11.5px">to</label><input id="qto" type="date" onchange="doSearch()" style="font:12px var(--mono)">
-      <span class="dim" style="font-size:11.5px">e.g. role <b>RAW</b> + shot <b>Oct 2019</b> → RAWs from October 2019</span>
+      <span class="dim" style="font-size:11.5px">e.g. role <b>ORIGINALS</b> + captured <b>Oct 2019</b> → originals from October 2019</span>
     </div>
     <div id="sres"></div></div>`;
   const drifted=(cs||[]).filter(c=>c.drift&&c.drift.changes>0);
@@ -1024,7 +1024,7 @@ function itemList(list){let h='<table>';for(const it of list){
 /* Creating an archive asks one plain question: one main place, or scattered? */
 function addColl(){const n=($('#newname').value||'').trim();
   dlg(`<h1>New archive${n?' — “'+esc(n)+'”':''}</h1>
-    ${n?'':'<label>Name</label><input id="acname" class="full" placeholder="e.g. Family Photos">'}
+    ${n?'':'<label>Name</label><input id="acname" class="full" placeholder="e.g. Family Archive">'}
     <label style="margin-top:12px">Do these files live in one main place, or are they scattered across drives?</label>
     <label class="row" style="gap:8px;align-items:flex-start;margin-top:6px"><input type="radio" name="ackind" value="SOURCED" checked style="width:auto;margin-top:3px"> <span><b>One main place (like a NAS)</b> — a folder I can point Mnemosyne at. It scans that source, watches for changes, and builds copies from it.</span></label>
     <label class="row" style="gap:8px;align-items:flex-start;margin-top:8px"><input type="radio" name="ackind" value="SOURCELESS" style="width:auto;margin-top:3px"> <span><b>Scattered across drives</b> — no single source folder. The archive is simply whatever I find on the drives I adopt into it (no scan, no NAS needed).</span></label>
@@ -1162,7 +1162,7 @@ function bagExportDlg(id,name){dlg(`<h1>Export a BagIt bag — “${esc(name)}�
     await api('POST',`/api/collections/${id}/bagit-export`,{output_dir:p});toast('BagIt export started — see Jobs');loc('jobs')});}
 function scanDlg(id,name){dlg(`<h1>Scan into “${esc(name)}”</h1>
   <label>Folder to catalog (walked recursively; every file SHA-256 hashed)</label>
-  <input id="d1" class="full" placeholder="C:\\Users\\you\\Photos or /mnt/pool/photos">${browseBtn('d1')}
+  <input id="d1" class="full" placeholder="C:\\Users\\you\\Media or /mnt/pool/media">${browseBtn('d1')}
   <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Start scan</button></div>`,
   async()=>{const p=$('#d1').value.trim();if(!p)return;
     await api('POST',`/api/collections/${id}/scan`,{path:p});toast('Scan started — see Jobs');loc('jobs')});}
@@ -1375,7 +1375,7 @@ async function burnQueueDlg(){
       <option value="BD-R25">Blu-ray 25 GB</option><option value="BD-R50">Blu-ray 50 GB</option>
       <option value="BD-R100">Blu-ray 100 GB</option>
       <option value="DVD-R">DVD-R</option><option value="DVD-DL">DVD-DL</option></select>
-    <label>Queue name (optional)</label><input id="d3" class="full" placeholder="e.g. Weddings BD-R batch 1">
+    <label>Queue name (optional)</label><input id="d3" class="full" placeholder="e.g. Archive BD-R batch 1">
     <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Gather packages</button></div>`,
   async()=>{if(!confirm('Create a burn queue? This gathers every eligible package of the chosen media kind into a new queue.'))return;
     const r=await api('POST','/api/burnqueues',{collection_id:parseInt($('#d1').value)||0,
@@ -1602,7 +1602,7 @@ async function volDetail(id){const d=await api('GET','/api/volumes/'+id);const v
   if(d.has_snapshot)loadVolSnapshot(id);
 }
 /* ---- offline drive SNAPSHOT: browse an unplugged drive from the catalog ---- */
-const ROLE_COLOR={'RAW':'var(--blue)','EDITED-EXPORT':'var(--ok)','VIDEO':'#a970ff','SIDECAR':'var(--ink-3)','CATALOG':'var(--bad)','OTHER':'var(--ink-3)'};
+const ROLE_COLOR={'ORIGINALS':'var(--blue)','DELIVERABLES':'var(--ok)','SIDECARS':'var(--ink-3)','PROJECT-FILES':'var(--bad)','OTHER':'var(--ink-3)'};
 function roleDot(role){return `<span title="${esc(role||'OTHER')}" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${ROLE_COLOR[role]||'var(--ink-3)'};margin-right:6px;vertical-align:middle"></span>`}
 async function loadVolSnapshot(id){
   const box=$('#snapbox');if(!box)return;
@@ -2141,6 +2141,7 @@ async function vSettings(){
     <table><tr><td>tar</td><td>${tool('tar')}</td></tr><tr><td>gpg</td><td>${tool('gpg')}</td></tr>
     <tr><td>par2</td><td>${tool('par2')}</td></tr>
     <tr><td>smartctl <span class="dim" style="font-size:11px">(optional · drive health)</span></td><td>${p.smartctl&&p.smartctl.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.smartctl.path||'')}</span>`:`<span class="dim">not installed — drive-health signals hidden. smartmontools.org · <span class="mono">choco/apt/brew install smartmontools</span>. Complements hash verification; never replaces it.</span>`}</td></tr>
+    <tr><td>ffprobe <span class="dim" style="font-size:11px">(optional · A/V dates)</span></td><td>${p.ffprobe&&p.ffprobe.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.ffprobe.path||'')}</span>`:`<span class="dim">not installed — audio/video created dates stay empty (images still read EXIF). ffmpeg.org · <span class="mono">choco/apt/brew install ffmpeg</span>. Lets music/film libraries cluster into sessions by date; never fails an ingest.</span>`}</td></tr>
     <tr><td>dvdisaster <span class="dim" style="font-size:11px">(optional · disc ECC)</span></td><td>${p.dvdisaster&&p.dvdisaster.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.dvdisaster.path||'')}</span>`:`<span class="dim">not installed — disc-level ECC hidden. dvdisaster.jcea.es · <span class="mono">apt/brew install dvdisaster</span>. Complements par2 over the disc geometry; par2 repair works regardless.</span>`}</td></tr>
     <tr><td>stenc <span class="dim" style="font-size:11px">(optional · drive AES)</span></td><td>${p.stenc&&p.stenc.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.stenc.bin||'')}</span> <span class="dim">· manages the DRIVE key (outside gpg — awareness only)</span>`:`<span class="dim">${esc((p.stenc&&p.stenc.hint)||'stenc not available — drive-level encryption is managed via vendor tools.')}</span>`}</td></tr>
     <tr><td>tape diag <span class="dim" style="font-size:11px">(optional · read-only)</span></td><td>${p.tape_tool&&p.tape_tool.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.tape_tool.tool||'')} · ${esc(p.tape_tool.bin||'')}</span>`:`<span class="dim">not installed — tape-drive diagnostics hidden. IBM ITDT (free, Fix Central) · sg3_utils (<span class="mono">apt/brew install sg3-utils</span>) · HPE L&amp;TT. Reads drive health only — never moves the tape or writes.</span>`}</td></tr>
@@ -2288,19 +2289,19 @@ async function pickRender(path){let data;
 function pickUse(){const p=(($('#pickpath')||{}).value||'').trim()||_pickPath;const d=$('#pick');if(d)d.close();if(_pickCb)_pickCb(p)}
 
 /* ================= Events ================= */
-const ROLE_ROUTE_ORDER=['RAW','EDITED-EXPORT','SIDECAR','CATALOG','VIDEO','OTHER'];
+const ROLE_ROUTE_ORDER=['ORIGINALS','DELIVERABLES','SIDECARS','PROJECT-FILES','OTHER'];
 function eventStatusBadge(roll){if(!roll||!roll.files)return '<span class="dim">no files yet</span>';
   return `${protBadge(roll.status,roll.detail)} <span class="dim" style="font-size:11px">· ${roll.files} file(s) · ${GB(roll.bytes)} GB</span>`}
 async function vEvents(){
   const [d,colls]=await Promise.all([api('GET','/api/events'),api('GET','/api/collections').catch(()=>[])]);
   const roll={};for(const r of (d.rollups||[]))roll[r.event_id]=r;
   const evs=d.events||[];
-  let h=`${hdr('Events','the happenings your files belong to — weddings, baptisms, shoots','events')}
+  let h=`${hdr('Events','the sessions, shoots, or projects your files belong to','events')}
   <div class="panel"><div class="row">
     <button class="btn" onclick="clusterDlg()">✨ Cluster an archive into events…</button>
     <button class="btn ghost" onclick="inferDlg()">📂 Learn structure from a folder…</button>
     <button class="btn ghost" onclick="newEventDlg()">New event…</button></div>
-    <div class="dim" style="font-size:11.5px;margin-top:6px">Clustering groups a chaotic archive's files by capture-date bursts. Learning from an organized folder detects its pattern, proposes a routing template, and harvests one event per folder.</div></div>`;
+    <div class="dim" style="font-size:11.5px;margin-top:6px">Clustering groups a chaotic archive's files by capture/created-date bursts. Learning from an organized folder detects its pattern, proposes a routing template, and harvests one event per folder.</div></div>`;
   h+=`<div class="panel"><h2>Events (${evs.length})</h2>`;
   if(!evs.length)h+='<div class="empty">No events yet — cluster an archive or learn from an organized folder.</div>';
   else{h+='<table><tr><th>Event</th><th>Type</th><th class="num">Year</th><th>Protection</th></tr>';
@@ -2322,7 +2323,7 @@ async function vEventDetail(id){if(location.hash!=='#events')location.hash='#eve
     <div id="magbox"></div>
     <div class="panel"><h2>Files (${files.length})</h2>`;
   if(!files.length)h+='<div class="empty">No files in this event yet.</div>';
-  else{h+='<table><tr><th>File</th><th>Role / shot</th><th>Protection</th><th>Copies / volumes</th></tr>';
+  else{h+='<table><tr><th>File</th><th>Role / captured</th><th>Protection</th><th>Copies / volumes</th></tr>';
     for(const r of files)h+=`<tr><td class="mono">${esc(r.rel_path)}${r.version_count>1?` <span class="chip" style="font-size:10px" title="retained alternate version(s) from a conflict decision or rescan">📑 ${r.version_count} versions</span>`:''}</td><td class="dim" style="font-size:11px">${esc(r.role||'')}${r.shot_at?'<div>'+esc((r.shot_at||'').slice(0,10))+'</div>':''}</td>
       <td>${protBadge(r.protection_status,r.protection_detail)}</td><td>${searchCopies(r)}</td></tr>`;
     h+='</table>'}
@@ -2342,8 +2343,8 @@ async function acceptSuggest(id,ids){try{await api('POST','/api/events/'+id+'/as
 async function delEvent(id){if(!confirm('Delete this event? Files stay in the catalog; their membership is cleared.'))return;
   try{await api('POST','/api/events/'+id+'/delete',{});toast('Event deleted');loc('events')}catch(e){toast(e.message,1)}}
 function newEventDlg(){dlg(`<h1>New event</h1>
-  <label>Name</label><input id="ne_name" class="full" placeholder="Henderson Wedding">
-  <label>Type</label><input id="ne_type" class="full" placeholder="wedding">
+  <label>Name</label><input id="ne_name" class="full" placeholder="e.g. Summer Sessions 2024">
+  <label>Type / category</label><input id="ne_type" class="full" placeholder="e.g. session">
   <div class="row"><div style="flex:1"><label>Capture from</label><input id="ne_from" type="date" class="full"></div><div style="flex:1"><label>to</label><input id="ne_to" type="date" class="full"></div></div>
   <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Create</button></div>`,
   async()=>{const b={name:$('#ne_name').value.trim(),event_type:$('#ne_type').value.trim(),capture_start:$('#ne_from').value,capture_end:$('#ne_to').value};
@@ -2369,9 +2370,9 @@ function clusterDlg(){api('GET','/api/collections').then(cs=>{
   async()=>{const cid=parseInt($('#cl_arch').value);const r=await api('POST','/api/events/cluster',{collection_id:cid,min_files:parseInt($('#cl_min').value)||0,span_days:parseInt($('#cl_span').value)||0});
     reviewProposed(r.proposed||[],{collection_id:cid,source:'CLUSTERED'})})})}
 function inferDlg(){dlg(`<h1>Learn structure from a folder</h1>
-  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Point at an organized photos root ({year}/{event_type}/{event}). Detects the pattern, proposes a template, and harvests an event per leaf folder. Read-only.</div>
-  <label>Folder</label><input id="if_root" class="full" placeholder="Y:\\Photos or /mnt/nas/photos">${browseBtn('if_root')}
-  <label>Template name</label><input id="if_name" class="full" placeholder="NAS Photos">
+  <div class="dim" style="font-size:11.5px;margin-bottom:8px">Point at an organized media root (e.g. {year}/{category}/{collection}). Detects the pattern, proposes a template, and harvests an event per leaf folder. Read-only.</div>
+  <label>Folder</label><input id="if_root" class="full" placeholder="Y:\\Media or /mnt/nas/media">${browseBtn('if_root')}
+  <label>Template name</label><input id="if_name" class="full" placeholder="NAS Media">
   <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Learn →</button></div>`,
   async()=>{const root=$('#if_root').value.trim();if(!root)throw new Error('folder required');
     const r=await api('POST','/api/infer-structure',{root,template_name:$('#if_name').value.trim()});
@@ -2387,9 +2388,11 @@ function showInference(r){const s=r.structure||{},tp=r.template_proposal||{};
 }
 async function saveTemplate(t){try{await api('POST','/api/templates',t);toast('Template saved')}catch(e){toast(e.message,1)}}
 function reviewProposed(props,meta){_proposed=props.map((p,i)=>({...p,_keep:true,_i:i}));_propMeta=meta;
-  const vocab=['wedding','engagement','baptism','boudoir','religious event','family','portrait','other'];
+  // Discipline-neutral category options — a superset across personas; free-typing on the
+  // Type field is also allowed via the New/Edit dialogs.
+  const vocab=['wedding','portrait','family','album','single','live','short','documentary','commercial','personal','work','travel','project','other'];
   let h=`<div class="panel" ${meta.append?'':''}><h2>${props.length} proposed event(s) — confirm, rename, or drop</h2>`;
-  if(!props.length)h+='<div class="empty">No bursts met the threshold. Lower the min-files, or the files may lack EXIF capture dates.</div>';
+  if(!props.length)h+='<div class="empty">No bursts met the threshold. Lower the min-files, or the files may lack capture/created dates (install ffprobe to read them from audio and video).</div>';
   else{h+='<table><tr><th>Keep</th><th>Name</th><th>Type</th><th class="num">Year</th><th class="num">Files</th><th>Dates</th></tr>';
     _proposed.forEach(p=>{h+=`<tr>
       <td><input type="checkbox" checked onchange="_proposed[${p._i}]._keep=this.checked"></td>
@@ -2416,7 +2419,7 @@ async function vTemplates(){
     <div class="dim" style="font-size:11.5px;margin-top:6px">A template is a small document, not a wall of options: a destination pattern per file role, built from a fixed set of tokens. Exceptions are handled by drag-in-tree, not more knobs.</div></div>
   <div class="panel"><h2>Templates (${ts.length})</h2>`;
   for(const t of ts){h+=`<div style="border-bottom:1px solid var(--line);padding:8px 0">
-    <div class="row" style="align-items:center"><div style="flex:1"><b>${esc(t.name)}</b>${t.built_in?' <span class="etag">built-in</span>':''}</div>
+    <div class="row" style="align-items:center"><div style="flex:1"><b>${esc(t.name)}</b>${t.built_in?' <span class="etag">built-in</span>':''}${t.group_noun?` <span class="dim" style="font-size:11px">· groups by ${esc(t.group_noun)}</span>`:''}</div>
       <button class="btn ghost" onclick="editTemplate(${t.id})">${t.built_in?'View / clone':'Edit'}</button></div>
     <div class="dim mono" style="font-size:11px;margin-top:4px">${ROLE_ROUTE_ORDER.filter(r=>t.routes&&t.routes[r]).map(r=>`${r} → ${esc(t.routes[r])}`).join('<br>')||'(no routes)'}</div></div>`}
   h+='</div>';
@@ -2425,13 +2428,15 @@ async function vTemplates(){
 let _tplPrevT=null;
 async function editTemplate(id){
   const [d,colls]=await Promise.all([api('GET','/api/templates'),api('GET','/api/collections').catch(()=>[])]);
-  const tokens=d.tokens||['{year}','{date}','{event_type}','{event}','{camera_serial}','{orig_name}'];
-  let t=(d.templates||[]).find(x=>x.id===id)||{name:'',routes:{},event_types:['wedding','engagement','baptism','boudoir','religious event','family','portrait','other'],built_in:false};
+  const tokens=d.tokens||['{year}','{date}','{event_type}','{category}','{event}','{collection}','{session}','{project}','{camera_serial}','{orig_name}'];
+  let t=(d.templates||[]).find(x=>x.id===id)||{name:'',routes:{},event_types:['personal','family','work','travel','project','other'],group_noun:'Collection',built_in:false};
   const builtIn=!!t.built_in, editingId=(id&&!builtIn)?id:0;
   let h=`${hdr(builtIn?'Clone template':(editingId?'Edit template':'New template'),'one calm panel — tokens, routes, and a live consequence preview','templates')}
   <div class="panel">
     <label>Name</label><input id="tpl_name" class="full" value="${esc(builtIn?t.name+' (copy)':t.name)}" oninput="tplPreview()">
-    <label style="margin-top:10px">Event-type vocabulary (one per line)</label>
+    <label style="margin-top:10px">What this template calls a grouping of files</label>
+    <input id="tpl_noun" class="full" value="${esc(t.group_noun||'Event')}" placeholder="Event / Session / Project / Collection">
+    <label style="margin-top:10px">Category vocabulary (one per line)</label>
     <textarea id="tpl_vocab" class="full" rows="3" style="font:12px var(--mono)">${esc((t.event_types||[]).join('\n'))}</textarea>
     <div class="dim" style="font-size:11.5px;margin:10px 0 4px">Tokens you can use in a route: ${tokens.map(x=>`<span class="chip mono" style="font-size:10.5px">${esc(x)}</span>`).join(' ')}. A route ending in <b>/</b> is a folder; the original filename is appended.</div>
     <table style="width:100%">${ROLE_ROUTE_ORDER.map(r=>`<tr><td style="width:120px"><b>${r}</b></td><td><input id="tpl_r_${r}" class="full" value="${esc((t.routes||{})[r]||'')}" oninput="tplPreview()" placeholder="(unrouted)" style="font:12px var(--mono)"></td></tr>`).join('')}</table>
@@ -2444,7 +2449,7 @@ async function editTemplate(id){
   $('#view').innerHTML=h;tplPreview();
 }
 function templateFromEditor(){const routes={};for(const r of ROLE_ROUTE_ORDER){const v=(($('#tpl_r_'+r)||{}).value||'').trim();if(v)routes[r]=v}
-  return {name:($('#tpl_name')||{}).value||'',event_types:(($('#tpl_vocab')||{}).value||'').split('\n').map(s=>s.trim()).filter(Boolean),routes}}
+  return {name:($('#tpl_name')||{}).value||'',group_noun:(($('#tpl_noun')||{}).value||'').trim(),event_types:(($('#tpl_vocab')||{}).value||'').split('\n').map(s=>s.trim()).filter(Boolean),routes}}
 function tplPreview(){clearTimeout(_tplPrevT);_tplPrevT=setTimeout(async()=>{
   const box=$('#tpl_preview');if(!box)return;const t=templateFromEditor();const cid=parseInt(($('#tpl_arch')||{}).value||'0');
   if(!Object.keys(t.routes).length){box.innerHTML='<div class="dim">Add at least one route to preview.</div>';return}
@@ -2486,7 +2491,7 @@ async function vConflicts(){
     h+=`<div class="panel" style="border-left:3px solid ${raw?'var(--bad)':'var(--warn)'}">
       <div class="row" style="align-items:baseline"><h2 style="flex:1">${esc(c.rel_path)} <span class="etag" style="font-size:9.5px">${c.class==='NO-EXIF'?'no EXIF':'same capture + body'}</span></h2>
         <span class="dim" style="font-size:11px">conflict #${c.id}</span></div>`;
-    if(raw)h+=`<div class="err" style="margin:4px 0 8px">⛔ RAW files should never legitimately differ — one of these may be corrupted.</div>`;
+    if(raw)h+=`<div class="err" style="margin:4px 0 8px">⛔ Originals should never legitimately differ — one of these may be corrupted.</div>`;
     h+=`<div class="row" style="gap:10px;align-items:stretch;flex-wrap:wrap">`;
     vs.forEach((v,i)=>{h+=conflictVersion(c.id,v,c.role,raw);if(i<vs.length-1)h+=`<div style="align-self:center;font-weight:700" class="dim">vs</div>`});
     h+=`</div>
@@ -2532,7 +2537,7 @@ async function vQuarantine(){
 }
 function quarantineDlg(){dlg(`<h1>Quarantine a path</h1>
   <div class="dim" style="font-size:11.5px;margin-bottom:8px">Give a file or folder inside managed territory. The tool previews the protection consequence <b>before</b> anything moves — you confirm only after seeing it. Nothing is ever deleted; this only stages into <span class="mono">${esc('_deleted')}</span>.</div>
-  <label>Path (inside a destination Mnemosyne populated)</label><input id="q_path" class="full" placeholder="Y:\\NAS\\Photos\\2023\\Henderson Wedding\\RAW or /mnt/nas/...">${browseBtn('q_path')}
+  <label>Path (inside a destination Mnemosyne populated)</label><input id="q_path" class="full" placeholder="Y:\\NAS\\Media\\2023\\... or /mnt/nas/...">${browseBtn('q_path')}
   <label>Reason (optional — recorded in the catalog &amp; audit log)</label><input id="q_reason" class="full" placeholder="duplicate export, superseded, …">
   <div id="q_preview" style="margin-top:10px"></div>
   <div class="row" style="margin-top:14px"><button class="btn ghost" type="button" onclick="quarantinePreview()">Preview consequence</button>
@@ -2576,7 +2581,7 @@ function newPlanDlg(){Promise.all([api('GET','/api/templates'),api('GET','/api/c
     <label>Template</label><select id="np_tmpl" class="full">${(td.templates||[]).map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
     <label>Scope — archives (none = every snapshot)</label>
     <div style="max-height:120px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px">${(cs||[]).map(c=>`<label class="row" style="gap:6px"><input type="checkbox" class="np_arch" value="${c.id}" style="width:auto">${esc(c.name)}</label>`).join('')||'<span class="dim">no archives</span>'}</div>
-    <label>Destination root (may not exist yet — validated at execution)</label><input id="np_dest" class="full" placeholder="Y:\\NAS\\Photos or /mnt/nas/photos">${browseBtn('np_dest')}
+    <label>Destination root (may not exist yet — validated at execution)</label><input id="np_dest" class="full" placeholder="Y:\\NAS\\Media or /mnt/nas/media">${browseBtn('np_dest')}
     <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Create plan</button></div>`,
   async()=>{const arch=[...document.querySelectorAll('.np_arch:checked')].map(e=>parseInt(e.value));
     const p=await api('POST','/api/plans',{name:$('#np_name').value.trim(),template_id:parseInt($('#np_tmpl').value),archive_ids:arch,destination_root:$('#np_dest').value.trim()});

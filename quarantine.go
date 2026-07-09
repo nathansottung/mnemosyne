@@ -21,7 +21,7 @@ package main
 // (recorded on the plan's destination volume as mirror packages) are pulled from
 // the accounting on quarantine and restored on un-quarantine, so protection math is
 // always truthful — and the protection CONSEQUENCE of a quarantine is shown BEFORE
-// it is confirmed ("this drops Henderson Wedding RAWs to 1 copy — proceed?").
+// it is confirmed ("this drops Henderson Wedding originals to 1 copy — proceed?").
 //
 // The tool NEVER empties _deleted. If the user manually clears it, the next scan
 // (any QuarantineView / ReconcileQuarantine pass) notices the bytes are gone, marks
@@ -176,7 +176,7 @@ func (s *Store) QuarantineEligible(absPath string) bool {
 // ConsequenceGroup is one Event/Role bucket of files a quarantine would touch, with
 // the protection copy count before and after (worst case across the group).
 type ConsequenceGroup struct {
-	Label        string `json:"label"` // "Henderson Wedding RAWs" etc.
+	Label        string `json:"label"` // "Henderson Wedding originals" etc.
 	Files        int    `json:"files"`
 	CopiesBefore int    `json:"copies_before"` // min across the group
 	CopiesAfter  int    `json:"copies_after"`  // min across the group, after this copy is pulled
@@ -184,7 +184,7 @@ type ConsequenceGroup struct {
 
 // QuarantineConsequence is what a user is shown BEFORE confirming: how much would
 // move, and — per affected Event/Role — what it does to protection. Warnings are the
-// plain-language sentences ("this drops Henderson Wedding RAWs to 1 copy").
+// plain-language sentences ("this drops Henderson Wedding originals to 1 copy").
 type QuarantineConsequence struct {
 	Path       string             `json:"path"`
 	Root       string             `json:"root"`
@@ -396,16 +396,14 @@ func consequenceLabel(eventName, role string) string {
 // roleNoun turns a File.Role into a plural noun for the consequence sentence.
 func roleNoun(role string) string {
 	switch strings.ToUpper(strings.TrimSpace(role)) {
-	case RoleRAW:
-		return "RAWs"
-	case RoleEditedExport:
-		return "edited exports"
-	case RoleSidecar:
+	case RoleOriginals:
+		return "originals"
+	case RoleDeliverables:
+		return "deliverables"
+	case RoleSidecars:
 		return "sidecars"
-	case RoleCatalog:
-		return "catalog files"
-	case RoleVideo:
-		return "videos"
+	case RoleProject:
+		return "project files"
 	case "", RoleOther:
 		return ""
 	default:

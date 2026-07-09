@@ -36,34 +36,36 @@ const (
 )
 
 // FormatEntry is one extension's sustainability record. Tier rates longevity;
-// Role rates the file's PURPOSE in a photo/video workflow — an orthogonal
-// dimension the dock snapshot classifies by (RAW original vs edited export vs
-// sidecar vs application catalog vs video). Critical marks a role whose loss is
-// unrecoverable edit/organizational state (a Lightroom .lrcat and kin): the bytes
-// are not your photos, but losing them loses every edit and album you built.
+// Role rates the file's PURPOSE in a creative workflow — an orthogonal dimension
+// the dock snapshot classifies by, and one that is DISCIPLINE-NEUTRAL: the same
+// five classes describe a photographer's, musician's, or filmmaker's library
+// (irreplaceable ORIGINALS vs rendered DELIVERABLES vs SIDECARS vs application
+// PROJECT-FILES vs OTHER). Critical marks a role whose loss is unrecoverable edit/
+// organizational state (a Lightroom .lrcat, an Ableton .als, a Premiere .prproj):
+// the bytes are not your masters, but losing them loses every edit you built.
 type FormatEntry struct {
 	Tier      string   `json:"tier"`
 	Rationale string   `json:"rationale"`
 	Readers   []string `json:"readers,omitempty"`
 	Migration string   `json:"migration,omitempty"`
-	Role      string   `json:"role,omitempty"`     // RAW | EDITED-EXPORT | SIDECAR | CATALOG | VIDEO | OTHER
-	Critical  bool     `json:"critical,omitempty"` // CATALOG state whose loss is unrecoverable (.lrcat &c.)
+	Role      string   `json:"role,omitempty"`     // ORIGINALS | DELIVERABLES | SIDECARS | PROJECT-FILES | OTHER
+	Critical  bool     `json:"critical,omitempty"` // PROJECT-FILES state whose loss is unrecoverable (.lrcat, .als, .prproj &c.)
 }
 
-// File roles the snapshot classifies by. Orthogonal to Tier: a role says what a
-// file IS in the workflow, not how readable its format is.
+// File roles the snapshot classifies by — a small, discipline-neutral taxonomy.
+// Orthogonal to Tier: a role says what a file IS in the workflow (its irreplaceability),
+// not how readable its format is. The same five classes fit any creative discipline.
 const (
-	RoleRAW          = "RAW"           // camera raw originals — the irreplaceable negatives
-	RoleEditedExport = "EDITED-EXPORT" // rendered/exported deliverables (JPEG/TIFF/PSD)
-	RoleSidecar      = "SIDECAR"       // per-image edit metadata (.xmp, .aae) — not the pixels
-	RoleCatalog      = "CATALOG"       // application databases (.lrcat) — CRITICAL edit/organizational state
-	RoleVideo        = "VIDEO"         // moving-image footage
+	RoleOriginals    = "ORIGINALS"     // irreplaceable masters: camera RAWs, audio stems/multitracks, camera video originals, layered image masters (.psd/.tif)
+	RoleDeliverables = "DELIVERABLES"  // rendered/exported outputs: JPEG/PNG exports, mastered .mp3/.flac, delivery .mp4/.mov
+	RoleSidecars     = "SIDECARS"      // per-asset metadata alongside content: .xmp, .cue, subtitles — not the content itself
+	RoleProject      = "PROJECT-FILES" // application project/catalog files (.lrcat, .als, .flp, .prproj) — CRITICAL edit/organizational state
 	RoleOther        = "OTHER"         // everything unclassified
 )
 
 // classifyRole maps a file extension to its workflow role via the registry,
 // returning OTHER for anything the registry does not tag. The bool is the CRITICAL
-// flag (only CATALOG roles set it). Purely extension-driven and never errors.
+// flag (only PROJECT-FILES roles set it). Purely extension-driven and never errors.
 func classifyRole(reg map[string]FormatEntry, rel string) (string, bool) {
 	e, ok := reg[normExt(pathExt(rel))]
 	if !ok || e.Role == "" {

@@ -28,7 +28,7 @@ func makeSnapshotDrive(t *testing.T, app *App, mountPath, serial, label string) 
 			t.Fatal(herr)
 		}
 		st, _ := os.Stat(p)
-		sfs = append(sfs, SnapFile{RelPath: filepath.ToSlash(rel), Hash: sha, SizeBytes: st.Size(), Role: RoleEditedExport})
+		sfs = append(sfs, SnapFile{RelPath: filepath.ToSlash(rel), Hash: sha, SizeBytes: st.Size(), Role: RoleDeliverables})
 		total += st.Size()
 		return nil
 	})
@@ -52,7 +52,7 @@ func TestPlan_ExecuteReverseAcrossRestart(t *testing.T) {
 	makeSnapshotDrive(t, app, d1, "SER1", "DRIVE-01")
 	makeSnapshotDrive(t, app, d2, "SER2", "DRIVE-02")
 
-	tmpl := app.Store.AddTemplate(&Template{Name: "Move", Routes: map[string]string{RoleEditedExport: "photos/{orig_name}"}})
+	tmpl := app.Store.AddTemplate(&Template{Name: "Move", Routes: map[string]string{RoleDeliverables: "photos/{orig_name}"}})
 	destRoot := filepath.Join(t.TempDir(), "NAS") // fresh — does not exist yet
 	plan := app.Store.AddPlan(&Plan{Name: "NAS Move", TemplateID: tmpl.ID, DestinationRoot: destRoot})
 
@@ -141,7 +141,7 @@ func TestPlan_DriveDiffersFromSnapshot(t *testing.T) {
 	d1 := t.TempDir()
 	writeTree(t, d1, map[string]string{"x.jpg": "ORIGINAL"})
 	makeSnapshotDrive(t, app, d1, "SERX", "DRIVE-X")
-	tmpl := app.Store.AddTemplate(&Template{Name: "M", Routes: map[string]string{RoleEditedExport: "out/{orig_name}"}})
+	tmpl := app.Store.AddTemplate(&Template{Name: "M", Routes: map[string]string{RoleDeliverables: "out/{orig_name}"}})
 	dest := filepath.Join(t.TempDir(), "out-root")
 	plan := app.Store.AddPlan(&Plan{Name: "P", TemplateID: tmpl.ID, DestinationRoot: dest})
 	if _, err := app.CompilePlan(plan.ID); err != nil {

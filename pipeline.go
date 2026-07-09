@@ -236,6 +236,17 @@ func (a *App) computePreflight() map[string]any {
 		smart["hint"] = smartInstallHint
 	}
 	out["smartctl"] = smart
+	// ffprobe (FFmpeg) — OPTIONAL and informational; never affects "ok". Present =
+	// audio/video files get a created date + duration read during ingest (so a
+	// musician's or filmmaker's library clusters into sessions by date the way a
+	// photographer's does via EXIF); absent = those fields stay empty, ingest still
+	// succeeds. It complements, never replaces, hash verification.
+	fp, ferr := a.tool("ffprobe")
+	ffprobe := map[string]any{"ok": ferr == nil, "path": fp}
+	if ferr != nil {
+		ffprobe["hint"] = ffprobeInstallHint
+	}
+	out["ffprobe"] = ffprobe
 	// dvdisaster (disc-level ECC) — OPTIONAL and informational; never affects "ok".
 	// Present = the Burn tab can auto-generate a per-disc .ecc after verify; absent =
 	// the feature hides behind an install hint. It complements par2, never replaces it.
@@ -462,14 +473,13 @@ func (a *App) ScanFolder(collectionID int, root string, progress func(float64, s
 		progress(float64(d)/float64(total), progStats(0, 0, int64(d), int64(total), "hashing source files"))
 	}, func(p, sha, b3 string, size int64, mtime time.Time) {
 		if rel, e := filepath.Rel(root, p); e == nil {
-			// Media metadata: classify the role, and for still images pull EXIF
-			// capture time + camera serial (bounded header read; empty on failure).
+			// Media metadata: classify the role, and pull a capture/created date +
+			// camera serial — EXIF for images, ffprobe for audio/video when available
+			// (bounded, best-effort; empty on failure, never an error).
 			role, _ := classifyRole(reg, rel)
 			f := File{CollectionID: collectionID, FolderID: folder.ID,
 				RelPath: filepath.ToSlash(rel), SizeBytes: size, HashAlg: "SHA256", Hash: sha, Blake3: b3, ModTime: mtime, Role: role}
-			if role == RoleRAW || role == RoleEditedExport {
-				f.ShotAt, f.CameraSerial = extractShotMeta(p)
-			}
+			f.ShotAt, f.CameraSerial = a.extractMediaMeta(p, role)
 			a.Store.UpsertFile(f)
 		}
 	})

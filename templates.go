@@ -13,17 +13,35 @@ import (
 	"strings"
 )
 
-// routeTokens is the complete, deliberately tiny token vocabulary. More than this
-// is a knob we don't ship — the editor lists exactly these.
-var routeTokens = []string{"{year}", "{date}", "{event_type}", "{event}", "{camera_serial}", "{orig_name}"}
+// routeTokens is the complete, deliberately tiny token vocabulary — discipline-
+// neutral. The grouping tokens come in aliased pairs so every persona's templates
+// read naturally over the SAME underlying Event model: {event_type}/{category} both
+// resolve to the grouping's type, and {event}/{collection}/{session}/{project} all
+// resolve to its name. The editor lists exactly these; more is a knob we don't ship.
+var routeTokens = []string{
+	"{year}", "{date}",
+	"{event_type}", "{category}",
+	"{event}", "{collection}", "{session}", "{project}",
+	"{camera_serial}", "{orig_name}",
+}
+
+// grouping-name aliases all resolve to Event.Name; type aliases to Event.EventType.
+var groupingNameTokens = []string{"{event}", "{collection}", "{session}", "{project}"}
+var groupingTypeTokens = []string{"{event_type}", "{category}"}
 
 // tokenValues resolves every token for one file given its event (may be nil).
-// Empty strings mark tokens that cannot be filled (no date, no event, …); a route
+// Empty strings mark tokens that cannot be filled (no date, no grouping, …); a route
 // referencing an empty token is treated as unroutable in the preview.
 func tokenValues(f *File, ev *Event) map[string]string {
 	v := map[string]string{
-		"{year}": "", "{date}": "", "{event_type}": "", "{event}": "",
+		"{year}": "", "{date}": "",
 		"{camera_serial}": f.CameraSerial, "{orig_name}": path.Base(f.RelPath),
+	}
+	for _, t := range groupingTypeTokens {
+		v[t] = ""
+	}
+	for _, t := range groupingNameTokens {
+		v[t] = ""
 	}
 	if !f.ShotAt.IsZero() {
 		v["{year}"] = f.ShotAt.Format("2006")
@@ -33,8 +51,12 @@ func tokenValues(f *File, ev *Event) map[string]string {
 		if ev.Year > 0 {
 			v["{year}"] = itoaSafe(ev.Year)
 		}
-		v["{event_type}"] = ev.EventType
-		v["{event}"] = ev.Name
+		for _, t := range groupingTypeTokens {
+			v[t] = ev.EventType
+		}
+		for _, t := range groupingNameTokens {
+			v[t] = ev.Name
+		}
 	}
 	return v
 }

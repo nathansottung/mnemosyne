@@ -1,5 +1,5 @@
 {
- "schema_version": 7,
+ "schema_version": 8,
  "next_id": {
   "chunk": 1,
   "collection": 2,
@@ -121,11 +121,10 @@
     "other"
    ],
    "routes": {
-    "CATALOG": "photos/{year}/{event_type}/{event}/",
-    "EDITED-EXPORT": "Finalized Images/{year}/{event_type}/{event}/",
-    "RAW": "photos/{year}/{event_type}/{event}/",
-    "SIDECAR": "photos/{year}/{event_type}/{event}/",
-    "VIDEO": "photos/{year}/{event_type}/{event}/video/"
+    "DELIVERABLES": "Finalized Images/{year}/{event_type}/{event}/",
+    "ORIGINALS": "photos/{year}/{event_type}/{event}/",
+    "PROJECT-FILES": "photos/{year}/{event_type}/{event}/",
+    "SIDECARS": "photos/{year}/{event_type}/{event}/"
    },
    "built_in": true,
    "created_at": "0001-01-01T00:00:00Z"

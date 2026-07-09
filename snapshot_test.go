@@ -66,16 +66,16 @@ func TestDriveSnapshot_OfflineBrowseMirrorAndLocationVerdict(t *testing.T) {
 	for _, f := range snap1.Files {
 		roleOf[f.RelPath] = f.Role
 	}
-	if roleOf["shoot/DSC0001.nef"] != RoleRAW {
+	if roleOf["shoot/DSC0001.nef"] != RoleOriginals {
 		t.Errorf(".nef should be RAW, got %q", roleOf["shoot/DSC0001.nef"])
 	}
-	if roleOf["shoot/DSC0001.jpg"] != RoleEditedExport {
+	if roleOf["shoot/DSC0001.jpg"] != RoleDeliverables {
 		t.Errorf(".jpg should be EDITED-EXPORT, got %q", roleOf["shoot/DSC0001.jpg"])
 	}
-	if roleOf["shoot/DSC0001.xmp"] != RoleSidecar {
+	if roleOf["shoot/DSC0001.xmp"] != RoleSidecars {
 		t.Errorf(".xmp should be SIDECAR, got %q", roleOf["shoot/DSC0001.xmp"])
 	}
-	if roleOf["catalog/Lightroom.lrcat"] != RoleCatalog {
+	if roleOf["catalog/Lightroom.lrcat"] != RoleProject {
 		t.Errorf(".lrcat should be CATALOG, got %q", roleOf["catalog/Lightroom.lrcat"])
 	}
 

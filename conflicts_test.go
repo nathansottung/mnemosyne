@@ -19,14 +19,14 @@ func TestConflictClasses_DetectResolveAndPlanGate(t *testing.T) {
 
 	app.Store.UpsertUnionFiles(coll.ID, []unionFile{
 		// (a) second shooter — same name+timestamp, DIFFERENT body → NOT a conflict.
-		{RelPath: "shoot/DSC1.jpg", Hash: "a1", Size: 100, ShotAt: t1, Role: RoleEditedExport, CameraSerial: "CAM-A"},
-		{RelPath: "shoot/DSC1.jpg", Hash: "a2", Size: 101, ShotAt: t1, Role: RoleEditedExport, CameraSerial: "CAM-B"},
+		{RelPath: "shoot/DSC1.jpg", Hash: "a1", Size: 100, ShotAt: t1, Role: RoleDeliverables, CameraSerial: "CAM-A"},
+		{RelPath: "shoot/DSC1.jpg", Hash: "a2", Size: 101, ShotAt: t1, Role: RoleDeliverables, CameraSerial: "CAM-B"},
 		// (b) same metadata AND same body, different bytes → TRUE conflict.
-		{RelPath: "shoot/DSC2.jpg", Hash: "b1", Size: 200, ShotAt: t2, Role: RoleEditedExport, CameraSerial: "CAM-X"},
-		{RelPath: "shoot/DSC2.jpg", Hash: "b2", Size: 201, ShotAt: t2, Role: RoleEditedExport, CameraSerial: "CAM-X"},
+		{RelPath: "shoot/DSC2.jpg", Hash: "b1", Size: 200, ShotAt: t2, Role: RoleDeliverables, CameraSerial: "CAM-X"},
+		{RelPath: "shoot/DSC2.jpg", Hash: "b2", Size: 201, ShotAt: t2, Role: RoleDeliverables, CameraSerial: "CAM-X"},
 		// (b-RAW) a RAW original that disagrees — should carry the RAW alert.
-		{RelPath: "raw/DSC9.nef", Hash: "r1", Size: 900, ShotAt: t2, Role: RoleRAW, CameraSerial: "CAM-X"},
-		{RelPath: "raw/DSC9.nef", Hash: "r2", Size: 901, ShotAt: t2, Role: RoleRAW, CameraSerial: "CAM-X"},
+		{RelPath: "raw/DSC9.nef", Hash: "r1", Size: 900, ShotAt: t2, Role: RoleOriginals, CameraSerial: "CAM-X"},
+		{RelPath: "raw/DSC9.nef", Hash: "r2", Size: 901, ShotAt: t2, Role: RoleOriginals, CameraSerial: "CAM-X"},
 		// (c) same path/name, NO EXIF, different bytes → TRUE conflict.
 		{RelPath: "docs/report.pdf", Hash: "c1", Size: 300},
 		{RelPath: "docs/report.pdf", Hash: "c2", Size: 301},
@@ -66,7 +66,7 @@ func TestConflictClasses_DetectResolveAndPlanGate(t *testing.T) {
 	}
 
 	// A plan REFUSES to compile while true conflicts are open.
-	tmpl := app.Store.Templates()[0] // built-in Photographer Standard
+	tmpl := app.Store.Templates()[0] // built-in Photographer
 	if pv := app.RoutePreview(tmpl, coll.ID); !pv.Blocked || pv.UnresolvedConflicts != 3 {
 		t.Fatalf("plan should be blocked by 3 conflicts, got blocked=%v n=%d", pv.Blocked, pv.UnresolvedConflicts)
 	}

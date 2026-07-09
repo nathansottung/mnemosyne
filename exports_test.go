@@ -55,8 +55,8 @@ func TestExportImport_StructureAndPlanRoundTrip(t *testing.T) {
 	ev := src.Store.AddEvent(&Event{Name: "Henderson", EventType: "wedding", Year: 2019, CollectionID: coll.ID})
 	shot := time.Date(2019, 6, 15, 10, 0, 0, 0, time.UTC)
 	ids, _ := src.Store.UpsertUnionFiles(coll.ID, []unionFile{
-		{RelPath: "a.jpg", Hash: "hashA", Size: 100, Role: RoleEditedExport, ShotAt: shot},
-		{RelPath: "shared/s.jpg", Hash: "hashS", Size: 200, Role: RoleRAW},
+		{RelPath: "a.jpg", Hash: "hashA", Size: 100, Role: RoleDeliverables, ShotAt: shot},
+		{RelPath: "shared/s.jpg", Hash: "hashS", Size: 200, Role: RoleOriginals},
 	})
 	src.Store.AssignFilesToEvent([]int{ids[0]}, ev.ID)
 	src.upsertMirrorChunk(coll.ID, vol, "X:/", []ChunkFileRef{
@@ -67,11 +67,11 @@ func TestExportImport_StructureAndPlanRoundTrip(t *testing.T) {
 	// A snapshot for the drive + a compiled plan (for the Plan Export).
 	src.Store.PutVolumeSnapshot(&VolumeSnapshot{VolumeID: vol.ID, Serial: "S1", Label: "DRIVE-01",
 		Files: []SnapFile{
-			{RelPath: "a.jpg", Hash: "hashA", SizeBytes: 100, Role: RoleEditedExport},
-			{RelPath: "shared/s.jpg", Hash: "hashS", SizeBytes: 200, Role: RoleRAW},
+			{RelPath: "a.jpg", Hash: "hashA", SizeBytes: 100, Role: RoleDeliverables},
+			{RelPath: "shared/s.jpg", Hash: "hashS", SizeBytes: 200, Role: RoleOriginals},
 		}, TotalFiles: 2})
 	tmpl := src.Store.AddTemplate(&Template{Name: "Move", Routes: map[string]string{
-		RoleEditedExport: "photos/{orig_name}", RoleRAW: "photos/{orig_name}"}})
+		RoleDeliverables: "photos/{orig_name}", RoleOriginals: "photos/{orig_name}"}})
 	plan := src.Store.AddPlan(&Plan{Name: "NAS Move", TemplateID: tmpl.ID, DestinationRoot: "/nas"})
 	if rep, _ := src.CompilePlan(plan.ID); !rep.Compilable || rep.Files != 2 {
 		t.Fatalf("source plan should compile 2 files, got %+v", rep)

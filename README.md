@@ -26,8 +26,8 @@ in which house — each verified copy lives on.
 ## 📖 New here? Start with the Handbook
 
 **Not a developer? [Read the User Handbook →](docs/handbook/00-what-is-this.md)**
-— a plain-language, task-based guide written for a careful novice (a photographer
-or family archivist). It walks you through
+— a plain-language, task-based guide written for a careful novice (a photographer,
+musician, filmmaker, or family archivist). It walks you through
 [installing and the first run](docs/handbook/01-install-and-first-run.md),
 [setting up safely](docs/handbook/02-set-up-safely.md),
 [your first backup](docs/handbook/03-your-first-backup.md),
@@ -253,7 +253,7 @@ Mnemosyne follows the life of your data. Each step earns its place:
   custody chain.*
 - **Search** any filename to see which package and which physical volume(s)
   hold it — *because in 15 years the only question that matters is "where are
-  the Smiths' photos?"*
+  the Smiths' files?"*
 
 ### 📦 Package
 - **Plan** groups files into media-sized **packages** (folder-aware, parity-
@@ -478,10 +478,11 @@ counts in a toast and on the dashboard — *never silently.* The old
 Think in terms of *how much you'd grieve losing it*, then pick the dimensions to
 match — the two built-ins that anchor the range are illustrative:
 
-- **A wedding you shot** is irreplaceable but not under threat: the couple isn't
-  deleting anything, you just must never lose it. *3-2-1 Standard* (3 copies, 2
-  media kinds, 1 offsite) is exactly right — enough redundancy and geographic
-  spread that no single fire, theft, or drive death takes it out.
+- **A finished project you delivered** (a wedding you shot, an album you mixed, a
+  film you cut) is irreplaceable but not under threat: the client isn't deleting
+  anything, you just must never lose it. *3-2-1 Standard* (3 copies, 2 media kinds,
+  1 offsite) is exactly right — enough redundancy and geographic spread that no
+  single fire, theft, or drive death takes it out.
 - **A client folder whose SOURCE is about to be wiped** is different: once they
   reclaim the NAS, *your copies are the only copies*, so the moment of maximum
   risk is right after deletion. *Pre-Deletion Hold* over-protects on purpose — 4
@@ -577,6 +578,42 @@ Kit (`FORMATS.md`) and every volume inventory sidecar — so *"which tools open 
 `formats.json`, embedded in the binary and **overridable**: drop your own
 `formats.json` in the data dir to correct or extend it (entries merge by
 extension, yours winning).
+
+### 🎚 Roles & starter templates — any creative discipline
+
+Photography is one profile among peers, not the assumption. Alongside the longevity
+tier, the registry tags each extension with a **role** — a small, discipline-neutral
+taxonomy that says what a file *is* in a workflow (how irreplaceable it is), orthogonal
+to how readable its format is:
+
+| Role | What it is | Examples |
+|---|---|---|
+| **ORIGINALS** | irreplaceable masters | camera RAWs, audio stems/multitracks (`.wav` `.aif`), camera video originals (`.braw` `.r3d` `.mxf`), layered image masters (`.psd` `.tif`) |
+| **DELIVERABLES** | rendered / exported outputs | `.jpg` `.png` exports, mastered `.mp3` `.flac`, delivery `.mp4` `.mov` |
+| **SIDECARS** | per-asset metadata beside the content | `.xmp`, `.cue`, subtitles (`.srt` `.vtt`) |
+| **PROJECT-FILES** | application project/catalog state (**CRITICAL**) | `.lrcat`, `.als`, `.flp`, `.logicx`, `.prproj`, `.drp`, `.aep` |
+| **OTHER** | everything unclassified | — |
+
+**PROJECT-FILES are flagged CRITICAL**: an Ableton `.als`, a Premiere `.prproj`, or a
+Lightroom `.lrcat` is your *edit/arrangement state* — not your stems, footage, or
+negatives — and losing it loses every edit you built, so the tool shouts about it (and
+its migration note always says *archive the originals and a rendered mixdown/delivery;
+never rely on the project file as the archive*).
+
+Ship on top of this a **set of starter templates** — **Photographer**, **Musician**
+(`music/{year}/{project}/` with separate *stems* vs *masters* routes), **Filmmaker**
+(footage / projects / deliverables), and **General** (`{year}/{category}/{collection}`)
+— each with its own editable category vocabulary and its own word for a grouping of
+files (an "Event" for photographers, a "Session"/"Project"/"Collection" for the rest).
+Routes are written with a discipline-neutral, aliased token set, so `{event}`,
+`{collection}`, `{session}`, and `{project}` all name the same grouping.
+
+**Metadata is discipline-neutral too.** Images still read **EXIF** (capture time +
+camera body) with zero dependencies; audio and video read a **created date + duration**
+via **ffprobe** when it is installed — an *optional* auto-detected tool, treated exactly
+like `smartctl`: present, a musician's or filmmaker's library clusters into sessions by
+date the way a photographer's does; absent, those fields are simply empty and ingest
+never fails.
 
 ### 🔎 Find & track
 - **Adopt existing media** — catalog archives written *before* Mnemosyne (or by
@@ -686,7 +723,7 @@ my risk?"* at a glance.
   verified copies, writes an inventory sidecar onto the drive, and shows a big
   **"DONE — safe to eject. Insert the next drive."** — *because migrating a shelf
   of unlabeled drives should be a rhythm, not a research project.*
-- **Content match, not filename match** — a photo that was reorganized into a
+- **Content match, not filename match** — a file that was reorganized into a
   different folder on the old drive still counts, because matching is by SHA-256.
   Each drive reports *matched / historical (older versions) / unrecognized /
   unreadable*.
@@ -759,7 +796,7 @@ the tool offers isn't deletion, it's a reversible **move**. Marking a file or fo
 `<destination_root>/_deleted/<original relative path>`, records *who* asked (implicitly
 you), *when*, and an optional reason in the catalog and audit log, and stops counting it
 toward protection — and it shows you that protection **consequence before you confirm**
-(*"this drops Henderson Wedding RAWs to 1 copy — proceed?"*). Because the original path
+(*"this drops Henderson Wedding originals to 1 copy — proceed?"*). Because the original path
 is preserved verbatim under `_deleted`, **un-quarantine is a plain reverse move** that
 also re-credits the copy. Crucially, quarantine exists **only inside managed territory**
 — the destination roots Mnemosyne itself populated via Plans — enforced by the very same
@@ -863,7 +900,7 @@ where a move would put them — travels as small, hash-keyed documents:
   machine and that machine can carry the move out; the serial binding makes it safe
   (a drive only advances the plan when its real serial matches).
 
-> **These exports contain paths and hashes but ZERO file content — no images, no
+> **These exports contain paths and hashes but ZERO file content — no media, no
 > bytes.** It is safe to email your organization scheme or print it; it cannot
 > reconstruct your data, only the map of what should exist and where. The Markdown
 > companion (`STRUCTURE-<archive>.md`) is included in every Recovery Kit.

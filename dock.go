@@ -352,9 +352,7 @@ func (a *App) mirrorAdopt(ds *DockSession, mountPath string, vol *Volume, mode s
 			rel := driveRel(mountPath, p)
 			role, crit := classifyRole(reg, rel)
 			sf := SnapFile{RelPath: rel, SizeBytes: size, ModTime: mtime, Hash: sha, Blake3: b3, Role: role, Critical: crit}
-			if role == RoleRAW || role == RoleEditedExport {
-				sf.ShotAt, sf.CameraSerial = extractShotMeta(p)
-			}
+			sf.ShotAt, sf.CameraSerial = a.extractMediaMeta(p, role)
 			mu.Lock()
 			defer mu.Unlock()
 			snapFiles = append(snapFiles, sf)

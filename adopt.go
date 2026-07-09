@@ -437,9 +437,7 @@ func (a *App) AdoptFolder(mountPath string, collectionID, volumeID int, progress
 			}
 			role, _ := classifyRole(reg, rel)
 			uf := unionFile{RelPath: filepath.ToSlash(rel), Hash: sha, Size: size, Role: role}
-			if role == RoleRAW || role == RoleEditedExport {
-				uf.ShotAt, uf.CameraSerial = extractShotMeta(p)
-			}
+			uf.ShotAt, uf.CameraSerial = a.extractMediaMeta(p, role)
 			mu.Lock()
 			hashed[p] = uf
 			mu.Unlock()

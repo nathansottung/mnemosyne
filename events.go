@@ -22,11 +22,19 @@ import (
 	"time"
 )
 
-// defaultEventVocabulary seeds a new template's editable event-type list and the
-// keyword set the type-guesser matches folder names against.
-var defaultEventVocabulary = []string{
-	"wedding", "engagement", "baptism", "boudoir", "religious event", "family", "portrait", "other",
-}
+// Per-discipline CATEGORY vocabularies — each starter template ships its own, and
+// the type-guesser matches folder names against the union of all in-use vocabularies
+// (see eventVocabulary). Photography is one profile among peers.
+var (
+	photographerVocabulary = []string{"wedding", "engagement", "baptism", "boudoir", "religious event", "family", "portrait", "other"}
+	musicianVocabulary     = []string{"album", "single", "ep", "live", "demo", "remix", "other"}
+	filmmakerVocabulary    = []string{"short", "feature", "documentary", "commercial", "music video", "event", "other"}
+	generalVocabulary      = []string{"personal", "family", "work", "travel", "project", "other"}
+)
+
+// defaultEventVocabulary is the neutral fallback for a template created without its
+// own category vocabulary (and the guesser's fallback when no template defines one).
+var defaultEventVocabulary = generalVocabulary
 
 // Clustering defaults: a burst is ≥minFiles frames whose total span is ≤maxSpan
 // days, with no internal gap larger than maxSpan days. Tunable per call.
@@ -174,15 +182,27 @@ func (a *App) SuggestForEvent(eventID int) []SuggestGroup {
 	return out
 }
 
-// eventVocabulary returns the type vocabulary from the (built-in or first) template,
-// falling back to the default seed. Used to type-guess proposed events.
+// eventVocabulary returns the UNION of every template's category vocabulary (deduped,
+// order-stable), so the type-guesser recognizes any discipline's categories — a
+// photographer's "wedding" and a filmmaker's "documentary" alike. Falls back to the
+// neutral default seed when no template defines one.
 func (a *App) eventVocabulary() []string {
+	seen := map[string]bool{}
+	var out []string
 	for _, t := range a.Store.Templates() {
-		if len(t.EventTypes) > 0 {
-			return t.EventTypes
+		for _, v := range t.EventTypes {
+			k := strings.ToLower(strings.TrimSpace(v))
+			if k == "" || seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, v)
 		}
 	}
-	return defaultEventVocabulary
+	if len(out) == 0 {
+		return defaultEventVocabulary
+	}
+	return out
 }
 
 // guessEventType matches a name/folder against the vocabulary by keyword (longest

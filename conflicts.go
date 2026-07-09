@@ -125,10 +125,10 @@ func buildDetected(collectionID int, class, key string, members []*File) Detecte
 	for i, f := range reps {
 		ids[i] = f.ID
 		hashes[i] = f.Hash
-		if f.Role == RoleRAW {
+		if f.Role == RoleOriginals {
 			raw = true
 		}
-		if role == "" || f.Role == RoleRAW {
+		if role == "" || f.Role == RoleOriginals {
 			role = f.Role
 		}
 	}

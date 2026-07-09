@@ -468,12 +468,20 @@ type Event struct {
 // (RAW/EDITED-EXPORT/SIDECAR/CATALOG/VIDEO/OTHER) to its destination pattern; a
 // role with no route is "unrouted" in the preview.
 type Template struct {
-	ID         int               `json:"id"`
-	Name       string            `json:"name"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	// EventTypes is the template's editable CATEGORY vocabulary (the guesser matches
+	// folder names against it). Named "event_types" for schema back-compat; a
+	// photographer's is wedding/portrait/…, a filmmaker's is short/feature/…, etc.
 	EventTypes []string          `json:"event_types"`
 	Routes     map[string]string `json:"routes"`
-	BuiltIn    bool              `json:"built_in,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
+	// GroupNoun is what this template calls a grouping of files in the UI — "Event"
+	// for photographers, "Session"/"Collection"/"Project" for other disciplines.
+	// Blank = "Event" (the neutral default). Purely a display label; the underlying
+	// model is always Event.
+	GroupNoun string    `json:"group_noun,omitempty"`
+	BuiltIn   bool      `json:"built_in,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Conflict statuses and classes. A conflict is two (or more) catalog files that
@@ -706,7 +714,7 @@ func (r *DriftReport) Changes() int {
 // Evolving the schema is governed by hard rules in docs/CONTRIBUTING.md
 // ("Schema versioning"): persisted fields are append-only, removal needs a
 // migration + a major bump, and every field must tolerate being absent.
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 // schemaMigration transforms the in-memory catalog UP TO the version named by To.
 // Each MUST be idempotent (safe to run twice) and is applied in ascending To order.
@@ -753,6 +761,92 @@ var schemaMigrations = []schemaMigration{
 	// Additive; the bump makes older builds refuse to write (they'd drop the
 	// _deleted staging records and their restore/history state). Empty body.
 	{To: 7, Fn: func(c *catalog) {}},
+	// 7 → 8: the file-role taxonomy generalized from photography-specific
+	// (RAW/EDITED-EXPORT/SIDECAR/CATALOG/VIDEO) to discipline-neutral
+	// (ORIGINALS/DELIVERABLES/SIDECARS/PROJECT-FILES). This remaps stored role
+	// strings on Files, snapshot files, and template route keys. Idempotent —
+	// already-new values pass through unchanged. VIDEO maps to DELIVERABLES as the
+	// common case (a rescan re-derives roles by extension).
+	{To: 8, Fn: migrateRolesV8},
+}
+
+// remapLegacyRole maps a pre-v8 (photography-specific) role string to the neutral
+// taxonomy. Already-migrated / OTHER / blank values pass through unchanged, so it
+// is safe to run twice.
+func remapLegacyRole(r string) string {
+	switch strings.ToUpper(strings.TrimSpace(r)) {
+	case "RAW":
+		return RoleOriginals
+	case "EDITED-EXPORT":
+		return RoleDeliverables
+	case "SIDECAR":
+		return RoleSidecars
+	case "CATALOG":
+		return RoleProject
+	case "VIDEO":
+		return RoleDeliverables // best-effort; a rescan reclassifies by extension
+	}
+	return r
+}
+
+// migrateRolesV8 rewrites every stored legacy role: on File rows, on snapshot files
+// and their per-role tallies, and on template route keys. Content-addressed history
+// (File.Versions) carries no role, so nothing else needs touching.
+func migrateRolesV8(c *catalog) {
+	for _, f := range c.Files {
+		f.Role = remapLegacyRole(f.Role)
+	}
+	for _, snap := range c.Snapshots {
+		for i := range snap.Files {
+			snap.Files[i].Role = remapLegacyRole(snap.Files[i].Role)
+		}
+		snap.RoleFiles = remapRoleMapInt(snap.RoleFiles)
+		snap.RoleBytes = remapRoleMapInt64(snap.RoleBytes)
+	}
+	for _, t := range c.Templates {
+		if len(t.Routes) == 0 {
+			continue
+		}
+		// Iterate legacy keys in sorted order so a collision (e.g. both EDITED-EXPORT
+		// and VIDEO map to DELIVERABLES) resolves DETERMINISTICALLY — the migration
+		// must produce identical bytes on every run.
+		keys := make([]string, 0, len(t.Routes))
+		for k := range t.Routes {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		nr := make(map[string]string, len(t.Routes))
+		for _, k := range keys {
+			nk := remapLegacyRole(k)
+			if _, ok := nr[nk]; ok {
+				continue // first (lowest-sorting) legacy key wins the merged route
+			}
+			nr[nk] = t.Routes[k]
+		}
+		t.Routes = nr
+	}
+}
+
+func remapRoleMapInt(m map[string]int) map[string]int {
+	if len(m) == 0 {
+		return m
+	}
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[remapLegacyRole(k)] += v
+	}
+	return out
+}
+
+func remapRoleMapInt64(m map[string]int64) map[string]int64 {
+	if len(m) == 0 {
+		return m
+	}
+	out := make(map[string]int64, len(m))
+	for k, v := range m {
+		out[remapLegacyRole(k)] += v
+	}
+	return out
 }
 
 // migrateLocations is the 1→2 step: fold every volume's free-text Location + Offsite
@@ -985,7 +1079,7 @@ func OpenStore(dataDir string) (*Store, error) {
 	if s.seedBuiltinProfilesLocked() {
 		recovered = true
 	}
-	// Built-in routing template: seed "Photographer Standard" on a catalog with no
+	// Built-in routing template: seed the starter template set on a catalog with no
 	// templates (never re-added once the operator deletes all of them within a run —
 	// but a fresh open with zero templates re-seeds, matching the profiles spirit).
 	if len(s.c.Templates) == 0 {
@@ -2238,30 +2332,68 @@ func (s *Store) DeleteTemplate(id int) {
 	_ = s.save()
 }
 
-// seedBuiltinTemplateLocked installs the "Photographer Standard" template on a
-// catalog that has none, so there's always a starting point to clone/edit. Caller
-// holds s.mu (OpenStore is single-threaded at call time).
+// starterTemplates is the built-in template SET installed on a fresh catalog — one
+// per creative discipline, so every user has a discipline-shaped starting point to
+// clone and edit (photography is now one profile among peers, not the assumption).
+// All route over the SAME discipline-neutral role taxonomy and Event model, using
+// the aliased grouping tokens ({event}/{collection}/{session}/{project}).
+// CreatedAt is deliberately left zero: built-ins are canonical, not operator-
+// authored, so serialization stays deterministic across catalogs.
+func starterTemplates() []*Template {
+	return []*Template{
+		{
+			Name: "Photographer", BuiltIn: true, GroupNoun: "Event",
+			EventTypes: append([]string(nil), photographerVocabulary...),
+			Routes: map[string]string{
+				RoleOriginals:    "photos/{year}/{event_type}/{event}/",
+				RoleSidecars:     "photos/{year}/{event_type}/{event}/",
+				RoleProject:      "photos/{year}/{event_type}/{event}/",
+				RoleDeliverables: "Finalized Images/{year}/{event_type}/{event}/",
+			},
+		},
+		{
+			Name: "Musician", BuiltIn: true, GroupNoun: "Project",
+			EventTypes: append([]string(nil), musicianVocabulary...),
+			Routes: map[string]string{
+				RoleOriginals:    "music/{year}/{project}/stems/",
+				RoleDeliverables: "music/{year}/{project}/masters/",
+				RoleSidecars:     "music/{year}/{project}/",
+				RoleProject:      "music/{year}/{project}/project/",
+			},
+		},
+		{
+			Name: "Filmmaker", BuiltIn: true, GroupNoun: "Project",
+			EventTypes: append([]string(nil), filmmakerVocabulary...),
+			Routes: map[string]string{
+				RoleOriginals:    "footage/{year}/{project}/",
+				RoleProject:      "projects/{year}/{project}/",
+				RoleDeliverables: "deliverables/{year}/{project}/",
+				RoleSidecars:     "footage/{year}/{project}/",
+			},
+		},
+		{
+			Name: "General", BuiltIn: true, GroupNoun: "Collection",
+			EventTypes: append([]string(nil), generalVocabulary...),
+			Routes: map[string]string{
+				RoleOriginals:    "{year}/{category}/{collection}/",
+				RoleDeliverables: "{year}/{category}/{collection}/",
+				RoleSidecars:     "{year}/{category}/{collection}/",
+				RoleProject:      "{year}/{category}/{collection}/",
+			},
+		},
+	}
+}
+
+// seedBuiltinTemplateLocked installs the starter template SET on a catalog that has
+// none. Caller holds s.mu (OpenStore is single-threaded at call time).
 func (s *Store) seedBuiltinTemplateLocked() {
 	if len(s.c.Templates) > 0 {
 		return
 	}
-	raw := "photos/{year}/{event_type}/{event}/"
-	// CreatedAt is deliberately left zero: the built-in is canonical, not
-	// operator-authored, so its serialization stays deterministic across catalogs
-	// (the same reason built-in profiles carry no per-open timestamp).
-	s.c.Templates = append(s.c.Templates, &Template{
-		ID:         s.next("template"),
-		Name:       "Photographer Standard",
-		BuiltIn:    true,
-		EventTypes: append([]string(nil), defaultEventVocabulary...),
-		Routes: map[string]string{
-			RoleRAW:          raw,
-			RoleSidecar:      raw,
-			RoleCatalog:      raw,
-			RoleEditedExport: "Finalized Images/{year}/{event_type}/{event}/",
-			RoleVideo:        "photos/{year}/{event_type}/{event}/video/",
-		},
-	})
+	for _, t := range starterTemplates() {
+		t.ID = s.next("template")
+		s.c.Templates = append(s.c.Templates, t)
+	}
 }
 
 // ---- tape diagnostics --------------------------------------------------

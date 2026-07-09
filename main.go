@@ -837,7 +837,7 @@ func api(mux *http.ServeMux, app *App) {
 	// ---- Templates --------------------------------------------------------
 	mux.HandleFunc("GET /api/templates", func(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]any{"templates": app.Store.Templates(), "tokens": routeTokens,
-			"roles": []string{RoleRAW, RoleEditedExport, RoleSidecar, RoleCatalog, RoleVideo, RoleOther}})
+			"roles": []string{RoleOriginals, RoleDeliverables, RoleSidecars, RoleProject, RoleOther}})
 	})
 	mux.HandleFunc("POST /api/templates", func(w http.ResponseWriter, r *http.Request) {
 		var t Template
@@ -875,6 +875,7 @@ func api(mux *http.ServeMux, app *App) {
 		if in.Routes != nil {
 			t.Routes = in.Routes
 		}
+		t.GroupNoun = strings.TrimSpace(in.GroupNoun)
 		app.Store.UpdateTemplate(t)
 		jsonOut(w, t)
 	})
@@ -962,7 +963,7 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, app.QuarantineViewData())
 	})
 	// Preview the protection consequence of quarantining a path — shown BEFORE the
-	// user confirms ("this drops Henderson Wedding RAWs to 1 copy"). Also the
+	// user confirms ("this drops Henderson Wedding originals to 1 copy"). Also the
 	// eligibility gate: a non-managed/source path returns an error, so the UI knows
 	// the action does not apply there.
 	mux.HandleFunc("GET /api/quarantine/consequence", func(w http.ResponseWriter, r *http.Request) {

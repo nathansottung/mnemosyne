@@ -77,8 +77,8 @@ func TestInferStructure_OrganizedTree(t *testing.T) {
 
 	// The proposed template routes RAW/exports/video off the detected pattern.
 	tmpl := app.ProposeTemplateFromInference(inf, "NAS Photos")
-	if tmpl.Routes[RoleRAW] != "{year}/{event_type}/{event}/" {
-		t.Errorf("proposed RAW route = %q", tmpl.Routes[RoleRAW])
+	if tmpl.Routes[RoleOriginals] != "{year}/{event_type}/{event}/" {
+		t.Errorf("proposed RAW route = %q", tmpl.Routes[RoleOriginals])
 	}
 }
 
@@ -149,8 +149,8 @@ func TestMagnet_SuggestsStrayIntoHarvestedEvent(t *testing.T) {
 	inRange := time.Date(2019, 6, 15, 15, 30, 0, 0, time.UTC)
 	outRange := time.Date(2021, 3, 1, 9, 0, 0, 0, time.UTC)
 	app.Store.UpsertUnionFiles(coll.ID, []unionFile{
-		{RelPath: "loose/from_camera/DSC900.jpg", Hash: "hash-in", Size: 111, Role: RoleEditedExport, ShotAt: inRange},
-		{RelPath: "loose/other/DSC001.jpg", Hash: "hash-out", Size: 222, Role: RoleEditedExport, ShotAt: outRange},
+		{RelPath: "loose/from_camera/DSC900.jpg", Hash: "hash-in", Size: 111, Role: RoleDeliverables, ShotAt: inRange},
+		{RelPath: "loose/other/DSC001.jpg", Hash: "hash-out", Size: 222, Role: RoleDeliverables, ShotAt: outRange},
 	})
 
 	groups := app.SuggestForEvent(ev.ID)

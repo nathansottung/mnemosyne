@@ -468,13 +468,17 @@ against one or more Archives and remembers every drive it processed.
 - **The drive SNAPSHOT** (`VolumeSnapshot`, one per volume, keyed by `VolumeID`)
   is the record that makes an *unplugged* drive knowable. In one read pass
   `mirrorAdopt` records **every** file — not just matches — with size, mtime,
-  SHA-256 + BLAKE3, a workflow **role**, and best-effort EXIF (capture time +
-  camera body serial). Roles come from the format registry's new `role` dimension
-  (`classifyRole`): `RAW` / `EDITED-EXPORT` / `SIDECAR` / `CATALOG` (`.lrcat` &c.,
-  flagged **CRITICAL** — edit state, not the photos) / `VIDEO` / `OTHER`. EXIF is
-  parsed stdlib-only (`exif.go`, JPEG APP1 + TIFF-based raws); anything
-  unparseable is simply empty, never an error. The catalog then answers *"what is
-  on DRIVE-04"* — sizes, tree, hashes, dates, roles, SMART state, serial — with
+  SHA-256 + BLAKE3, a workflow **role**, and best-effort capture/created metadata.
+  Roles come from the format registry's discipline-neutral `role` dimension
+  (`classifyRole`): `ORIGINALS` (camera RAWs, audio stems, camera video, layered
+  masters) / `DELIVERABLES` (exports, mastered audio, delivery video) / `SIDECARS`
+  (`.xmp`, `.cue`, subtitles) / `PROJECT-FILES` (`.lrcat`, `.als`, `.prproj` &c.,
+  flagged **CRITICAL** — edit/arrangement state, not the masters) / `OTHER`.
+  Metadata is read by kind (`metadata.go`): images via a stdlib-only EXIF parser
+  (`exif.go`, JPEG APP1 + TIFF-based raws), audio/video via optional `ffprobe`;
+  anything unparseable (or ffprobe-absent) is simply empty, never an error. The
+  catalog then answers *"what is on DRIVE-04"* — sizes, tree, hashes, dates, roles,
+  SMART state, serial — with
   the drive in a shoebox. The Volumes view browses that tree, and `snapshotTreemap`
   draws it (colored by role) with **no disk access**, exactly like the archive
   treemap.
@@ -547,16 +551,19 @@ events, and defines **Templates** that say where files *should* live.
   grouping axis parallel to the folder tree.
 
 - **Templates plan, they don't move.** A `Template` is a deliberately tiny
-  document: one destination pattern per role, from a fixed six-token set (`{year}
-  {date} {event_type} {event} {camera_serial} {orig_name}`). `RoutePreview`
+  document: one destination pattern per role, from a small discipline-neutral token
+  set (`{year} {date} {event_type}/{category} {event}/{collection}/{session}/{project}
+  {camera_serial} {orig_name}` — the grouping tokens are aliases resolving to the
+  same Event fields, so every persona's routes read naturally). `RoutePreview`
   (`templates.go`) expands those tokens against the real catalog and returns the
   editor's **live consequence preview** — *places N · match no route · auto-
   disambiguated K* (a file is unrouted when its role has no route or a token can't
   be filled; a destination collision is auto-disambiguated so two legitimate files
   compile to two placements). Nothing is ever moved — exceptions are a future
-  drag-in-tree, not more knobs. The built-in **Photographer Standard** template is
-  seeded like the built-in profiles (present in a fresh catalog; re-seeded only when
-  none exist).
+  drag-in-tree, not more knobs. A **starter template set** — Photographer, Musician,
+  Filmmaker, General — is seeded like the built-in profiles (present in a fresh
+  catalog; re-seeded only when none exist), each carrying its own category
+  vocabulary and its own `GroupNoun` (the word it uses for a grouping of files).
 
 ## Conflicts — same logical file, different bytes, no source of truth
 

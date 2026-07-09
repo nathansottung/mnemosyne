@@ -311,7 +311,7 @@ func (s *VolumeSnapshot) roleList() []string {
 // registry so a user override that marks a role critical is honored, with a
 // constant fallback for the built-in CATALOG role.
 func roleCritical(reg map[string]FormatEntry, role string) bool {
-	if role == RoleCatalog {
+	if role == RoleProject {
 		return true
 	}
 	for _, e := range reg {
@@ -325,19 +325,17 @@ func roleCritical(reg map[string]FormatEntry, role string) bool {
 // ---- snapshot treemap (offline, colored by role) -----------------------
 
 // roleSeverity ranks roles for the folder worst-of-children rollup so the most
-// consequential role in a folder wins its color: CATALOG (critical) > RAW > VIDEO
-// > EDITED-EXPORT > SIDECAR > OTHER.
+// consequential role in a folder wins its color: PROJECT-FILES (critical) >
+// ORIGINALS > DELIVERABLES > SIDECARS > OTHER.
 func roleSeverity(role string) int {
 	switch role {
-	case RoleCatalog:
-		return 5
-	case RoleRAW:
+	case RoleProject:
 		return 4
-	case RoleVideo:
+	case RoleOriginals:
 		return 3
-	case RoleEditedExport:
+	case RoleDeliverables:
 		return 2
-	case RoleSidecar:
+	case RoleSidecars:
 		return 1
 	}
 	return 0
