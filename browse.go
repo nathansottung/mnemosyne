@@ -55,7 +55,14 @@ func (a *App) browseRoots() []map[string]any {
 
 // Browse lists the immediate subdirectories of path (read-only). An empty path
 // returns the roots. Dotfiles and OS-junk folders are hidden.
-func (a *App) Browse(path string) (map[string]any, error) {
+func (a *App) Browse(path string) (map[string]any, error) { return a.browse(path, false) }
+
+// BrowseWithFiles is Browse plus the immediate FILES in the folder — used by the
+// "point me at a binary" picker (the Audacity→FFmpeg pattern) so the operator can
+// select an executable, not just navigate folders.
+func (a *App) BrowseWithFiles(path string) (map[string]any, error) { return a.browse(path, true) }
+
+func (a *App) browse(path string, includeFiles bool) (map[string]any, error) {
 	if strings.TrimSpace(path) == "" {
 		return map[string]any{"path": "", "parent": "", "roots": true, "dirs": a.browseRoots()}, nil
 	}
@@ -68,24 +75,37 @@ func (a *App) Browse(path string) (map[string]any, error) {
 		return nil, err
 	}
 	dirs := []map[string]any{}
+	files := []map[string]any{}
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
 		name := e.Name()
-		if strings.HasPrefix(name, ".") || skipBrowseDir(name) {
+		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		dirs = append(dirs, map[string]any{"name": name, "path": filepath.Join(abs, name)})
+		if e.IsDir() {
+			if skipBrowseDir(name) {
+				continue
+			}
+			dirs = append(dirs, map[string]any{"name": name, "path": filepath.Join(abs, name)})
+		} else if includeFiles {
+			files = append(files, map[string]any{"name": name, "path": filepath.Join(abs, name)})
+		}
 	}
-	sort.Slice(dirs, func(i, j int) bool {
-		return strings.ToLower(dirs[i]["name"].(string)) < strings.ToLower(dirs[j]["name"].(string))
-	})
+	byName := func(l []map[string]any) {
+		sort.Slice(l, func(i, j int) bool {
+			return strings.ToLower(l[i]["name"].(string)) < strings.ToLower(l[j]["name"].(string))
+		})
+	}
+	byName(dirs)
+	byName(files)
 	parent := filepath.Dir(abs)
 	if normPath(parent) == normPath(abs) {
 		parent = "" // already at a drive/root — "up" returns to the roots list
 	}
-	return map[string]any{"path": abs, "parent": parent, "dirs": dirs}, nil
+	out := map[string]any{"path": abs, "parent": parent, "dirs": dirs}
+	if includeFiles {
+		out["files"] = files
+	}
+	return out, nil
 }
 
 // skipBrowseDir hides OS bookkeeping folders that are never a useful target.

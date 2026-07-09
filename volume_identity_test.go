@@ -39,7 +39,7 @@ func TestNextBarcode(t *testing.T) {
 func TestVolumeLabelHTML(t *testing.T) {
 	v := &Volume{ID: 7, Label: "NSP-0007", Kind: "TAPE", Barcode: "NSP-0007",
 		Serial: "WD-ABC123", Model: "HGST 8TB", DeviceSize: 8_001_563_222_016, Location: "office safe"}
-	page, err := volumeLabelHTML(v, v.Barcode)
+	page, err := volumeLabelHTML(v, v.Barcode, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestVolumeLabelHTML(t *testing.T) {
 	}
 	// A volume with no barcode falls back to a VOL-<id> Code128.
 	v2 := &Volume{ID: 42, Label: "nobar"}
-	h2, err := volumeLabelHTML(v2, v2.Barcode)
+	h2, err := volumeLabelHTML(v2, v2.Barcode, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestDeviceIdentityAndLabel_SystemDisk(t *testing.T) {
 		t.Error("volume gained no identity fields despite a resolved device")
 	}
 
-	page, err := volumeLabelHTML(v, v.Barcode)
+	page, err := volumeLabelHTML(v, v.Barcode, "", "")
 	if err != nil {
 		t.Fatalf("label generation for the system disk failed: %v", err)
 	}

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,7 @@ func main() {
 		log.Fatalf("open catalog: %v", err)
 	}
 	app := &App{DataDir: *dataDir, Store: store}
+	setHashAccel(app.LoadConfig().HashAccel) // apply the persisted hash-acceleration preference at startup
 	if ro, why := store.ReadOnly(); ro {
 		log.Printf("⚠ READ-ONLY: %s", why)
 	}
@@ -430,14 +432,34 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, out)
 	})
 
-	// Read-only folder browser for the path picker (lists subdirectories only).
+	// Read-only folder browser for the path picker. ?files=1 also returns the
+	// folder's files so the External-Tools "point me at a binary" picker can select one.
 	mux.HandleFunc("GET /api/browse", func(w http.ResponseWriter, r *http.Request) {
-		res, err := app.Browse(r.URL.Query().Get("path"))
+		q := r.URL.Query()
+		browse := app.Browse
+		if q.Get("files") == "1" {
+			browse = app.BrowseWithFiles
+		}
+		res, err := browse(q.Get("path"))
 		if err != nil {
 			jsonErr(w, 400, fmt.Errorf("cannot read folder: %w", err))
 			return
 		}
 		jsonOut(w, res)
+	})
+	// System info for the Performance panel: real total/available RAM (CGO-free) and
+	// CPU count, so the RAM-buffer field can show "your machine: X total, Y free".
+	mux.HandleFunc("GET /api/sysinfo", func(w http.ResponseWriter, r *http.Request) {
+		m := SystemMemory()
+		jsonOut(w, map[string]any{
+			"memory": m, "cpus": runtime.NumCPU(), "goos": runtime.GOOS, "goarch": runtime.GOARCH,
+			"data_dir": app.DataDir,
+		})
+	})
+	// External-tools catalog: every optional helper with its detected status, config
+	// path, and official download link. Manually-browsed binary paths save via config.
+	mux.HandleFunc("GET /api/tools", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.ToolsView())
 	})
 
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
@@ -560,7 +582,13 @@ func api(mux *http.ServeMux, app *App) {
 		if strings.EqualFold(s(b, "kind"), ArchiveSourceless) || bl(b, "sourceless") {
 			kind = ArchiveSourceless
 		}
-		jsonOut(w, app.Store.AddCollectionKind(name, kind))
+		coll := app.Store.AddCollectionKind(name, kind)
+		// Honor the configured default protection profile (blank = the built-in 3-2-1
+		// default AddCollectionKind already assigned). Best-effort: a bad id is ignored.
+		if dp := strings.TrimSpace(app.LoadConfig().DefaultProfile); dp != "" && dp != DefaultProfileID {
+			_ = app.Store.SetAssignment(coll.ID, "", dp)
+		}
+		jsonOut(w, coll)
 	})
 	register(mux, "POST /api/collections/{id}/scan", func(w http.ResponseWriter, r *http.Request) {
 		id := pathID(r)
@@ -1802,7 +1830,8 @@ func api(mux *http.ServeMux, app *App) {
 			http.Error(w, "volume not found", 404)
 			return
 		}
-		htmlPage, err := volumeLabelHTML(v, v.Barcode)
+		lw, lh := labelSizeParts(app.LoadConfig().LabelSize)
+		htmlPage, err := volumeLabelHTML(v, v.Barcode, lw, lh)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return

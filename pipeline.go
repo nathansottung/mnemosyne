@@ -85,6 +85,15 @@ type Config struct {
 	DataKind        string   `json:"data_kind,omitempty"`        // photos|music|video|documents|mixed → starter template + vocabulary
 	PrimaryLocation string   `json:"primary_location,omitempty"` // nas|scattered|both → default archive kind + which nav groups open
 	BackupTargets   []string `json:"backup_targets,omitempty"`   // drives|nas|tape|optical|cloud → which target UI shows; the rest collapse
+	// ---- performance / presentation preferences ----
+	// HashAccel gates the catalog-internal BLAKE3 fast-compare hash computed
+	// alongside SHA-256 in one read pass (scans, drift, dock). Default true; off
+	// falls back to SHA-256-only (slower fast-compares, identical durability —
+	// SHA-256 remains the ONLY on-media hash either way). See hashing.go.
+	HashAccel      bool   `json:"hash_accel"`
+	UpdateCheck    bool   `json:"update_check"`              // show a "check the releases page" reminder card; never auto-downloads or phones home
+	LabelSize      string `json:"label_size,omitempty"`      // default printable label size, "W H" (e.g. "2.25in 1.25in")
+	DefaultProfile string `json:"default_profile,omitempty"` // protection profile assigned to a new archive; blank = the built-in 3-2-1 default
 }
 
 // UI mode values (purely presentational).
@@ -100,7 +109,8 @@ func defaultConfig() Config {
 	return Config{DeleteTarAfterEncrypt: true, Par2Redundancy: 10, Par2ExtraArgs: "-t0", BufferGB: 8, BlockMB: 64,
 		VerifyDueMonths: 12, RequiredCopies: 2, FinalizeVerifyDays: 30, BufferPct: 5, SmartBlockFinalize: true,
 		BuildVerify: "full", RoutineVerifyLevel: "B", BarcodeScheme: "NSP", DriftInformational: []string{".xmp"},
-		EscrowOnMedia: EscrowBinariesOnly, UIMode: UIModeGuided, Tools: map[string]string{}}
+		EscrowOnMedia: EscrowBinariesOnly, UIMode: UIModeGuided, HashAccel: true, LabelSize: "2.25in 1.25in",
+		Tools: map[string]string{}}
 }
 
 // buildVerifyMode normalises the configured build-verification tier to one of
@@ -152,7 +162,11 @@ func (a *App) SaveConfig(in map[string]any) (Config, error) {
 		}
 	}
 	out, _ := json.MarshalIndent(cfg, "", "  ")
-	return cfg, os.WriteFile(a.configPath(), out, 0o644)
+	if err := os.WriteFile(a.configPath(), out, 0o644); err != nil {
+		return cfg, err
+	}
+	setHashAccel(cfg.HashAccel) // apply runtime preferences that live outside the request path
+	return cfg, nil
 }
 
 // ---- tools ---------------------------------------------------------------

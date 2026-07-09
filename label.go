@@ -72,7 +72,13 @@ func humanBytes(n int64) string {
 // volumeLabelHTML builds the full printable HTML page for a volume. barcodeText
 // is what the Code128 encodes — normally v.Barcode; callers pass a fallback when
 // the volume has none yet.
-func volumeLabelHTML(v *Volume, barcodeText string) (string, error) {
+func volumeLabelHTML(v *Volume, barcodeText, labelW, labelH string) (string, error) {
+	if strings.TrimSpace(labelW) == "" {
+		labelW = "2.25in"
+	}
+	if strings.TrimSpace(labelH) == "" {
+		labelH = "1.25in"
+	}
 	if strings.TrimSpace(barcodeText) == "" {
 		barcodeText = fmt.Sprintf("VOL-%d", v.ID)
 	}
@@ -115,7 +121,7 @@ func volumeLabelHTML(v *Volume, barcodeText string) (string, error) {
 	page := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8">
 <title>Label — %s</title>
 <style>
-  :root{--w:2.25in;--h:1.25in}
+  :root{--w:%s;--h:%s}
   *{box-sizing:border-box}
   body{font:13px/1.35 -apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f3f4f6;color:#111}
   .bar{padding:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff;border-bottom:1px solid #ddd}
@@ -176,6 +182,7 @@ func volumeLabelHTML(v *Volume, barcodeText string) (string, error) {
 </script>
 </body></html>`,
 		esc(v.Label),
+		labelW, labelH,
 		esc(v.Label),
 		esc(nonEmpty(v.Kind, "VOLUME")),
 		bcURI, esc(barcodeText), esc(barcodeText),
@@ -185,6 +192,16 @@ func volumeLabelHTML(v *Volume, barcodeText string) (string, error) {
 		note,
 	)
 	return page, nil
+}
+
+// labelSizeParts splits a stored label size ("2.25in 1.25in") into width/height,
+// falling back to the default 2.25×1.25″ when unset or malformed.
+func labelSizeParts(size string) (w, h string) {
+	f := strings.Fields(strings.TrimSpace(size))
+	if len(f) == 2 {
+		return f[0], f[1]
+	}
+	return "2.25in", "1.25in"
 }
 
 func nonEmpty(s, fallback string) string {

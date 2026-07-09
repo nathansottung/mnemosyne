@@ -245,6 +245,37 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 .sumline .sw{font-size:11.5px;color:var(--ink-3);margin-top:2px}
 .sumline .sa{color:var(--act);font-size:11.5px;text-decoration:none;white-space:nowrap}
 .sumline .sa:hover{text-decoration:underline}
+/* ---- Settings: unified integrity grid ---- */
+.ivgrid{width:100%;border-collapse:collapse;font-size:12.5px}
+.ivgrid th,.ivgrid td{padding:7px 10px;border-bottom:1px solid var(--line-2);text-align:center}
+.ivgrid th:first-child,.ivgrid td:first-child{text-align:left;color:var(--ink-2)}
+.ivgrid th{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.ivgrid .custom{border-left:1px dashed var(--line)}
+.ivgrid .ivactive{background:rgba(46,94,78,.10);font-weight:600;color:var(--ink)}
+.ivgrid th.ivactive{color:var(--act)}
+.ivbadge{display:inline-block;padding:2px 9px;border-radius:11px;border:1px solid;font:600 11px var(--mono)}
+.ivknob{display:flex;flex-direction:column;gap:2px}
+.ivmatch{font-size:11px;color:var(--ink-3)}
+.ivmatch.custom{color:var(--warn)}
+/* ---- Settings: external tools rows ---- */
+.tool{display:flex;gap:14px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line-2)}
+.tool:last-child{border-bottom:none}
+.tool .tinfo{flex:1;min-width:0}
+.tool .tname{font:600 13.5px var(--sans)}
+.tool .tadds{font-size:12px;color:var(--ink-3);margin-top:1px}
+.tool .tpath{font:11px var(--mono);color:var(--ink-3);margin-top:3px;word-break:break-all}
+.tool .tact{display:flex;flex-direction:column;gap:5px;align-items:stretch;flex:0 0 168px}
+.tool .tact .row{gap:5px}
+.toolstat{font:600 11px var(--mono);padding:2px 8px;border-radius:10px;white-space:nowrap;align-self:flex-end}
+.toolstat.found{background:rgba(46,94,78,.12);color:var(--ok)}
+.toolstat.missing{background:rgba(160,49,35,.10);color:var(--bad)}
+.toolstat.na{background:var(--line-2);color:var(--ink-3)}
+/* ---- Settings: memory line ---- */
+.memline{font-size:12px;color:var(--ink-2);margin:4px 0}
+.memline b{color:var(--ink)}
+.membar{height:7px;border-radius:4px;background:var(--line);overflow:hidden;margin:4px 0;max-width:320px}
+.membar i{display:block;height:100%;background:var(--act)}
+.setinfo{font:12px var(--mono);color:var(--ink-2);background:var(--panel);border:1px solid var(--line-2);border-radius:5px;padding:7px 10px;word-break:break-all}
 </style>
 </head>
 <body>
@@ -2400,137 +2431,347 @@ async function closeDock(id){try{await api('POST',`/api/dock/session/${id}/close
 function advOpen(label){return _uiMode==='complete'?'':`<details class="adv"><summary>${esc(label||'Advanced options')}</summary>`}
 function advClose(){return _uiMode==='complete'?'':'</details>'}
 async function vSettings(){
-  const [c,p]=await Promise.all([api('GET','/api/config'),api('GET','/api/preflight')]);
-  const cfg=c.config||{};
-  const tool=t=>p[t]&&p[t].ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p[t].version||p[t].path||'')}</span>`
-    :`<span class="stamp FAILED">missing</span>`;
-  const ltfs=p.ltfs||{};
-  const ltfsCell=ltfs.mounted
-    ? `<span class="stamp VERIFIED">LTFS</span> LTFS tape mounted at <span class="mono">${esc((ltfs.mounts||[]).join(', '))}</span> ✓`
-    : `<span class="dim">No LTFS mount detected — to write to LTO tape, install a free LTFS driver: IBM Storage Archive Single Drive Edition, HPE StoreOpen, or open-source LinearTapeFileSystem/ltfs (links in README). Not required for HDD or optical.</span>`;
+  const [c,ivdata,prof]=await Promise.all([api('GET','/api/config'),api('GET','/api/integrity'),api('GET','/api/profiles').catch(()=>[])]);
+  const cfg=c.config||{};const ks=c.keystore_status||{};
+  _ivPresets={};for(const q of (ivdata.presets||[]))_ivPresets[q.name]=q;
+  _ivEff=ivdata.effective||ivdata.global||{};
   const wants=t=>(cfg.backup_targets||['drives']).some(x=>String(x).toLowerCase()===t);
-  let h=`${hdr('Settings','how the app behaves — the tools, folders, and backup options it uses (saved to config.json in the data folder)','settings')}
-  <div class="panel"><div class="row" style="align-items:baseline;gap:12px">
-    <div style="flex:1"><h2 style="margin-bottom:2px">First-run setup</h2>
-      <div class="help" style="margin:0">${cfg.setup_complete?`Configured for <b>${esc(cfg.data_kind||'mixed')}</b> · backing up to <b>${esc((cfg.backup_targets||['drives']).join(', '))}</b>. Re-run to change your template, locations, targets, guidance, or checking level.`:'Answer five short questions to configure a sensible starting state.'}</div></div>
-    <button class="btn ghost" onclick="startSetup(true)">Run setup again</button></div></div>
-  ${modePicker()}
-  <div class="panel"><h2>External tools</h2>
-    <div class="help">The free command-line programs Mnemosyne uses to bundle, encrypt, and repair your backups — and to read drive health. The first three are required; the rest are optional and just add extra checks.</div>
-    <table><tr><td>tar <span class="dim" style="font-size:11px">(bundles files into one archive)</span></td><td>${tool('tar')}</td></tr><tr><td>gpg <span class="dim" style="font-size:11px">(encrypts backups)</span></td><td>${tool('gpg')}</td></tr>
-    <tr><td>par2 <span class="dim" style="font-size:11px">(makes repair data)</span></td><td>${tool('par2')}</td></tr>
-    <tr><td>smartctl <span class="dim" style="font-size:11px">(optional · drive health)</span></td><td>${p.smartctl&&p.smartctl.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.smartctl.path||'')}</span>`:`<span class="dim">not installed — drive-health signals hidden. smartmontools.org · <span class="mono">choco/apt/brew install smartmontools</span>. Complements hash verification; never replaces it.</span>`}</td></tr>
-    <tr><td>ffprobe <span class="dim" style="font-size:11px">(optional · A/V dates)</span></td><td>${p.ffprobe&&p.ffprobe.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.ffprobe.path||'')}</span>`:`<span class="dim">not installed — audio/video created dates stay empty (images still read EXIF). ffmpeg.org · <span class="mono">choco/apt/brew install ffmpeg</span>. Lets music/film libraries cluster into sessions by date; never fails an ingest.</span>`}</td></tr>
-    <tr><td>dvdisaster <span class="dim" style="font-size:11px">(optional · disc ECC)</span></td><td>${p.dvdisaster&&p.dvdisaster.ok?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.dvdisaster.path||'')}</span>`:`<span class="dim">not installed — disc-level ECC hidden. dvdisaster.jcea.es · <span class="mono">apt/brew install dvdisaster</span>. Complements par2 over the disc geometry; par2 repair works regardless.</span>`}</td></tr>
-    <tr><td>stenc <span class="dim" style="font-size:11px">(optional · drive AES)</span></td><td>${p.stenc&&p.stenc.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.stenc.bin||'')}</span> <span class="dim">· manages the DRIVE key (outside gpg — awareness only)</span>`:`<span class="dim">${esc((p.stenc&&p.stenc.hint)||'stenc not available — drive-level encryption is managed via vendor tools.')}</span>`}</td></tr>
-    <tr><td>tape diag <span class="dim" style="font-size:11px">(optional · read-only)</span></td><td>${p.tape_tool&&p.tape_tool.available?`<span class="stamp VERIFIED">found</span> <span class="mono dim">${esc(p.tape_tool.tool||'')} · ${esc(p.tape_tool.bin||'')}</span>`:`<span class="dim">not installed — tape-drive diagnostics hidden. IBM ITDT (free, Fix Central) · sg3_utils (<span class="mono">apt/brew install sg3-utils</span>) · HPE L&amp;TT. Reads drive health only — never moves the tape or writes.</span>`}</td></tr>
-    <tr><td>LTFS tape</td><td>${ltfsCell}</td></tr></table>
-    ${(p.hints||[]).map(x=>`<div class="err" style="margin-top:8px">${esc(x)}</div>`).join('')}</div>
-  <div class="panel"><h2>Backups — how they're built and checked</h2>
-    <label>Work folder for building backups</label>
-    <input id="st" class="full" value="${esc(cfg.staging_dir||'')}" placeholder="D:\\mnemo-staging or /mnt/pool/staging">${browseBtn('st')}
+  const profiles=(prof||[]).map(x=>x.profile||x);
+  const curProf=cfg.default_profile||'3-2-1-standard';
+  const LSZ=[['2.25in 1.25in','2.25 × 1.25 in — small address label'],['4in 2in','4 × 2 in — shipping label'],['62mm 29mm','62 × 29 mm — Brother DK-1209'],['100mm 62mm','100 × 62 mm — large']];
+  const curLsz=cfg.label_size||'2.25in 1.25in';
+  let h=hdr('Settings','how the app behaves — the tools, folders, and options it uses (saved to config.json in the data folder)','settings');
+
+  // ---- 1. General ----
+  h+=`<div class="panel"><h2>General</h2>
+    <label>How much do you want to see?</label>
+    ${modeControl()}
+    <label style="margin-top:14px">Language</label>
+    <div class="setinfo">English</div>
+    <div class="help">Mnemosyne currently ships in English only. This row is here so it's obvious there's nothing hidden to set.</div>
+    <label style="margin-top:14px">First-run setup</label>
+    <div class="row" style="align-items:center;gap:12px">
+      <div class="help" style="flex:1;margin:0">${cfg.setup_complete?`Configured for <b>${esc(cfg.data_kind||'mixed')}</b> · backing up to <b>${esc((cfg.backup_targets||['drives']).join(', '))}</b>.`:'Not run yet.'} Re-run to change your template, locations, targets, guidance, or checking level — nothing you've made is touched.</div>
+      <button class="btn ghost" onclick="startSetup(true)">Run setup again</button></div>
+  </div>`;
+
+  // ---- 2. Storage & Staging ----
+  h+=`<div class="panel"><h2>Storage &amp; staging</h2>
+    <label>Data folder</label>
+    <div class="setinfo" id="datadir">…</div>
+    <div class="help">Where Mnemosyne keeps its catalog and settings (catalog.json, config.json). Shown read-only — it's chosen with the <span class="mono">-data</span> flag at startup. <b>Everything the app knows lives here; include it in your own backups.</b></div>
+    <label style="margin-top:14px">Work folder for building backups (staging)</label>
+    <input id="st" class="full" value="${esc(cfg.staging_dir||'')}" placeholder="D:\\mnemo-staging or /mnt/pool/staging" onchange="stagingSpace()">${browseBtn('st')}
+    <div id="stginfo" class="memline dim">Checking free space…</div>
     <div class="help">A big, fast, empty scratch folder where each backup is assembled before it's written to tape, disc, or drive. The NAS itself is ideal. It can't be inside a folder you back up.</div>
-    <label>Where your encryption passphrases live (keystores)</label>
+    <label style="margin-top:14px">Where your encryption passphrases live (keystores)</label>
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
-    <div class="help">One folder per line, on at least two different physical devices. A keystore is a small file holding the passphrases that lock and unlock your encrypted backups; without them, encrypted backups can't be built or restored. Your secrets never touch the catalog.</div>
-    ${advOpen('Advanced backup options')}
-    <label class="row" style="gap:8px;align-items:center;margin-top:10px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Hide the file list on encrypted media</label>
-    <div class="help">Also encrypts the list of file names written to each tape or disc, so a lost one gives away nothing about what's on it. Encrypted backups only; your staging folder and catalog stay readable.</div>
-    <div class="help" style="margin:12px 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:var(--ink-2)">Most people don't set the knobs below one by one — just pick a preset on the <a href="#integrity" style="color:var(--act)">Verify panel</a> (Archival / Balanced / Fast), for everything or per archive. <b>Re-reading every write to confirm it's good is always on and can't be turned off</b> — writing a backup you never checked would defeat the point.</div>
-    <label style="margin-top:10px">How thoroughly to prove each backup before writing it</label>
-    <select id="bvf" class="full" onchange="document.getElementById('bvwarn').style.display=this.value==='none'?'block':'none'">
-      <option value="full" ${(cfg.build_verify!=='contents'&&cfg.build_verify!=='none'&&cfg.build_verify!=='fast')?'selected':''}>Full — re-read the bundle to prove it holds your files, and that it decrypts back</option>
-      <option value="contents" ${cfg.build_verify==='contents'?'selected':''}>Contents only — prove it holds your files; skip the decrypt check</option>
-      <option value="none" ${(cfg.build_verify==='none'||cfg.build_verify==='fast')?'selected':''}>None — skip both checks (faster, but unproven)</option>
-    </select>
-    <div class="help">Before a bundle goes to media, Mnemosyne can re-read it to make sure it truly contains your files (and can be unlocked again). Full is safest; None is fastest but takes it on faith.</div>
-    <div id="bvwarn" class="err" style="display:${(cfg.build_verify==='none'||cfg.build_verify==='fast')?'block':'none'};margin-top:8px">⚠ "None" skips checking that the bundle holds your files — a mistake could be sealed in with no warning. "Full" costs about one extra read and one decrypt per build — the price of never archiving a lie.</div>
-    <div class="row"><div style="flex:1"><label>Memory buffer (GB)</label><input id="bg" class="full" type="number" step="0.5" value="${cfg.buffer_gb||8}">
-      <div class="help">How much RAM to use as a fast work buffer. Bigger can be faster on capable machines.</div></div>
-      <div style="flex:1"><label>Chunk size (MB)</label><input id="bm" class="full" type="number" value="${cfg.block_mb||64}">
-      <div class="help">How much data to move at a time. The default suits most drives; leave it unless you're tuning.</div></div>
-      <div style="flex:1"><label>Repair data (%)</label><input id="pr" class="full" type="number" value="${cfg.par2_redundancy||10}">
-      <div class="help">Extra error-correction added to each backup so it can heal minor damage. 10% is a solid default.</div></div></div>
-    <label>Write speed limit (MB/s)</label>
+    <div class="help">One folder per line, on at least two different physical devices. A keystore holds the passphrases that lock and unlock your encrypted backups; without them, encrypted backups can't be built or restored. Your secrets never touch the catalog.${ks.ok?' <b style="color:var(--ok)">In sync ✓</b>':''}</div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="saveCfg()">Save storage settings</button></div>
+  </div>`;
+
+  // ---- 3. Integrity (unified) ----
+  h+=settingsIntegrity(ivdata);
+
+  // ---- 4. Protection defaults ----
+  h+=`<div class="panel"><h2>Protection defaults</h2>
+    <label>Default safety profile for new archives</label>
+    <select id="defprof" class="full">${profiles.map(pr=>`<option value="${esc(pr.id)}"${pr.id===curProf?' selected':''}>${esc(pr.name)} — ${esc(pr.description||'')}</option>`).join('')||`<option value="3-2-1-standard">3-2-1 Standard</option>`}</select>
+    <div class="help">The 3-2-1 goal each new archive starts with (how many copies, how many kinds of media, how many offsite). You can change it per archive later on the <a href="#protection" style="color:var(--act)">Profiles</a> page.</div>
+    <label style="margin-top:14px">How many copies count as "safe"</label>
+    <input id="rc" class="full" type="number" min="1" value="${cfg.required_copies||2}">
+    <div class="help">Your goal for how many <b>checked</b> copies each file should have — this is the "3" in 3-2-1. Anything with fewer shows as under-protected on the dashboard.</div>
+    <label style="margin-top:14px">File types to not worry about (drift ignore list)</label>
+    <input id="di" class="full" style="font:12px var(--mono)" value="${esc((cfg.drift_informational_extensions||[]).join(', '))}" placeholder=".xmp, .thm">
+    <div class="help">Changes to these file types (like <span class="mono dim">.xmp</span> edit notes) are still shown, but never counted as problems or alarms. Separate with commas.</div>
+    <label style="margin-top:14px">Re-check (scrub) cadence</label>
+    <div class="setinfo">Every <b>${cfg.verify_due_months||12}</b> months</div>
+    <div class="help">How long a checked copy stays "good" before the app reminds you to re-verify (scrub) the media. This is one number, set as <b>Verify due (months)</b> in the Integrity section above.</div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="saveCfg()">Save protection defaults</button></div>
+  </div>`;
+
+  // ---- 5. Performance ----
+  h+=`<div class="panel"><h2>Performance</h2>
+    <label>Memory (RAM) buffer (GB)</label>
+    <div id="meminfo" class="memline dim">Detecting this machine's memory…</div>
+    <input id="bg" class="full" type="number" step="0.5" min="0.5" value="${cfg.buffer_gb||8}" oninput="bufCheck()">
+    <div id="bgwarn" class="err" style="display:none;margin-top:6px"></div>
+    <div class="help">How much RAM to use as a fast work buffer while building. Bigger can be faster on capable machines — but keep it well under your free memory; the OS and your other apps need room too.</div>
+    <label style="margin-top:14px">Chunk size (MB)</label>
+    <input id="bm" class="full" type="number" value="${cfg.block_mb||64}">
+    <div class="help">How much data to move at a time. The default suits most drives; leave it unless you're tuning.</div>
+    <label style="margin-top:14px">Default write-speed limit (MB/s)</label>
     <input id="tm" class="full" type="number" min="0" step="1" value="${cfg.throttle_mbps||0}">
     <div class="help">0 means no limit. Set a cap to keep destination drives (like hot SSDs) from overheating. You can override it for a single write.</div>
-    <label>Advanced repair-tool options</label>
-    <input id="pe" class="full" style="font:12px var(--mono)" value="${esc(cfg.par2_extra_args||'')}" placeholder="-t0">
-    <div class="help">Extra command-line options passed to par2 (the repair-data tool). Leave blank unless you know you need them; the default uses all CPU threads.</div>
-    <div class="row"><div style="flex:1"><label>Re-check backups every (months)</label>
-      <input id="vd" class="full" type="number" min="1" value="${cfg.verify_due_months||12}">
-      <div class="help">How long a checked copy stays "good" before Mnemosyne reminds you to check it again. Media rots slowly; periodic checks catch it early.</div></div>
-      <div style="flex:1"><label>How many copies count as "safe"</label>
-      <input id="rc" class="full" type="number" min="1" value="${cfg.required_copies||2}">
-      <div class="help">Your goal for how many checked copies each file should have. Fewer than this shows as under-protected.</div></div></div>
-    <label style="margin-top:10px">Sealing a volume ("close the box and label it")</label>
-    <div class="help" style="margin-top:2px">Sealing marks a tape, disc, or drive as done and vault-ready, and blocks further writes. These two checks must pass first.</div>
-    <div class="row"><div style="flex:1"><label>Every copy checked within (days)</label>
-      <input id="fvd" class="full" type="number" min="1" value="${cfg.finalize_verify_days||30}">
-      <div class="help">Don't seal a volume unless all its copies were verified this recently — so nothing stale goes into the vault.</div></div>
-      <div style="flex:1"><label>Free space to leave (%)</label>
-      <input id="bpc" class="full" type="number" min="0" step="0.5" value="${cfg.buffer_pct!=null?cfg.buffer_pct:5}">
-      <div class="help">Completely full drives fail sooner, so keep a little headroom before calling a drive done.</div></div></div>
-    <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="sbf" type="checkbox" ${cfg.smart_block_finalize?'checked':''}> Don't seal a drive that reports failing health</label>
-    <div class="help">If the drive's own health check (SMART = a drive's self-reported health) warns of trouble, block sealing until you deal with it.</div>
+    <label class="row" style="gap:8px;align-items:center;margin-top:14px"><input id="ha" type="checkbox" ${cfg.hash_accel!==false?'checked':''}> Hash acceleration (BLAKE3)</label>
+    <div class="help">Speeds up internal integrity checks — scans, drift, and adopting drives — by computing a fast BLAKE3 hash alongside SHA-256 in one read pass. <b>SHA-256 stays the only hash ever written to media.</b> Leave on unless you're debugging.</div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="saveCfg()">Save performance settings</button></div>
+  </div>`;
+
+  // ---- 6. External Tools ----
+  h+=`<div class="panel"><h2>External tools</h2>
+    <div class="help">The free command-line programs Mnemosyne can use. The first three are <b>required</b> for the core backup/restore story; the rest are optional and each adds exactly one capability. If a tool is installed somewhere unusual, use <b>Browse…</b> to point the app straight at its binary.</div>
+    <div id="toolsbox"><div class="dim" style="margin-top:8px">Detecting tools…</div></div>
+  </div>`;
+
+  // ---- 7. Media & Labels ----
+  h+=`<div class="panel"><h2>Media &amp; labels</h2>
     <label>Label prefix for new media</label>
     <input id="bs" class="full" style="font:12px var(--mono)" value="${esc(cfg.barcode_scheme||'NSP')}" placeholder="NSP">
     <div class="help">New tapes, discs, and drives that have no barcode get an automatic label like <span class="mono dim">NSP-0001</span>, NSP-0002…</div>
-    <div class="row"><div style="flex:2"><label>Tape health tool (optional)</label>
-      <input id="tt" class="full" style="font:12px var(--mono)" value="${esc(cfg.tape_tool||'')}" placeholder="C:\\Program Files\\IBM\\ITDT\\itdt.exe">
-      <div class="help">Path to a program that reads tape-drive health. Leave blank to auto-detect one on your system.</div></div>
-      <div style="flex:1"><label>Tape drive (optional)</label>
-      <input id="td" class="full" style="font:12px var(--mono)" value="${esc(cfg.tape_device||'')}" placeholder="\\\\.\\Tape0  /dev/nst0">
-      <div class="help">Which tape drive to use. Leave blank for the system default.</div></div></div>
-    <div class="help">These read tape-drive health only (warnings, cleaning status, hours, bytes). Mnemosyne never moves or writes the tape while checking.</div>
-    <label>File types to not worry about</label>
-    <input id="di" class="full" style="font:12px var(--mono)" value="${esc((cfg.drift_informational_extensions||[]).join(', '))}" placeholder=".xmp, .thm">
-    <div class="help">Changes to these file types (like <span class="mono dim">.xmp</span> edit notes) are shown but never counted as problems. Separate with commas.</div>
-    <label style="margin-top:10px">How many old versions of a file to remember</label>
+    <label style="margin-top:14px">Default printed label size</label>
+    <select id="lsz" class="full">${LSZ.map(([v,t])=>`<option value="${v}"${v===curLsz?' selected':''}>${esc(t)}</option>`).join('')}</select>
+    <div class="help">The size a fresh volume label opens at when you print it. You can still switch sizes on the label page itself before printing.</div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="saveCfg()">Save media &amp; label settings</button></div>
+  </div>`;
+
+  // ---- 8. Advanced (disclosure in Guided/Standard) ----
+  h+=`<div class="panel"><h2>Advanced</h2>
+    ${advOpen('Advanced settings — network, privacy, sealing, escrow, discs')}
+    <label>Access token (for reaching the app from another machine)</label>
+    <input id="atok" class="full" style="font:12px var(--mono)" value="${esc(cfg.auth_token||'')}" placeholder="a long random secret">
+    <div class="help">Only needed when the app is reached from off-box. It binds to localhost by default; the listen address is set with the <span class="mono">-listen</span> flag at startup, and a non-localhost bind refuses to run without a token.</div>
+    <label class="row" style="gap:8px;align-items:center;margin-top:14px"><input id="upd" type="checkbox" ${cfg.update_check?'checked':''}> Remind me to check for updates</label>
+    <div class="help">Shows a small "a newer release may be available" reminder with a link to the releases page. <b>The app never downloads anything or contacts the network on its own.</b></div>
+    <label class="row" style="gap:8px;align-items:center;margin-top:14px"><input id="pm" type="checkbox" ${cfg.private_media?'checked':''}> Paranoid mode — hide the file list on encrypted media</label>
+    <div class="help">Also encrypts the list of file names written to each tape or disc, so a lost one gives away nothing about what's on it. Encrypted backups only; your staging folder and catalog stay readable.</div>
+    <label style="margin-top:14px">Advanced repair-tool options (par2)</label>
+    <input id="pe" class="full" style="font:12px var(--mono)" value="${esc(cfg.par2_extra_args||'')}" placeholder="-t0">
+    <div class="help">Extra command-line options passed to par2 (the repair-data tool). Leave blank unless you know you need them; the default uses all CPU threads.</div>
+    <label style="margin-top:14px">How many old versions of a file to remember</label>
     <input id="vr" class="full" type="number" min="0" step="1" value="${cfg.versions_retained||0}" placeholder="0 = unlimited">
     <div class="help">0 means unlimited (the default). The old data itself is never deleted from your media — this only limits the catalog's list of where past versions live.</div>
-    <label style="margin-top:10px">Put the recovery tools on the media itself</label>
+    <label style="margin-top:14px">Tape drive device (optional)</label>
+    <input id="td" class="full" style="font:12px var(--mono)" value="${esc(cfg.tape_device||'')}" placeholder="\\\\.\\Tape0  /dev/nst0">
+    <div class="help">Which tape drive to use. Leave blank for the system default. (Point at the tape-health <i>tool</i> up in External Tools; this is the device it talks to.)</div>
+    <label style="margin-top:14px">Put the recovery tools on the media itself (escrow)</label>
     <select id="eom" class="full">
       <option value="binaries-only" ${(!cfg.escrow_on_media||cfg.escrow_on_media==='binaries-only')?'selected':''}>Ready-to-run programs + checksums (smallest — the practical choice)</option>
       <option value="full" ${cfg.escrow_on_media==='full'?'selected':''}>Everything — programs plus their full source code (for recompiling or auditing)</option>
       <option value="off" ${cfg.escrow_on_media==='off'?'selected':''}>Off — nothing extra on the media (still included in the Recovery Kit)</option>
     </select>
-    <div class="help">Writes the software needed to read your backups onto each sealed tape or disc (this is called "escrow"), so the media can rebuild itself years from now even without this app. Skipped automatically when a disc is too full.</div>
+    <div class="help">Writes the software needed to read your backups onto each sealed tape or disc ("escrow"), so the media can rebuild itself years from now even without this app. Skipped automatically when a disc is too full.</div>
     <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="eir" type="checkbox" ${cfg.escrow_include_readers?'checked':''}> Also include source code for file-format readers</label>
     <div class="help">Adds the source for tools that open your file types (like camera RAW readers). "Everything" mode only; adds size.</div>
     <div id="escrowStat" class="dim" style="font-size:11.5px;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:6px">Loading escrow cache status…</div>
-    ${advClose()}
-    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>
-  <div class="panel"><h2>Discs — burning and repair</h2>
-    <div class="help">${wants('optical')?'You chose Blu-ray/DVD as a backup target in setup — configure your burner below.':'You didn’t pick discs in setup, so this is collapsed. Expand it only if you write to Blu-ray/DVD; tape and hard-drive users can ignore it.'}</div>
-    <details class="adv"${wants('optical')?' open':''}><summary>Disc burning &amp; repair settings</summary>
-    <label>Disc-burning command</label>
-    <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject'>
-    <div class="help">The command Mnemosyne runs to burn a disc. <span class="mono dim">{SRC}</span> is the folder to burn and <span class="mono dim">{LABEL}</span> is the disc name. <b>xorriso</b> is the recommended free burner on Linux/macOS (<span class="mono">apt/brew install xorriso</span>). <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="document.getElementById('bc').value='xorriso -outdev /dev/sr0 -volid \\'{LABEL}\\' -blank as_needed -map \\'{SRC}\\' / -commit -eject'">Use xorriso default</button> <span class="mono dim">growisofs</span> and <span class="mono dim">ImgBurn</span> (Windows) also work.</div>
-    <label>Folder to re-read a burned disc from (optional)</label>
-    <input id="bv" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_verify_mount||'')}" placeholder="E:\\ or /mnt/optical">
-    <div class="help">After burning, Mnemosyne re-reads the disc here and confirms it matches what it wrote. Leave blank to skip.</div>
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
-      <label>Extra scratch-repair for discs (optional)</label>
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+      <label>Sealing a volume ("close the box and label it")</label>
+      <div class="help" style="margin-top:2px">Sealing marks a tape, disc, or drive as done and vault-ready, and blocks further writes. These checks must pass first.</div>
+      <div class="row"><div style="flex:1"><label>Every copy checked within (days)</label>
+        <input id="fvd" class="full" type="number" min="1" value="${cfg.finalize_verify_days||30}">
+        <div class="help">Don't seal a volume unless all its copies were verified this recently — so nothing stale goes into the vault.</div></div>
+        <div style="flex:1"><label>Free space to leave (%)</label>
+        <input id="bpc" class="full" type="number" min="0" step="0.5" value="${cfg.buffer_pct!=null?cfg.buffer_pct:5}">
+        <div class="help">Completely full drives fail sooner, so keep a little headroom before calling a drive done.</div></div></div>
+      <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="sbf" type="checkbox" ${cfg.smart_block_finalize?'checked':''}> Don't seal a drive that reports failing health</label>
+      <div class="help">If the drive's own health check (SMART) warns of trouble, block sealing until you deal with it.</div>
+    </div>
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+      <label>Discs — burning &amp; repair</label>
+      <div class="help" style="margin-top:2px">${wants('optical')?'You chose Blu-ray/DVD as a backup target — configure your burner here.':'You didn\'t pick discs in setup; fill this in only if you write to Blu-ray/DVD. Tape and drive users can ignore it.'}</div>
+      <label style="margin-top:8px">Disc-burning command</label>
+      <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject'>
+      <div class="help">The command Mnemosyne runs to burn a disc. <span class="mono dim">{SRC}</span> is the folder to burn and <span class="mono dim">{LABEL}</span> is the disc name. <b>xorriso</b> is the recommended free burner (point at it in External Tools). <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="document.getElementById('bc').value='xorriso -outdev /dev/sr0 -volid \\'{LABEL}\\' -blank as_needed -map \\'{SRC}\\' / -commit -eject'">Use xorriso default</button></div>
+      <label style="margin-top:8px">Folder to re-read a burned disc from (optional)</label>
+      <input id="bv" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_verify_mount||'')}" placeholder="E:\\ or /mnt/optical">
+      <div class="help">After burning, Mnemosyne re-reads the disc here and confirms it matches what it wrote. Leave blank to skip.</div>
+      <label style="margin-top:8px">Extra scratch-repair for discs (optional)</label>
       <select id="becc" class="full">
         <option value="off" ${(!cfg.burn_ecc||cfg.burn_ecc==='off')?'selected':''}>Off — no extra repair file (your backup's built-in repair data still protects it)</option>
         <option value="rs02" ${cfg.burn_ecc==='rs02'?'selected':''}>On — RS02 (widely compatible)</option>
         <option value="rs03" ${cfg.burn_ecc==='rs03'?'selected':''}>On — RS03 (newer, faster to create)</option>
       </select>
-      <div class="help">After a disc passes its check, add a second repair layer (made by the free tool <span class="mono dim">dvdisaster</span>) that can heal deep scratches wiping out whole regions of a disc — something the per-file repair data can't. Purely a bonus: restoring never needs it, and each disc's restore notes say so. If dvdisaster isn't installed, this step is skipped with a hint.</div>
-      <div class="row" style="gap:8px;margin-top:8px">
-        <div style="flex:1"><label>Disc drive for the repair step</label>
-        <input id="beccd" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_ecc_device||'')}" placeholder="/dev/sr0  or  H:">
-        <div class="help">Which drive to read the finished disc from. Leave blank to reuse the burn command's drive.</div></div></div>
+      <div class="help">After a disc passes its check, add a second repair layer (made by the free tool <span class="mono dim">dvdisaster</span>) that can heal deep scratches wiping out whole regions of a disc. Purely a bonus: restoring never needs it.</div>
+      <label style="margin-top:8px">Disc drive for the repair step</label>
+      <input id="beccd" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_ecc_device||'')}" placeholder="/dev/sr0  or  H:">
+      <div class="help">Which drive to read the finished disc from. Leave blank to reuse the burn command's drive.</div>
       <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="becccarry" type="checkbox" ${cfg.burn_ecc_carry?'checked':''}> Store each disc's repair file on the next disc</label>
       <div class="help">A disc's repair file can't live on the disc it protects (it's made after that disc is finished), so carry it to the next disc in the set. Unchecked keeps it in the work folder.</div>
       <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="oecc" type="checkbox" ${cfg.optical_ecc?'checked':''}> Mention the repair layer in each disc's restore notes</label>
       <div class="help">For people who add the repair layer by hand — records that it exists so a future restorer knows to use it.</div>
     </div>
-    </details>
-    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>`;
+    ${advClose()}
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save advanced settings</button></div>
+  </div>`;
+
   $('#view').innerHTML=h;
-  escrowStatus();
+  ivSync();loadSysinfo();stagingSpace();loadTools();escrowStatus();
+}
+
+// Just the experience-mode buttons + note (no panel wrapper) — for the General section.
+function modeControl(){
+  const opt=(m,label,desc)=>`<button type="button" class="${_uiMode===m?'on':''}" onclick="setUIMode('${m}')" title="${esc(desc)}">${label}</button>`;
+  return `<div class="modepick" role="group" aria-label="How much do you want to see?">
+      ${opt('guided','Guided','Core journey only; advanced tools tucked behind a reveal')}
+      ${opt('standard','Standard','Full navigation; advanced settings behind an “Advanced” disclosure')}
+      ${opt('complete','Everything','Everything visible and dense; no hand-holding')}
+    </div>
+    <div class="help">Changes only what's shown and how much is explained — <b>never your data, and never how the app works</b>. Switch anytime; hidden tools still open from a link or search.</div>`;
+}
+
+/* ---- unified Integrity panel: three presets + a live Custom column, per-knob
+   preset-match notes, and a "return to preset" button each. Owns the four integrity
+   knobs (build-verify, par2, routine level, due months) via PUT /api/integrity. ---- */
+function ivPresetOf(bv,par2,rl,due){
+  for(const n of ['ARCHIVAL','BALANCED','FAST']){const p=_ivPresets[n];if(!p)continue;
+    if(p.build_verify===bv&&String(p.par2_redundancy)===String(par2)&&p.routine_verify_level===rl&&String(p.verify_due_months)===String(due))return n;}
+  return 'Custom';
+}
+function ivKnobMatches(key,val){const out=[];for(const n of ['ARCHIVAL','BALANCED','FAST']){const p=_ivPresets[n];if(p&&String(p[key])===String(val))out.push(n);}return out;}
+function settingsIntegrity(data){
+  const eff=data.effective||data.global||{};
+  const presets=['ARCHIVAL','BALANCED','FAST'];
+  const cell=(k,fmt)=>presets.map(n=>{const p=_ivPresets[n]||{};const v=k==='readback'?'always':fmt(p[k]);const amber=k==='build_verify'&&p.build_verify==='none';return `<td data-col="${n}" style="${amber?'color:var(--warn)':''}">${esc(String(v))}</td>`;}).join('');
+  const row=(label,k,fmt,cid)=>`<tr><td>${label}</td>${cell(k,fmt)}<td class="custom" data-col="CUSTOM" id="${cid}"></td></tr>`;
+  let h=`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
+    <h2 style="margin:0">Integrity — how hard each copy is proven</h2>
+    <span class="ivbadge" id="iv_hdr_badge"></span></div>
+    <div class="help">Pick a preset column, or edit any knob below to build a <b>Custom</b> mix — the Custom column and the badge update live. Read-back after every write is always on and can't be turned off.</div>
+    <div id="ivgrid"><table class="ivgrid"><tr><th>Setting</th><th data-col="ARCHIVAL">Archival</th><th data-col="BALANCED">Balanced</th><th data-col="FAST">Fast</th><th class="custom" data-col="CUSTOM">Custom</th></tr>
+      ${row('Prove each build','build_verify',v=>IV_BV[v]||v,'ivc_build_verify')}
+      ${row('Repair data (par2)','par2_redundancy',v=>v+'%','ivc_par2_redundancy')}
+      ${row('Routine re-check','routine_verify_level',v=>v==='B'?'B (full)':'C (sample)','ivc_routine_verify_level')}
+      ${row('Re-verify due','verify_due_months',v=>v+' months','ivc_verify_due_months')}
+      <tr><td>Read-back after write</td><td data-col="ARCHIVAL">always</td><td data-col="BALANCED">always</td><td data-col="FAST">always</td><td class="custom" data-col="CUSTOM">always</td></tr>
+    </table></div>
+    <div class="row" style="margin-top:12px;gap:8px">${presets.map(n=>`<button class="btn ghost" onclick="ivApplyPreset('${n}')">Return to ${n}</button>`).join('')}</div>
+    <div id="iv_custom_note" class="advnote" style="display:none;margin-top:12px">You've changed a value away from a named preset — these are <b>Custom</b> settings. Use a "Return to …" button to snap back to a preset.</div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--line)">
+      <div class="help" style="margin-top:0">Edit any knob, then Apply. Each shows which preset its current value matches.</div>
+      <div class="row">
+        <div style="flex:2"><div class="ivknob"><label>Prove each build</label>
+          <select id="iv_bv" class="full" onchange="ivSync()">
+            <option value="full"${eff.build_verify==='full'?' selected':''}>Full — contents + decrypt round-trip</option>
+            <option value="contents"${eff.build_verify==='contents'?' selected':''}>Contents only</option>
+            <option value="none"${eff.build_verify==='none'?' selected':''}>None — unproven (amber)</option></select>
+          <span class="ivmatch" id="iv_note_bv"></span></div></div>
+        <div style="flex:1"><div class="ivknob"><label>Repair data (%)</label>
+          <input id="iv_par2" class="full" type="number" min="0" value="${eff.par2_redundancy}" oninput="ivSync()">
+          <span class="ivmatch" id="iv_note_par2"></span></div></div></div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:2"><div class="ivknob"><label>Routine re-check level</label>
+          <select id="iv_rl" class="full" onchange="ivSync()">
+            <option value="B"${eff.routine_verify_level==='B'?' selected':''}>B — full re-hash</option>
+            <option value="C"${eff.routine_verify_level==='C'?' selected':''}>C — sample the ends</option></select>
+          <span class="ivmatch" id="iv_note_rl"></span></div></div>
+        <div style="flex:1"><div class="ivknob"><label>Re-verify due (months)</label>
+          <input id="iv_due" class="full" type="number" min="1" value="${eff.verify_due_months}" oninput="ivSync()">
+          <span class="ivmatch" id="iv_note_due"></span></div></div></div>
+      <div class="row" style="margin-top:12px"><button class="btn" onclick="ivApplyKnobs()">Apply integrity</button>
+        <span class="dim" style="font-size:11.5px;align-self:center">Applies globally. Override per archive on the Profiles page.</span></div>
+    </div>
+  </div>`;
+  return h;
+}
+function ivSync(){
+  const g=id=>{const e=$('#'+id);return e?e.value:null;};
+  const bv=g('iv_bv');if(bv==null)return; // panel not on screen
+  const par2=g('iv_par2'),rl=g('iv_rl'),due=g('iv_due');
+  const set=(id,v)=>{const e=$('#'+id);if(e)e.textContent=v;};
+  set('ivc_build_verify',IV_BV[bv]||bv);
+  set('ivc_par2_redundancy',(par2||0)+'%');
+  set('ivc_routine_verify_level',rl==='B'?'B (full)':'C (sample)');
+  set('ivc_verify_due_months',(due||0)+' months');
+  const name=ivPresetOf(bv,par2,rl,due);
+  const b=$('#iv_hdr_badge');if(b){b.textContent=name;const col=ivColor(name);b.style.borderColor=col;b.style.color=col;}
+  document.querySelectorAll('#ivgrid [data-col]').forEach(c=>c.classList.toggle('ivactive',c.dataset.col===name.toUpperCase()));
+  const cn=$('#iv_custom_note');if(cn)cn.style.display=name==='Custom'?'block':'none';
+  const note=(id,key,val)=>{const e=$('#'+id);if(!e)return;const m=ivKnobMatches(key,val);
+    if(m.length){e.textContent='matches '+m.join(' / ');e.classList.remove('custom');}else{e.textContent='custom value';e.classList.add('custom');}};
+  note('iv_note_bv','build_verify',bv);note('iv_note_par2','par2_redundancy',par2);
+  note('iv_note_rl','routine_verify_level',rl);note('iv_note_due','verify_due_months',due);
+}
+async function ivApplyKnobs(){
+  const bv=$('#iv_bv').value;
+  if(!ivConfirmLower(bv,(_ivEff||{}).build_verify,''))return;
+  try{await api('PUT','/api/integrity',{build_verify:bv,par2_redundancy:parseInt($('#iv_par2').value)||0,routine_verify_level:$('#iv_rl').value,verify_due_months:parseInt($('#iv_due').value)||12});
+    toast('Integrity saved');vSettings();}catch(e){toast(e.message,1)}
+}
+async function ivApplyPreset(name){
+  const tgt=_ivPresets[name]||{};
+  if(!ivConfirmLower(tgt.build_verify,(_ivEff||{}).build_verify,''))return;
+  try{await api('PUT','/api/integrity',{preset:name});toast('Integrity → '+name);vSettings();}catch(e){toast(e.message,1)}
+}
+
+/* ---- External Tools panel: live detection, browse-to-binary, download links ---- */
+async function loadTools(){
+  const box=$('#toolsbox');if(!box)return;
+  let tools;try{tools=await api('GET','/api/tools');}catch(e){box.innerHTML='<div class="err">Tools unavailable: '+esc(e.message)+'</div>';return;}
+  const row=t=>{
+    const stat=(t.os_note&&!t.detected)?`<span class="toolstat na">${esc(t.os_note)}</span>`
+      :(t.detected?`<span class="toolstat found">found</span>`:`<span class="toolstat missing">not installed</span>`);
+    const path=t.detected?`<div class="tpath">${esc(t.path||'')}${t.version?' · '+esc(t.version):''}</div>`
+      :(t.configured?`<div class="tpath">pinned: ${esc(t.configured)} — not found at that path</div>`:'');
+    const dl=t.download?`<a class="btn ghost" style="font-size:11px;padding:3px 8px" href="${esc(t.download)}" target="_blank" rel="noopener">Download ↗</a>`:'';
+    return `<div class="tool"><div class="tinfo"><div class="tname">${esc(t.name)}</div><div class="tadds">${esc(t.adds)}</div>${path}</div>
+      <div class="tact">${stat}<div class="row" style="justify-content:flex-end">${dl}<button class="btn ghost" style="font-size:11px;padding:3px 8px" onclick="toolBrowse('${esc(t.save_key)}','${esc(t.name)}')">Browse…</button></div></div></div>`;
+  };
+  const req=tools.filter(t=>t.required),opt=tools.filter(t=>!t.required);
+  box.innerHTML=`<div style="font:600 10px var(--mono);letter-spacing:.12em;color:var(--ink-3);margin:6px 0 2px">NEEDED FOR CORE FEATURES</div>${req.map(row).join('')}
+    <div style="font:600 10px var(--mono);letter-spacing:.12em;color:var(--ink-3);margin:14px 0 2px">OPTIONAL — EACH ADDS ONE CAPABILITY</div>${opt.map(row).join('')}`;
+}
+function toolBrowse(saveKey,name){pickBinary('',p=>saveToolPath(saveKey,p,name));}
+async function saveToolPath(saveKey,path,name){
+  let payload;
+  if(saveKey.indexOf('tools:')===0){payload={tools:{}};payload.tools[saveKey.slice(6)]=path;}
+  else{payload={};payload[saveKey]=path;}
+  try{await api('PUT','/api/config',payload);toast(name+' → '+path);loadTools();}catch(e){toast(e.message,1)}
+}
+
+/* ---- binary picker: like the folder picker, but lists files too, so you can
+   select an executable (the Audacity→FFmpeg pattern). ---- */
+let _pickfCb=null;
+function pickBinary(start,cb){_pickfCb=cb;let d=$('#pickf');if(!d){d=document.createElement('dialog');d.id='pickf';document.body.append(d);}pickfRender(start||'');d.showModal();}
+async function pickfRender(path){let data;
+  try{data=await api('GET','/api/browse?files=1'+(path?('&path='+encodeURIComponent(path)):''))}catch(e){toast(e.message,1);return;}
+  window._pf={path:data.path||'',dirs:data.dirs||[],files:data.files||[],parent:data.roots?'':(data.parent||'')};
+  let h=`<h1>Choose a program (binary)</h1>
+    <div class="row" style="gap:6px;margin-bottom:8px">
+      ${data.roots?'<span class="dim mono" style="font-size:11px">drives &amp; common roots</span>':`<button class="btn ghost" style="padding:6px 10px" onclick="pickfRender(window._pf.parent)">⬆ up</button>`}
+      <input id="pickfpath" class="full" style="flex:1;font:12px var(--mono)" value="${esc(window._pf.path)}" placeholder="type or navigate to the program's file"></div>
+    <div style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:6px">`;
+  const D=window._pf.dirs,F=window._pf.files;
+  if(data.roots)for(let i=0;i<D.length;i++)h+=`<div class="row" style="padding:6px 10px;border-bottom:1px solid var(--line-2);cursor:pointer;gap:8px" onclick="pickfRender(window._pf.dirs[${i}].path)"><span style="flex:1">📁 ${esc(D[i].name)}</span></div>`;
+  else{
+    if(!D.length&&!F.length)h+='<div class="dim" style="padding:12px">Empty folder.</div>';
+    for(let i=0;i<D.length;i++)h+=`<div class="row" style="padding:6px 10px;border-bottom:1px solid var(--line-2);cursor:pointer;gap:8px" onclick="pickfRender(window._pf.dirs[${i}].path)"><span style="flex:1">📁 ${esc(D[i].name)}</span></div>`;
+    for(let i=0;i<F.length;i++)h+=`<div class="row" style="padding:6px 10px;border-bottom:1px solid var(--line-2);cursor:pointer;gap:8px" onclick="pickfUse(window._pf.files[${i}].path)"><span style="flex:1">▸ ${esc(F[i].name)}</span></div>`;
+  }
+  h+=`</div><div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn ghost" onclick="document.querySelector('#pickf').close()">Cancel</button>
+      <button class="btn" onclick="pickfUse((($('#pickfpath')||{}).value||'').trim())">Use this path</button></div>`;
+  $('#pickf').innerHTML=h;
+}
+function pickfUse(p){const d=$('#pickf');if(d)d.close();if(_pickfCb&&p)_pickfCb(p);}
+
+/* ---- Performance: real machine memory + staging free space ---- */
+var _memTotalGB=0;
+async function loadSysinfo(){
+  try{const s=await api('GET','/api/sysinfo');
+    const dd=$('#datadir');if(dd)dd.textContent=s.data_dir||'(unknown)';
+    const m=s.memory||{};const tot=(m.total_bytes||0)/1e9,av=(m.available_bytes||0)/1e9;_memTotalGB=tot;
+    const el=$('#meminfo');if(el){
+      if(tot>0){const cap=Math.max(1,Math.round(tot*0.25));
+        el.innerHTML=`Your machine: <b>${tot.toFixed(0)} GB</b> total${av>0?`, <b>${av.toFixed(0)} GB</b> free right now`:''} · ${s.cpus} CPU threads. Suggested cap: <b>${cap} GB</b> (25% of total).
+          ${av>0?`<div class="membar" title="free vs total"><i style="width:${Math.min(100,av/tot*100).toFixed(0)}%"></i></div>`:''}`;
+      }else{el.textContent="Couldn't read this machine's memory — set the buffer conservatively.";}
+    }
+    bufCheck();
+  }catch(e){}
+}
+function bufCheck(){
+  const el=$('#bgwarn');if(!el)return;const v=parseFloat(($('#bg')||{}).value)||0;
+  if(_memTotalGB>0&&v>_memTotalGB*0.25){el.style.display='block';
+    el.innerHTML=`⚠ ${v} GB is over 25% of your ${_memTotalGB.toFixed(0)} GB RAM — leave headroom for the OS and other apps. Consider <b>${Math.round(_memTotalGB*0.25)} GB</b> or less.`;}
+  else el.style.display='none';
+}
+async function stagingSpace(){
+  const el=$('#stginfo');if(!el)return;const path=(($('#st')||{}).value||'').trim();
+  if(!path){el.textContent='No staging folder set yet — pick one above.';return;}
+  try{const r=await api('GET','/api/pathinfo?path='+encodeURIComponent(path));
+    if(r.exists)el.innerHTML=`Free space here: <b>${GB(r.free_bytes)} GB</b>.`;
+    else el.innerHTML=`<span style="color:var(--warn)">This folder doesn't exist yet — it will be created on first use.</span>`;
+  }catch(e){el.textContent='';}
 }
 async function escrowStatus(){
   const el=$('#escrowStat');if(!el)return;
@@ -2551,26 +2792,31 @@ async function escrowFetch(){
   try{await api('POST','/api/escrow/fetch',{});toast('Escrow cache fetch started — see Jobs',1);loc('jobs');}
   catch(e){toast(e.message,1)}}
 async function saveCfg(){
-  try{await api('PUT','/api/config',{staging_dir:$('#st').value.trim(),
-    keystore_paths:$('#ks').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    private_media:$('#pm').checked,
-    build_verify:$('#bvf').value,
-    buffer_gb:parseFloat($('#bg').value)||8,block_mb:parseInt($('#bm').value)||64,
-    throttle_mbps:parseFloat($('#tm').value)||0,
-    par2_redundancy:parseInt($('#pr').value)||10,par2_extra_args:$('#pe').value.trim(),
-    verify_due_months:parseInt($('#vd').value)||12,required_copies:parseInt($('#rc').value)||2,
-    finalize_verify_days:parseInt($('#fvd').value)||30,
-    buffer_pct:(isNaN(parseFloat($('#bpc').value))?5:parseFloat($('#bpc').value)),
-    smart_block_finalize:$('#sbf').checked,
-    barcode_scheme:$('#bs').value.trim()||'NSP',
-    tape_tool:$('#tt').value.trim(),tape_device:$('#td').value.trim(),
-    drift_informational_extensions:$('#di').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean),
-    versions_retained:parseInt($('#vr').value)||0,
-    escrow_on_media:$('#eom').value,escrow_include_readers:$('#eir').checked,
-    burn_command:$('#bc').value.trim(),burn_verify_mount:$('#bv').value.trim(),
-    optical_ecc:$('#oecc').checked,burn_ecc:$('#becc').value,
-    burn_ecc_device:$('#beccd').value.trim(),burn_ecc_carry:$('#becccarry').checked});
-    toast('Settings saved');lamp();vSettings()}catch(e){toast(e.message,1)}}
+  // One defensive save reading every Settings input present in the DOM (details
+  // panels keep their fields in the DOM even when collapsed). The four integrity
+  // knobs are NOT here — the unified Integrity panel owns them via /api/integrity.
+  const gv=id=>{const e=$('#'+id);return e?e.value:undefined;};
+  const gt=id=>{const v=gv(id);return v==null?undefined:v.trim();};
+  const gc=id=>{const e=$('#'+id);return e?!!e.checked:undefined;};
+  const num=(id,dflt)=>{const v=gv(id);if(v==null)return undefined;const n=parseFloat(v);return isNaN(n)?dflt:n;};
+  const int=(id,dflt)=>{const v=gv(id);if(v==null)return undefined;const n=parseInt(v);return isNaN(n)?dflt:n;};
+  const body={};const put=(k,v)=>{if(v!==undefined)body[k]=v;};
+  put('staging_dir',gt('st'));
+  const ksv=gv('ks');if(ksv!=null)body.keystore_paths=ksv.split('\n').map(s=>s.trim()).filter(Boolean);
+  put('default_profile',gt('defprof'));
+  put('required_copies',int('rc',2));
+  const div=gv('di');if(div!=null)body.drift_informational_extensions=div.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
+  put('buffer_gb',num('bg',8));put('block_mb',int('bm',64));put('throttle_mbps',num('tm',0));
+  put('hash_accel',gc('ha'));
+  put('barcode_scheme',gt('bs')||'NSP');put('label_size',gt('lsz'));
+  put('auth_token',gt('atok'));put('update_check',gc('upd'));put('private_media',gc('pm'));
+  put('par2_extra_args',gt('pe'));put('versions_retained',int('vr',0));put('tape_device',gt('td'));
+  put('escrow_on_media',gv('eom'));put('escrow_include_readers',gc('eir'));
+  put('finalize_verify_days',int('fvd',30));put('buffer_pct',num('bpc',5));put('smart_block_finalize',gc('sbf'));
+  put('burn_command',gt('bc'));put('burn_verify_mount',gt('bv'));put('burn_ecc',gv('becc'));
+  put('burn_ecc_device',gt('beccd'));put('burn_ecc_carry',gc('becccarry'));put('optical_ecc',gc('oecc'));
+  try{await api('PUT','/api/config',body);toast('Settings saved');lamp();vSettings();}catch(e){toast(e.message,1)}
+}
 
 /* ---- folder picker: a read-only server-side browser on every path field ----
    A separate #pick dialog stacks over the current #dlg so any path input can

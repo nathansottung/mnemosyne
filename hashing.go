@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"sync/atomic"
 
 	"github.com/zeebo/blake3"
 )
@@ -27,10 +28,22 @@ import (
 // original 8 MiB copy buffer).
 const hashBufSize = 8 << 20
 
-// hashFileBoth reads a file ONCE and returns both its SHA-256 (durable, on-media)
-// and its BLAKE3 (internal, fast-compare) as lowercase hex. This is the single
-// read pass the hot loops use so BLAKE3 costs only marginal CPU on top of the
-// SHA-256 we must compute anyway.
+// hashAccelOn gates whether hashFileBoth also computes the catalog-internal BLAKE3
+// fast-compare hash. Default ON; the runtime sets it from Config.HashAccel. Off,
+// scans/drift/dock fall back to SHA-256-only comparisons — slower, never less
+// durable (SHA-256 is the only on-media hash regardless). See setHashAccel.
+var hashAccelOn atomic.Bool
+
+func init() { hashAccelOn.Store(true) }
+
+// setHashAccel applies the Config.HashAccel preference process-wide (startup and
+// after every config save).
+func setHashAccel(on bool) { hashAccelOn.Store(on) }
+
+// hashFileBoth reads a file ONCE and returns its SHA-256 (durable, on-media) and,
+// when acceleration is on, its BLAKE3 (internal, fast-compare) as lowercase hex —
+// the single read pass the hot loops use so BLAKE3 costs only marginal CPU on top
+// of the SHA-256 we must compute anyway. With acceleration off, blake3hex is "".
 func hashFileBoth(path string) (sha256hex, blake3hex string, err error) {
 	// SOURCE READ-ONLY: os.Open is O_RDONLY — read, hash, close. Never a write.
 	f, err := os.Open(path)
@@ -39,6 +52,12 @@ func hashFileBoth(path string) (sha256hex, blake3hex string, err error) {
 	}
 	defer f.Close()
 	sh := sha256.New()
+	if !hashAccelOn.Load() {
+		if _, err := io.CopyBuffer(sh, f, make([]byte, hashBufSize)); err != nil {
+			return "", "", err
+		}
+		return hex.EncodeToString(sh.Sum(nil)), "", nil
+	}
 	bh := blake3.New()
 	if _, err := io.CopyBuffer(io.MultiWriter(sh, bh), f, make([]byte, hashBufSize)); err != nil {
 		return "", "", err
