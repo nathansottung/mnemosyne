@@ -452,6 +452,27 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, map[string]any{"config": cfg, "keystore_status": app.KeystoreStatus()})
 	})
+	// First-run setup interview (see setup.go). GET returns the derived state for the
+	// current config (summary + scoped checklist facts); POST applies answers coherently.
+	mux.HandleFunc("GET /api/setup", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, app.SetupState())
+	})
+	mux.HandleFunc("POST /api/setup", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		res, err := app.ApplySetup(SetupAnswers{
+			Skipped:         bl(b, "skipped"),
+			DataKind:        s(b, "data_kind"),
+			PrimaryLocation: s(b, "primary_location"),
+			BackupTargets:   strList(b, "backup_targets"),
+			UIMode:          s(b, "ui_mode"),
+			IntegrityPreset: s(b, "integrity_preset"),
+		})
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, res)
+	})
 	// Integrity presets — unify the assurance knobs into ARCHIVAL/BALANCED/FAST,
 	// globally or per archive. Individual knobs stay editable (→ "Custom").
 	mux.HandleFunc("GET /api/integrity", func(w http.ResponseWriter, r *http.Request) {

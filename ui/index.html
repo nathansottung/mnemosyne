@@ -209,6 +209,42 @@ nav a:focus-visible{outline-color:#b9c8bf;outline-offset:-2px}
 .chk.done .mk{background:var(--ok);border-color:var(--ok);color:#fff}
 .chk .t{font:600 14px var(--sans)} .chk.done .t{color:var(--ink-3)}
 .chk .d{font-size:12.5px;color:var(--ink-3);margin-top:1px}
+.chk .req{font-size:11.5px;color:var(--ink-2);margin-top:5px;padding:6px 9px;background:rgba(46,94,78,.06);border:1px solid var(--line-2);border-radius:5px}
+.chk .req a{color:var(--act)}
+/* ---- first-run setup interview ---- */
+.setup{max-width:660px}
+.setup .step{font:600 11px var(--mono);letter-spacing:.16em;color:var(--ink-3);text-transform:uppercase}
+.setup .prog{display:flex;gap:6px;margin:8px 0 20px}
+.setup .prog i{flex:1;height:4px;border-radius:2px;background:var(--line)}
+.setup .prog i.on{background:var(--act)}
+.setup h1{margin:0 0 3px}
+.setup .q{font-size:13px;color:var(--ink-2);margin-bottom:16px}
+.opts{display:flex;flex-direction:column;gap:9px}
+.opt{display:flex;gap:12px;align-items:flex-start;text-align:left;width:100%;background:var(--panel);
+  border:1.5px solid var(--line);border-radius:8px;padding:13px 15px;cursor:pointer;transition:border-color .1s}
+.opt:hover{border-color:var(--ink-3)}
+.opt.on{border-color:var(--act);background:rgba(46,94,78,.05)}
+.opt .box{width:19px;height:19px;border-radius:50%;border:1.5px solid var(--line-2);flex-shrink:0;margin-top:1px;
+  display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff}
+.opt.multi .box{border-radius:5px}
+.opt.on .box{background:var(--act);border-color:var(--act)}
+.opt .ot{font:600 14px var(--sans);color:var(--ink)}
+.opt .od{font-size:12px;color:var(--ink-3);margin-top:2px}
+.opt .oneed{font-size:11.5px;color:var(--act);margin-top:6px}
+.opt .oneed a{color:var(--act)}
+.setup .acts{display:flex;align-items:center;gap:10px;margin-top:22px}
+.setup .acts .sp{flex:1}
+.setup .skip{background:none;border:none;color:var(--ink-3);font-size:12.5px;text-decoration:underline;padding:6px}
+.setup .skip:hover{color:var(--ink)}
+/* summary screen */
+.sumline{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--line-2)}
+.sumline:last-child{border-bottom:none}
+.sumline .sk{flex:0 0 168px;font:600 12.5px var(--sans);color:var(--ink-2)}
+.sumline .sv{flex:1}
+.sumline .sv b{color:var(--ink)}
+.sumline .sw{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.sumline .sa{color:var(--act);font-size:11.5px;text-decoration:none;white-space:nowrap}
+.sumline .sa:hover{text-decoration:underline}
 </style>
 </head>
 <body>
@@ -818,10 +854,13 @@ async function censusDlg(cid,name){
 function homeBytes(n){const gb=(n||0)/1e9;if(gb>=1000)return (gb/1000).toFixed(2)+' TB';if(gb>=10)return gb.toFixed(0)+' GB';return gb.toFixed(1)+' GB'}
 async function vHome(){
   const home=await api('GET','/api/home');
-  // Truly-empty catalog (no archives, no drives) → the guided first-run checklist.
+  // Truly-empty catalog (no archives, no drives): the very first time, run the setup
+  // interview; once setup is done (or skipped), show the checklist scoped to the answers.
   if(home.empty){
-    const [cfgr,pre]=await Promise.all([api('GET','/api/config'),api('GET','/api/preflight')]);
-    $('#view').innerHTML=gettingStarted((cfgr&&cfgr.config)||{},pre||{},[],[]); return;
+    const [cfgr,pre,st]=await Promise.all([api('GET','/api/config'),api('GET','/api/preflight'),api('GET','/api/setup')]);
+    const cfg=(cfgr&&cfgr.config)||{};
+    if(!cfg.setup_complete){startSetup(false,cfg);return;}
+    $('#view').innerHTML=gettingStarted(cfg,pre||{},[],[],st||null); return;
   }
   const t=home.totals||{}, arcs=home.archives||[], ung=home.ungrouped, hl=home.health||{}, inc=home.incremental||[];
   let h=hdr('Home','what this tool knows about all your data','home');
@@ -884,7 +923,10 @@ async function vHome(){
   $('#view').innerHTML=h;
 }
 function clip(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
-function gettingStarted(cfg,pre,archives,pkgs){
+// The getting-started checklist, SCOPED to the setup answers (st = GET /api/setup).
+// A tape user sees "install the LTFS driver"; a drive-only user never hears about tape.
+// The first-archive step follows the chosen archive kind (sourced folder vs adopt-a-drive).
+function gettingStarted(cfg,pre,archives,pkgs,st){
   const ok=x=>x&&x.ok;
   const tools=ok(pre.tar)&&ok(pre.gpg)&&ok(pre.par2);
   const staging=!!(cfg.staging_dir);
@@ -894,16 +936,45 @@ function gettingStarted(cfg,pre,archives,pkgs){
   const built=pkgs.some(c=>c.staged_dir||['STAGED','WRITING','WRITTEN','VERIFIED'].includes(c.status));
   const verified=pkgs.some(c=>verifiedCopies(c)>0);
   const p6=pkgs.length?['packages','Go to Packages →']:['vault','Go to Vault →'];
+  const reqs=(st&&st.requirements)||[];
+  const wants=t=>reqs.some(r=>r.target===t);
+  const sourceless=(st&&st.archive_kind)==='SOURCELESS';
   const items=[
     ['Install the three tools','tar · gpg · par2 — the entire restore story. Preflight in Settings checks them.',tools,'settings','Open Settings →'],
+  ];
+  // Per-target install steps — only for what the user said they'd back up TO.
+  for(const r of reqs){
+    if(!r.checklist_step)continue;
+    let done=false;
+    if(r.target==='tape')done=!!(pre.ltfs&&pre.ltfs.mounted);
+    else if(r.target==='optical')done=ok(pre.dvdisaster)||!!(cfg.burn_command);
+    const link=r.link_url?` <a href="${esc(r.link_url)}" target="_blank" rel="noopener">${esc(r.link_text||'install')} →</a>`:'';
+    items.push([r.checklist_step,r.need+link,done,'settings','Open Settings →']);
+  }
+  items.push(
     ['Set a staging folder','Big, fast scratch space where packages are built before being written to media.',staging,'settings','Open Settings →'],
     ['Register 2 keystores','On different devices. Encrypted builds refuse to run without them; secrets never touch the catalog.',keystores,'keys','Open Keys →'],
-    ['Create your first archive','A body of work you keep together — e.g. "Personal" or "Client Work".',hasArchive,'vault','Go to Vault →'],
-    ['Scan a folder into it','Walks the folder and SHA-256-hashes every file — the root of the custody chain.',hasScan,'vault','Go to Vault →'],
-    ['Plan & build a package','Group files into a media-sized unit, then Build it (tar → encrypt → par2).',built,p6[0],p6[1]],
-    ['Write a verified copy','Stream to a tape/drive/folder with read-back verification, then register the volume.',verified,'packages','Go to Packages →'],
-  ];
-  let h=hdr('Getting started','set up your first archive — the interface will guide you','home');
+    sourceless
+      ? ['Create your first archive','A scattered-drives archive — it has no source folder; its files come from the drives you adopt into it.',hasArchive,'vault','Go to Vault →']
+      : ['Create your first archive','A body of work you keep together — e.g. "Personal" or "Client Work". It has a source folder you scan.',hasArchive,'vault','Go to Vault →'],
+    sourceless
+      ? ['Adopt a drive into it','Plug in a drive; Mnemosyne hashes every file and records what it holds — no source folder needed.',hasScan,'dock','Inventory drives →']
+      : ['Scan a folder into it','Walks the folder and SHA-256-hashes every file — the root of the custody chain.',hasScan,'vault','Go to Vault →'],
+    ['Plan & build a package','Group files into a media-sized unit, then Build it (tar → encrypt → par2).',built,p6[0],p6[1]]
+  );
+  // The write step names only the media the user picked.
+  const targetNames=reqs.map(r=>r.label).filter(Boolean);
+  const toWhere=targetNames.length?targetNames.join(', '):'a tape, drive, or disc';
+  items.push(['Write a verified copy',`Stream to ${toWhere} with read-back verification, then register the volume.`,verified,'packages','Go to Packages →']);
+
+  let h=hdr('Getting started','your setup, one step at a time — scoped to what you told us','home');
+  // A short recap of the setup choices, with a re-run link.
+  if(st){
+    const tmpl=st.template?`${esc(st.template)} template`:'';
+    h+=`<div class="purpose" style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <span style="flex:1">Set up for <b>${esc((cfg.data_kind||'mixed'))}</b>${tmpl?' · '+tmpl:''} · backing up to <b>${esc(toWhere)}</b>.</span>
+      <button class="btn ghost" style="font-size:11px;padding:3px 10px" onclick="startSetup(true)">Run setup again</button></div>`;
+  }
   h+=modePicker();
   h+=`<div class="panel"><div class="dim" style="margin-bottom:6px">Each step detects its own state. Do them roughly in order; click through to the exact spot.</div>`;
   let n=0;
@@ -913,6 +984,163 @@ function gettingStarted(cfg,pre,archives,pkgs){
       ${done?'':`<div style="margin-top:7px"><button class="btn" onclick="loc('${target}')">${label}</button></div>`}</div></div>`;
   }
   return h+'</div>';
+}
+
+/* ================= First-run setup interview ================= */
+// Five short, skippable questions that replace the cold start. Answers live only in
+// _setup until the final POST /api/setup, which configures a coherent state and returns
+// the summary + scoped checklist facts. Re-runnable from Settings and this checklist.
+let _setup=null;
+// Live requirement previews for Q3 (mirrors setup.go requirementFor for immediacy; the
+// authoritative copy comes back from the server for the summary + checklist).
+const SETUP_REQ={
+  drives:{label:'External drives',need:'No extra software — verified copies write straight to any drive.'},
+  nas:{label:'A NAS',need:'No extra software — point a copy at a mounted network share.'},
+  tape:{label:'LTO tape',need:'Needs an LTFS driver so the tape mounts as a folder.',link_text:'Get a free LTFS driver',link_url:'https://github.com/LinearTapeFileSystem/ltfs'},
+  optical:{label:'Blu-ray / DVD',need:'Needs a disc-burning tool (xorriso; ImgBurn on Windows).',link_text:'Install xorriso',link_url:'https://www.gnu.org/software/xorriso/'},
+  cloud:{label:'Cloud',need:'Needs rclone to sync a copy to your provider.',link_text:'Install rclone',link_url:'https://rclone.org/downloads/'},
+};
+const SETUP_Q1=[
+  ['photos','Photos','RAW + edited images, organized by shoot or event','Photographer template'],
+  ['music','Music / audio','Sessions, stems, and masters','Musician template'],
+  ['video','Video / film','Footage, projects, and deliverables','Filmmaker template'],
+  ['documents','Documents','Papers, scans, and records','General template'],
+  ['mixed','A mix of things','A bit of everything','General template'],
+];
+const SETUP_Q2=[
+  ['nas','One main place','A NAS or one big drive holds it all — new archives get a source folder'],
+  ['scattered','Scattered across drives','Spread over many drives with no single home — you adopt drives in'],
+  ['both','Both','A main place plus extra drives on the side'],
+];
+const SETUP_Q3=['drives','nas','tape','optical','cloud'];
+const SETUP_Q4=[
+  ['guided','Guided','Core journey only; advanced tools tucked behind a reveal; a one-line purpose on every screen'],
+  ['standard','Standard','Full navigation; advanced settings behind an “Advanced” disclosure'],
+  ['complete','Everything','Everything visible and dense; no hand-holding'],
+];
+const SETUP_Q5=[
+  ['ARCHIVAL','Most careful','Prove every backup holds your files and decrypts, re-read clean. Slowest builds — best for anything irreplaceable.'],
+  ['BALANCED','Balanced','Prove contents; lighter routine re-checks. A solid middle ground.'],
+  ['FAST','Fastest','Skip proving contents (flagged amber). Only for data you could recreate.'],
+];
+async function startSetup(fromSettings,cfg){
+  // When re-run (no cfg handed in), prefill from the saved answers so the wizard
+  // reflects the current configuration rather than blank defaults.
+  if(!cfg){try{const c=await api('GET','/api/config');cfg=(c&&c.config)||{};}catch(e){cfg={};}}
+  _setup={step:1,fromSettings:!!fromSettings,
+    data_kind:cfg.data_kind||'photos',
+    primary_location:cfg.primary_location||'nas',
+    backup_targets:(cfg.backup_targets&&cfg.backup_targets.length)?cfg.backup_targets.slice():['drives'],
+    ui_mode:cfg.ui_mode||_uiMode||'guided',
+    integrity_preset:'ARCHIVAL'};
+  renderSetup();
+}
+function setupPick(field,val){_setup[field]=val;renderSetup();}
+function setupToggleTarget(val){const a=_setup.backup_targets;const i=a.indexOf(val);
+  if(i>=0){if(a.length>1)a.splice(i,1);}else a.push(val);renderSetup();}
+function setupNav(delta){const n=_setup.step+delta;if(n<1)return;if(n>5){finishSetup();return;}_setup.step=n;renderSetup();}
+async function skipSetup(){
+  try{const res=await api('POST','/api/setup',{skipped:true});applyNavExpanded(res.nav_expanded);
+    toast('Setup skipped — sensible defaults applied. Re-run it anytime from Settings.');
+    if(_setup&&_setup.fromSettings){_setup=null;loc('settings');}else{_setup=null;loc('home');}
+  }catch(e){toast(e.message,1)}
+}
+async function finishSetup(){
+  const s=_setup;
+  try{const res=await api('POST','/api/setup',{
+      data_kind:s.data_kind,primary_location:s.primary_location,
+      backup_targets:s.backup_targets,ui_mode:s.ui_mode,integrity_preset:s.integrity_preset});
+    if(res.config&&res.config.ui_mode)_uiMode=res.config.ui_mode;
+    applyNavExpanded(res.nav_expanded);
+    renderSetupSummary(res);
+  }catch(e){toast(e.message,1)}
+}
+// Open the nav groups the location answer says the user lives in (others keep their
+// situational default). Purely presentational, stored in the same place manual toggles are.
+function applyNavExpanded(groups){
+  if(!groups||!groups.length)return;
+  const st=navCollapsedState();
+  for(const id of groups)st[id]=false;
+  try{localStorage.setItem('navCollapsed',JSON.stringify(st))}catch(e){}
+  renderNav();
+}
+function renderSetup(){
+  const s=_setup,step=s.step;
+  // Option cards are div[role=button] (not <button>) so Q3's cards can legally hold an
+  // install <a>; Enter/Space activate them for keyboard users. onAttr is injected as the
+  // first attribute of the outer <div>.
+  const kd=`onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}"`;
+  const card=(onAttr,on,multi,title,desc,need)=>`<div ${onAttr} role="button" tabindex="0" aria-pressed="${on}" ${kd} class="opt${on?' on':''}${multi?' multi':''}">
+    <span class="box">${on?(multi?'✓':'●'):''}</span>
+    <span style="flex:1"><span class="ot">${title}</span>${desc?`<span class="od">${desc}</span>`:''}${need||''}</span></div>`;
+  let title,q,opts='';
+  if(step===1){title='What kind of data are you protecting?';q='Sets a starting organization template and the words the app uses (events, sessions, projects).';
+    opts=SETUP_Q1.map(([v,t,d,tm])=>card(`onclick="setupPick('data_kind','${v}')"`,s.data_kind===v,false,esc(t),esc(d)+' · '+esc(tm))).join('');
+  }else if(step===2){title='Where does it mainly live right now?';q='Sets whether new archives start with a source folder, and which parts of the app open first.';
+    opts=SETUP_Q2.map(([v,t,d])=>card(`onclick="setupPick('primary_location','${v}')"`,s.primary_location===v,false,esc(t),esc(d))).join('');
+  }else if(step===3){title='What will you back up TO?';q='Pick every kind of media you’ll use. We’ll show what each needs and hide the rest.';
+    opts=SETUP_Q3.map(v=>{const r=SETUP_REQ[v];const on=s.backup_targets.includes(v);
+      const link=r.link_url?` · <a href="${esc(r.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(r.link_text)} →</a>`:'';
+      const need=on?`<span class="oneed">${esc(r.need)}${link}</span>`:'';
+      return card(`onclick="setupToggleTarget('${v}')"`,on,true,esc(r.label),'',need);}).join('');
+  }else if(step===4){title='How much guidance do you want?';q='Changes only what’s shown and how much is explained — never your data or how the app works. Switch anytime.';
+    opts=SETUP_Q4.map(([v,t,d])=>card(`onclick="setupPick('ui_mode','${v}')"`,s.ui_mode===v,false,esc(t),esc(d))).join('');
+  }else{title='How careful should checking be?';q='How hard each backup is proven before it counts. You can change this anytime, globally or per archive.';
+    opts=SETUP_Q5.map(([v,t,d])=>card(`onclick="setupPick('integrity_preset','${v}')"`,s.integrity_preset===v,false,esc(t),esc(d))).join('');
+  }
+  const h=`<div class="setup">
+    <div class="step">Setup · question ${step} of 5</div>
+    <div class="prog">${[1,2,3,4,5].map(i=>`<i class="${i<=step?'on':''}"></i>`).join('')}</div>
+    <h1>${esc(title)}</h1>
+    <div class="q">${esc(q)}</div>
+    <div class="opts">${opts}</div>
+    <div class="acts">
+      ${step>1?`<button class="btn ghost" onclick="setupNav(-1)">← Back</button>`:''}
+      <div class="sp"></div>
+      <button class="skip" onclick="skipSetup()">Skip setup</button>
+      <button class="btn" onclick="setupNav(1)">${step<5?'Next →':'Finish setup ✓'}</button>
+    </div></div>`;
+  $('#view').innerHTML=h;
+}
+function renderSetupSummary(res){
+  const cfg=res.config||{};const iv=res.integrity||{};
+  const line=(k,v,why,anchor,alabel)=>`<div class="sumline">
+    <div class="sk">${esc(k)}</div>
+    <div class="sv"><div>${v}</div>${why?`<div class="sw">${esc(why)}</div>`:''}</div>
+    <a class="sa" href="${anchor}" onclick="_setup=null">${esc(alabel||'Change')} →</a></div>`;
+  const modeName=({guided:'Guided',standard:'Standard',complete:'Everything'})[cfg.ui_mode]||'Guided';
+  const kindName=({photos:'Photos',music:'Music / audio',video:'Video / film',documents:'Documents',mixed:'A mix'})[cfg.data_kind]||'A mix';
+  const locName=({nas:'One main place',scattered:'Scattered across drives',both:'A main place + extra drives'})[cfg.primary_location]||'—';
+  const kindWord=res.archive_kind==='SOURCELESS'?'scattered-drives (no source folder)':'sourced (with a source folder)';
+  const targets=(res.requirements||[]).map(r=>r.label).join(', ')||'External drives';
+  const ivCost=({ARCHIVAL:'proves every backup holds your files and decrypts',BALANCED:'proves contents with lighter routine checks',FAST:'skips proving contents — amber-flagged'})[iv.preset]||'';
+  let h=`<div class="setup">
+    <div class="step">Setup complete</div>
+    <h1 style="margin-top:6px">You’re set up ✓</h1>
+    <div class="q">Here’s what we configured and why. Every line links to where it lives if you want to change it.</div>
+    <div class="panel">
+      ${line('Protecting',`<b>${esc(kindName)}</b> — ${esc(res.template||'General')} starter template`,'Shapes the organization template and the app’s vocabulary (events, sessions, projects).','#templates','Templates')}
+      ${line('Lives now',`<b>${esc(locName)}</b> — new archives start ${esc(kindWord)}`,'Decides whether an archive scans a folder or adopts drives, and which tools open first.','#vault','Archives')}
+      ${line('Backing up to',`<b>${esc(targets)}</b>`,'The app shows setup for these and collapses the paths you didn’t choose.','#settings','Settings')}
+      ${line('Guidance',`<b>${esc(modeName)}</b>`,'Only changes what’s shown and how much is explained — never data or behavior.','#settings','Settings')}
+      ${line('Checking',`<b>${esc(iv.preset||'ARCHIVAL')}</b>${ivCost?' — '+esc(ivCost):''}`,'Read-back after every write is always on and can’t be turned off.','#integrity','Verify')}
+    </div>`;
+  const installs=(res.requirements||[]).filter(r=>r.checklist_step);
+  if(installs.length){
+    h+=`<div class="panel"><h2>One or two things to install</h2>`;
+    for(const r of installs){
+      const link=r.link_url?` <a href="${esc(r.link_url)}" target="_blank" rel="noopener" style="color:var(--act)">${esc(r.link_text||'install')} →</a>`:'';
+      h+=`<div class="chk"><div class="mk" aria-hidden="true">•</div><div class="bd"><div class="t">${esc(r.label)}</div><div class="d">${esc(r.need)}${link}</div></div></div>`;
+    }
+    h+=`</div>`;
+  }
+  h+=`<div class="acts" style="margin-top:4px">
+      <button class="btn ghost" onclick="startSetup(${_setup&&_setup.fromSettings?'true':'false'})">← Run through again</button>
+      <div class="sp"></div>
+      <button class="btn" onclick="_setup=null;loc('home')">${(_setup&&_setup.fromSettings)?'Back to Home':'Start the checklist →'}</button>
+    </div></div>`;
+  _setup=null;
+  $('#view').innerHTML=h;
 }
 
 /* ---------------- Vault (archives) ---------------- */
@@ -2180,7 +2408,12 @@ async function vSettings(){
   const ltfsCell=ltfs.mounted
     ? `<span class="stamp VERIFIED">LTFS</span> LTFS tape mounted at <span class="mono">${esc((ltfs.mounts||[]).join(', '))}</span> ✓`
     : `<span class="dim">No LTFS mount detected — to write to LTO tape, install a free LTFS driver: IBM Storage Archive Single Drive Edition, HPE StoreOpen, or open-source LinearTapeFileSystem/ltfs (links in README). Not required for HDD or optical.</span>`;
+  const wants=t=>(cfg.backup_targets||['drives']).some(x=>String(x).toLowerCase()===t);
   let h=`${hdr('Settings','how the app behaves — the tools, folders, and backup options it uses (saved to config.json in the data folder)','settings')}
+  <div class="panel"><div class="row" style="align-items:baseline;gap:12px">
+    <div style="flex:1"><h2 style="margin-bottom:2px">First-run setup</h2>
+      <div class="help" style="margin:0">${cfg.setup_complete?`Configured for <b>${esc(cfg.data_kind||'mixed')}</b> · backing up to <b>${esc((cfg.backup_targets||['drives']).join(', '))}</b>. Re-run to change your template, locations, targets, guidance, or checking level.`:'Answer five short questions to configure a sensible starting state.'}</div></div>
+    <button class="btn ghost" onclick="startSetup(true)">Run setup again</button></div></div>
   ${modePicker()}
   <div class="panel"><h2>External tools</h2>
     <div class="help">The free command-line programs Mnemosyne uses to bundle, encrypt, and repair your backups — and to read drive health. The first three are required; the rest are optional and just add extra checks.</div>
@@ -2269,8 +2502,8 @@ async function vSettings(){
     ${advClose()}
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>
   <div class="panel"><h2>Discs — burning and repair</h2>
-    <div class="help">Only needed if you write backups to optical discs (Blu-ray/DVD). Skip this whole section if you use tape or hard drives.</div>
-    ${advOpen('Disc burning &amp; repair settings')}
+    <div class="help">${wants('optical')?'You chose Blu-ray/DVD as a backup target in setup — configure your burner below.':'You didn’t pick discs in setup, so this is collapsed. Expand it only if you write to Blu-ray/DVD; tape and hard-drive users can ignore it.'}</div>
+    <details class="adv"${wants('optical')?' open':''}><summary>Disc burning &amp; repair settings</summary>
     <label>Disc-burning command</label>
     <input id="bc" class="full" style="font:12px var(--mono)" value="${esc(cfg.burn_command||'')}" placeholder='xorriso -outdev /dev/sr0 -volid "{LABEL}" -blank as_needed -map "{SRC}" / -commit -eject'>
     <div class="help">The command Mnemosyne runs to burn a disc. <span class="mono dim">{SRC}</span> is the folder to burn and <span class="mono dim">{LABEL}</span> is the disc name. <b>xorriso</b> is the recommended free burner on Linux/macOS (<span class="mono">apt/brew install xorriso</span>). <button class="btn ghost" style="font-size:10px;padding:1px 7px" onclick="document.getElementById('bc').value='xorriso -outdev /dev/sr0 -volid \\'{LABEL}\\' -blank as_needed -map \\'{SRC}\\' / -commit -eject'">Use xorriso default</button> <span class="mono dim">growisofs</span> and <span class="mono dim">ImgBurn</span> (Windows) also work.</div>
@@ -2294,7 +2527,7 @@ async function vSettings(){
       <label class="row" style="gap:8px;align-items:center;margin-top:8px"><input id="oecc" type="checkbox" ${cfg.optical_ecc?'checked':''}> Mention the repair layer in each disc's restore notes</label>
       <div class="help">For people who add the repair layer by hand — records that it exists so a future restorer knows to use it.</div>
     </div>
-    ${advClose()}
+    </details>
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">Save settings</button></div></div>`;
   $('#view').innerHTML=h;
   escrowStatus();

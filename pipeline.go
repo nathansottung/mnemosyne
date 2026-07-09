@@ -75,6 +75,16 @@ type Config struct {
 	// branch on it.
 	UIMode string            `json:"ui_mode"`
 	Tools  map[string]string `json:"tools"`
+	// ---- first-run setup interview (see setup.go) ----
+	// SetupComplete is set once the interview is finished OR skipped; until then the
+	// empty-catalog Home shows the interview instead of the cold-start checklist. The
+	// three answers below are stored so the UI can scope itself to the user's world —
+	// they never gate behavior, only presentation and defaults, and re-running setup
+	// (Settings → "Run setup again") overwrites them.
+	SetupComplete   bool     `json:"setup_complete"`
+	DataKind        string   `json:"data_kind,omitempty"`        // photos|music|video|documents|mixed → starter template + vocabulary
+	PrimaryLocation string   `json:"primary_location,omitempty"` // nas|scattered|both → default archive kind + which nav groups open
+	BackupTargets   []string `json:"backup_targets,omitempty"`   // drives|nas|tape|optical|cloud → which target UI shows; the rest collapse
 }
 
 // UI mode values (purely presentational).
