@@ -78,6 +78,40 @@ Match the surrounding code — it is intentional, not accidental:
   correctly). Don't commit CRLF into source or docs; if a clone shows spurious
   whole-file diffs, run `git add --renormalize .` once.
 
+## Plain-language standard (all UI copy)
+
+Every label, setting, button, message, view header, and empty state must read at
+about an **8th-grade level**. A careful non-technical person — a photographer,
+musician, filmmaker, or family archivist — should understand what a control does
+without a manual. This is a hard requirement, audited on every UI change.
+
+The rules:
+
+- **Say what it does, in plain words, from the user's point of view.** Name the
+  benefit or the action, not the mechanism. *"File types to not worry about"*, not
+  *"Drift informational extensions (muted in reconcile, excluded from alarm
+  totals)."*
+- **Every setting is a short label plus one plain help sentence beneath it.** The
+  label is scannable; the one-liner (rendered with the `help` class) says what it
+  does and when you'd change it. No setting ships without its help line — this is
+  the specific thing the audit checks.
+- **Jargon is allowed only with an inline plain gloss the first time it appears on
+  a screen.** Necessary terms (SMART, par2, EXIF, keystore, escrow, finalize/seal)
+  get a parenthetical the first time they show up in a view — e.g. *"repair data
+  (par2 = the free tool that makes it)"*, *"the drive's self-reported health
+  (SMART)"*. After the first gloss on that screen, the bare term is fine.
+- **Prefer short words and short sentences.** Cut hedging and cleverness. One idea
+  per sentence. Numbers and units belong in the help line, not the label.
+- **Every left-nav item carries a one-line plain job description** as a hover
+  `title` (and a tap-hold handler on narrow screens). Example: Inventory drives →
+  *"Plug in a drive, get a complete record of what's on it."*
+- **Don't dumb down the behavior — only the words.** Precision stays; the sentence
+  that carries it just gets readable. When a control is genuinely advanced, say so
+  plainly (*"Leave blank unless you know you need it"*) rather than hiding it.
+
+When you add or change any user-facing string, re-read it as someone who has never
+seen the app. If it needs a mental translation step, rewrite it.
+
 ## Schema versioning (the forward-compatibility guarantee)
 
 Every persisted file (`catalog.json`, keystores, package manifests, dock inventory
