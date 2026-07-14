@@ -113,6 +113,7 @@ tr:last-child td{border-bottom:none}
 .stamp.VERIFIED{background:var(--ok)} .stamp.FAILED{background:var(--bad)}
 .stamp.PLANNED{background:var(--idle)} .stamp.STAGED,.stamp.WRITTEN{background:#5b7367}
 .stamp.BUILDING,.stamp.WRITING{background:var(--warn)}
+.stamp.INTERRUPTED{background:var(--warn)}
 .err{color:var(--bad);font:12.5px var(--mono)}
 .empty{color:var(--ink-3);padding:26px 10px;text-align:center;font-size:13.5px}
 
@@ -362,7 +363,8 @@ const HELP={
   cardcheck:['Check a card — is it already backed up?','Plug in an SD/CF card or a drive and Mnemosyne reads it (never writes, never adds it as a source) and checks every file BY CONTENT against your entire inventory — archives, packaged copies, and every drive you have inventoried. You get the answer that matters before a reformat: which frames are already safe (and where they live), and which are new and still need copying off. Matching is by SHA-256, so a file counts as backed up the moment its content is found anywhere, no matter its name or folder on the card.'],
   dock:['Dock — ingest a stack of legacy drives, one at a time','Pick the Archive(s) to reconcile against, then dock drives one by one. Mnemosyne watches for each newly-inserted drive, and on one click does everything hands-off: identifies the drive by serial, hashes every file and matches it by CONTENT against your archives, records the matches as verified copies, and writes an inventory sidecar onto the drive itself. It is strictly read-only toward your sources — NAS folders are only ever hashed. A re-inserted drive is recognized by serial and re-verified, not re-adopted. The session survives closing the app; resume it days later.'],
   keys:['Keys — encryption secrets','Encrypted packages use per-package random ~288-bit passphrases that live ONLY in keystore files — the catalog stores fingerprints, never the secret. Encrypted builds refuse to run until ≥2 keystores on different devices are registered and in sync. Print a QR card per key, and export a Recovery Kit for the fireproof box.'],
-  jobs:['Jobs — background work','Long operations (scan, build, write, verify, reconcile, recovery kit) run in the background so the UI stays responsive. It is safe to navigate away; this list refreshes automatically while anything is still running.'],
+  jobs:['Jobs — background work','Long operations (scan, build, write, verify, reconcile, recovery kit) run in the background so the UI stays responsive. It is safe to navigate away; this list refreshes automatically while anything is still running. Click any job — running or finished — to open its detail: a plain summary, live counters, and an Artifacts list where every output has a Show action that opens the thing itself. Jobs persist across restarts; one interrupted by a shutdown shows as INTERRUPTED so you can re-run it.'],
+  explore:['Explore data — structure, sizes & what’s verified','One screen to browse any archive or inventoried drive the same way: a size-weighted treemap (area = bytes) plus a breakdown panel (totals, largest folders, roles, per-extension counts). Colour the map by Protection, Drift, or Validation — verified ✓ (a proven copy exists), hashed-but-unverified, or failed ✗ — always shown as colour + text. Reachable on its own, or opened scoped from a scan/verify job’s "View results".'],
   settings:['Settings — one config file','Everything lives in one config.json in the data folder: paths to the external tools, the staging folder, keystore locations, redundancy goal, re-verify window, write throttle, and the optical burn command. Preflight at the top shows whether tar/gpg/par2 (and any LTFS tape) are ready.'],
   where:['Where your data lives — the honesty map','One screen listing everything Mnemosyne ever writes — the catalog and its daily backups, config, keystores, staging, the destinations you pick, the small inventory/seal sidecars it puts ONLY on media it writes itself, and the reversible quarantine folders — followed by the equally prominent inverse: what it NEVER writes to (your source folders and drives you adopt). Every path is read from your live settings. The one enforcement rule (every write destination is checked against your sources and refused if it lands inside one) is backed by named tests you can run yourself.'],
 };
@@ -375,6 +377,7 @@ const HELP_GUIDE={home:['00-what-is-this.md','What is this? & first run'],vault:
   packages:['03-your-first-backup.md','Your first backup'],burn:['06-discs-and-drives.md','Discs, mirrors & old drives'],
   volumes:['06-discs-and-drives.md','Discs, mirrors & old drives'],dock:['06-discs-and-drives.md','Adopting old drives'],
   keys:['09-the-recovery-kit.md','Keys & the Recovery Kit'],jobs:['07-checking-on-your-archive.md','Checking on your archive'],
+  explore:['07-checking-on-your-archive.md','Seeing what happened'],
   settings:['02-set-up-safely.md','Set up safely'],where:['10-where-your-data-lives.md','Where your data lives']};
 function showHelp(k){const e=HELP[k];if(!e)return;const g=HELP_GUIDE[k];
   const link=g?`<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line)"><a href="${HANDBOOK}${g[0]}" target="_blank" rel="noopener" style="color:var(--act);font-weight:600">Handbook: ${esc(g[1])} →</a></div>`:'';
@@ -633,17 +636,26 @@ async function doRecompute2(id){try{const r=await api('POST','/api/protection/re
 const PROT_HEX={COMPLETE:'#2e5e4e',OVER_COMPLETE:'#1e3d8f',PARTIAL:'#9a6b1f',NOT_BACKED_UP:'#a03123',OUT_OF_POLICY:'#6b2d86',UNASSIGNED:'#8a938c'};
 const DRIFT={UNCHANGED:{c:'#2e5e4e',t:'Unchanged'},MOVED:{c:'#1e3d8f',t:'Moved'},NEW:{c:'#8a938c',t:'Unarchived'},MODIFIED:{c:'#9a6b1f',t:'Modified'},MISSING:{c:'#a03123',t:'Missing'}};
 const DRIFT_ORDER=['UNCHANGED','MOVED','NEW','MODIFIED','MISSING'];
+/* Validation coloring — catalog-derived verify state (Explorer). Green = a verified
+   copy exists; red = a covering copy failed a check; neutral = hashed but no verified
+   copy; grey = not even hashed. Text carries the ✓/✗ so status is never colour-alone. */
+const VALIDATION={VERIFIED:{c:'#2e5e4e',t:'Verified ✓'},HASHED:{c:'#8a938c',t:'Hashed (unverified)'},UNHASHED:{c:'#5b6560',t:'Not hashed'},FAILED:{c:'#a03123',t:'Failed ✗'}};
+const VALIDATION_ORDER=['VERIFIED','HASHED','UNHASHED','FAILED'];
 /* HARD UI RULE: status is ALWAYS color + shape + text together — never color alone.
    The shape is a CSS dot (see dot()); the treemap tiles use the colored rect itself. */
 function tmStyle(mode,st){
   if(mode==='drift'){const d=DRIFT[st]||DRIFT.UNCHANGED;return {c:d.c,t:d.t};}
+  if(mode==='validation'){const v=VALIDATION[st]||VALIDATION.UNHASHED;return {c:v.c,t:v.t};}
   const p=PROT[st]||PROT.UNASSIGNED;return {c:PROT_HEX[st]||PROT_HEX.UNASSIGNED,t:p.t};
 }
-function tmOrder(mode){return mode==='drift'?DRIFT_ORDER:PROT_ORDER;}
+function tmOrder(mode){return mode==='drift'?DRIFT_ORDER:mode==='validation'?VALIDATION_ORDER:PROT_ORDER;}
 function tmBytes(n){if(!n)return '0 B';const u=['B','KB','MB','GB','TB','PB'];let f=n,i=0;while(f>=1000&&i<u.length-1){f/=1000;i++}return (i?f.toFixed(1):f)+' '+u[i];}
-let _tm={cid:0,path:'',color:'protection',name:'',res:null,rects:[]};
-/* Entry point: open the treemap fresh at the archive root. */
-function tmOpen(id){_tm.path='';_tm.color='protection';vArchiveTreemap(id);}
+let _tm={cid:0,path:'',color:'protection',name:'',res:null,rects:[],explore:false};
+/* Entry point: open the treemap fresh at the archive root (from within an archive). */
+function tmOpen(id){_tm.path='';_tm.color='protection';_tm.explore=false;vArchiveTreemap(id);}
+/* Explorer navigation: a pending {path,color} consumed by the next explore open. */
+let _exploreInit=null;
+function exploreGo(cid,path,color){_exploreInit={path:path||'',color:color||'protection'};location.hash='#explore/'+cid;}
 async function vArchiveTreemap(id,color){
   if(id!==_tm.cid)_tm.path=''; // switched archives → back to root
   _tm.cid=id; _tm.color=color||_tm.color||'protection';
@@ -657,17 +669,26 @@ async function vArchiveTreemap(id,color){
     ? `<b>${esc(c.name)}</b>`
     : `<a href="#" onclick="tmZoom('${esc(c.path)}');return false" style="color:var(--act)">${esc(c.name)}</a>`).join(' <span class="dim">/</span> ');
   const drift=res.drift_available;
+  const cbtn=(m,label,extra)=>`<button class="btn ${mode===m?'':'ghost'}" style="font-size:11px;padding:2px 10px" ${extra||''} onclick="tmSetColor('${m}')">${label}</button>`;
   const toggle=`<div class="row" style="gap:6px;align-items:center">
     <span class="dim" style="font-size:11.5px">Color by</span>
-    <button class="btn ${mode==='protection'?'':'ghost'}" style="font-size:11px;padding:2px 10px" onclick="tmSetColor('protection')">Protection</button>
-    <button class="btn ${mode==='drift'?'':'ghost'}" style="font-size:11px;padding:2px 10px" ${drift?'':'disabled title="run Rescan &amp; compare to enable"'} onclick="tmSetColor('drift')">Drift${drift?'':' (no report)'}</button></div>`;
-  let h=`<h1>Treemap — ${esc(_tm.name)}</h1><div class="crumb">where is my space becomes where is my risk · area = bytes · computed from the catalog, never the disk</div>
-    <div class="wbtabs row" style="margin-bottom:12px;gap:6px"><button class="btn ghost" onclick="vArchiveProtection(${id})">Protection</button>
-      <button class="btn" onclick="tmOpen(${id})">Treemap</button>
-      <span style="flex:1"></span>
-      <button class="btn ghost" onclick="loc('vault')">← Archives</button></div>
+    ${cbtn('protection','Protection')}
+    ${cbtn('drift','Drift'+(drift?'':' (no report)'),drift?'':'disabled title="run Rescan &amp; compare to enable"')}
+    ${cbtn('validation','Validation')}</div>`;
+  const topbar=_tm.explore
+    ? `<div class="wbtabs row" style="margin-bottom:12px;gap:6px"><span style="font-weight:600">Explore data</span>
+        <span style="flex:1"></span>
+        <button class="btn ghost" onclick="vArchiveProtection(${id})">Protection view</button>
+        <button class="btn ghost" onclick="loc('explore')">Change source</button></div>`
+    : `<div class="wbtabs row" style="margin-bottom:12px;gap:6px"><button class="btn ghost" onclick="vArchiveProtection(${id})">Protection</button>
+        <button class="btn" onclick="tmOpen(${id})">Treemap</button>
+        <span style="flex:1"></span>
+        <button class="btn ghost" onclick="loc('vault')">← Archives</button></div>`;
+  let h=`<h1>${_tm.explore?'Explore':'Treemap'} — ${esc(_tm.name)}</h1><div class="crumb">where is my space becomes where is my risk · area = bytes · computed from the catalog, never the disk</div>
+    ${topbar}
     <div class="row" style="margin-bottom:10px;justify-content:flex-end;align-items:center">${toggle}</div>
-    <div class="panel"><div class="row" style="justify-content:space-between;align-items:baseline;flex-wrap:wrap">
+    <div class="row" style="gap:14px;align-items:flex-start;flex-wrap:wrap">
+    <div class="panel" style="flex:3;min-width:340px"><div class="row" style="justify-content:space-between;align-items:baseline;flex-wrap:wrap">
       <div style="font-size:12.5px">${crumbs}</div>
       <div class="dim" style="font-size:11.5px">${tmBytes(res.size)} · ${res.files.toLocaleString()} files${res.folded?` · ${res.folded} tiny folders folded into “other”`:''}</div></div>
       <div style="position:relative;margin-top:10px">
@@ -676,10 +697,67 @@ async function vArchiveTreemap(id,color){
       </div>
       ${tmLegend(res,mode)}
       <div class="dim" style="font-size:11px;margin-top:8px">Click a folder to zoom in · use the breadcrumb to zoom out · hover for name, size &amp; status.</div>
+    </div>
+    <div class="panel" id="tminfo" style="flex:1;min-width:240px"><div class="dim">Loading breakdown…</div></div>
     </div>`;
   $('#view').innerHTML=h;
   requestAnimationFrame(()=>tmDraw());
+  tmInfoPanel(id,_tm.path);
 }
+/* Info panel beside the map: totals, largest folders, role breakdown, per-extension
+   counts — scoped to the current zoom path. */
+async function tmInfoPanel(id,path){
+  const el=$('#tminfo');if(!el)return;
+  let st;try{st=await api('GET',`/api/collections/${id}/explore-stats?path=${encodeURIComponent(path||'')}`);}
+  catch(e){el.innerHTML=`<div class="err">${esc(e.message)}</div>`;return;}
+  const bar=(rows,total,color)=>`<div style="display:flex;height:9px;border-radius:3px;overflow:hidden;border:1px solid var(--line)">`+
+    rows.map(r=>`<div title="${esc(r.name)} · ${commaN(r.files)} · ${tmBytes(r.bytes)}" style="width:${Math.max(0.5,r.bytes/(total||1)*100)}%;background:${color(r.name)}"></div>`).join('')+`</div>`;
+  let h=`<div style="font-weight:600;margin-bottom:6px">Breakdown</div>
+    <div class="dim" style="font-size:12px">${commaN(st.total_files)} files · ${tmBytes(st.total_bytes)}</div>`;
+  if((st.roles||[]).length){
+    h+=`<div style="margin-top:12px;font-size:11.5px;font-weight:600">By role</div><div style="margin-top:5px">${bar(st.roles,st.total_bytes,n=>ROLE_COLOR[n]||'var(--ink-3)')}</div>
+      <div class="dim" style="font-size:11px;margin-top:5px">${st.roles.map(r=>`${roleDot(r.name)}${esc(r.name)} ${commaN(r.files)}`).join(' &nbsp; ')}</div>`;
+  }
+  if((st.largest_folders||[]).length){
+    h+=`<div style="margin-top:12px;font-size:11.5px;font-weight:600">Largest folders</div><table style="width:100%;margin-top:4px">`+
+      st.largest_folders.slice(0,10).map(r=>`<tr><td style="font-size:11.5px">${esc(r.name)}/</td><td class="num dim" style="font-size:11px">${tmBytes(r.bytes)}</td></tr>`).join('')+`</table>`;
+  }
+  if((st.extensions||[]).length){
+    h+=`<div style="margin-top:12px;font-size:11.5px;font-weight:600">By type</div><table style="width:100%;margin-top:4px">`+
+      st.extensions.slice(0,12).map(r=>`<tr><td class="mono" style="font-size:11.5px">${esc(r.name)}</td><td class="num dim" style="font-size:11px">${commaN(r.files)}</td><td class="num dim" style="font-size:11px">${tmBytes(r.bytes)}</td></tr>`).join('')+`</table>`;
+  }
+  el.innerHTML=h;
+}
+/* ---------------- Explorer (standalone) — browse any archive or drive snapshot the
+   same way: structure, sizes, validation state, one screen. Reachable from CHECK →
+   "Explore data", or via a scan/hash job's "View results". ---------------- */
+async function vExplore(arg){
+  if(arg){ // deep-link straight to an archive treemap
+    const id=parseInt(arg,10);
+    const init=_exploreInit||{path:'',color:'protection'};_exploreInit=null;
+    _tm.explore=true;_tm.cid=id;_tm.path=init.path||'';_tm.color=init.color||'protection';
+    return vArchiveTreemap(id,_tm.color);
+  }
+  let cols=[],vols=[];
+  try{cols=await api('GET','/api/collections')||[];}catch(e){}
+  try{vols=await api('GET','/api/volumes')||[];}catch(e){}
+  const snaps=vols.filter(r=>r&&r.has_snapshot);
+  let h=`${hdr('Explore data','browse any archive or drive — structure, sizes, and what’s verified','explore')}`;
+  h+=`<div class="panel"><h2>Archives</h2>`;
+  if(cols.length){
+    h+=`<div class="dim" style="font-size:11.5px;margin-bottom:8px">Open the treemap — colour by protection, drift, or <b>validation</b> (what’s verified ✓, hashed-but-unverified, or failed ✗).</div>
+      <div class="row" style="flex-wrap:wrap;gap:8px">`+cols.map(c=>`<button class="btn ghost" onclick="exploreGo(${c.id},'','protection')">${esc(c.name)}</button>`).join('')+`</div>`;
+  }else h+=`<div class="dim">No archives yet — create one under Archives and scan a folder.</div>`;
+  h+=`</div><div class="panel"><h2>Drive snapshots</h2>`;
+  if(snaps.length){
+    h+=`<div class="dim" style="font-size:11.5px;margin-bottom:8px">Browse an unplugged drive’s captured contents — structure, sizes, roles.</div>
+      <div class="row" style="flex-wrap:wrap;gap:8px">`+snaps.map(r=>`<button class="btn ghost" onclick="exploreVolume(${r.volume.id})">${esc(r.volume.label)}</button>`).join('')+`</div>
+      <div id="snapbox" style="margin-top:12px"></div>`;
+  }else h+=`<div class="dim">No drive snapshots yet — Inventory a drive (Dock) to capture one.</div>`;
+  h+=`</div>`;
+  $('#view').innerHTML=h;
+}
+function exploreVolume(id){const b=$('#snapbox');if(b)b.innerHTML='<div class="dim">Loading snapshot…</div>';loadVolSnapshot(id);}
 function tmLegend(res,mode){
   const sb=res.status_bytes||{}; const total=res.size||1;
   const rows=tmOrder(mode).filter(st=>sb[st]).map(st=>{const s=tmStyle(mode,st);
@@ -982,9 +1060,12 @@ async function vHome(){
     }
     h+='</div>';
   }
-  // Footer: the honesty link — everything the tool writes, and what it never touches.
+  // Footer: the honesty link — everything the tool writes, and what it never touches —
+  // plus a one-click app backup ("carry the brain to a new computer").
   h+=`<div style="text-align:center;margin:18px 0 4px;padding-top:14px;border-top:1px solid var(--line-2)">
-    <a href="#where" class="wherelink">Where your data lives — everything this tool writes, and everywhere it refuses to</a></div>`;
+    <a href="#where" class="wherelink">Where your data lives — everything this tool writes, and everywhere it refuses to</a>
+    <span class="dim" style="margin:0 8px">·</span>
+    <a href="#" class="wherelink" onclick="appBackupDlg();return false">Back up this app's records</a></div>`;
   $('#view').innerHTML=h;
 }
 function clip(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
@@ -1092,7 +1173,9 @@ async function startSetup(fromSettings,cfg){
   // When re-run (no cfg handed in), prefill from the saved answers so the wizard
   // reflects the current configuration rather than blank defaults.
   if(!cfg){try{const c=await api('GET','/api/config');cfg=(c&&c.config)||{};}catch(e){cfg={};}}
-  _setup={step:1,fromSettings:!!fromSettings,
+  // A fresh first run opens on a "start fresh or restore" chooser (step 0); re-running
+  // from Settings jumps straight to the questions (restore lives in Settings there).
+  _setup={step:fromSettings?1:0,fromSettings:!!fromSettings,
     data_kind:cfg.data_kind||'photos',
     primary_location:cfg.primary_location||'nas',
     backup_targets:(cfg.backup_targets&&cfg.backup_targets.length)?cfg.backup_targets.slice():['drives'],
@@ -1129,8 +1212,24 @@ function applyNavExpanded(groups){
   try{localStorage.setItem('navCollapsed',JSON.stringify(st))}catch(e){}
   renderNav();
 }
+function setupStartFresh(){_setup.step=1;renderSetup();}
 function renderSetup(){
   const s=_setup,step=s.step;
+  // Step 0 (fresh install only): start fresh, or restore everything from an app backup.
+  if(step===0){
+    const kd0=`onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}"`;
+    $('#view').innerHTML=`<div class="setup">
+      <div class="step">Welcome to Mnemosyne</div>
+      <h1 style="margin-top:6px">Setting up — fresh, or from a backup?</h1>
+      <div class="q">If you're moving from another computer, restore your app backup and everything comes back exactly as it was. Otherwise, five short questions get you started.</div>
+      <div class="opts">
+        <div role="button" tabindex="0" ${kd0} class="opt" onclick="setupStartFresh()"><span class="box"></span><span style="flex:1"><span class="ot">Start fresh</span><span class="od">Answer five short questions to set things up.</span></span></div>
+        <div role="button" tabindex="0" ${kd0} class="opt" onclick="appRestoreDlg()"><span class="box"></span><span style="flex:1"><span class="ot">Restore from an app backup</span><span class="od">Point at a <span class="mono">.tar</span> backup from your old machine — the catalog, settings, and verification history come back exactly as they were.</span></span></div>
+      </div>
+      <div class="acts"><div class="sp"></div>
+        <button class="skip" onclick="skipSetup()">Skip setup</button></div></div>`;
+    return;
+  }
   // Option cards are div[role=button] (not <button>) so Q3's cards can legally hold an
   // install <a>; Enter/Space activate them for keyboard users. onAttr is injected as the
   // first attribute of the outer <div>.
@@ -2427,13 +2526,80 @@ async function vJobs(){
   let h=`${hdr('Jobs','long operations run in the background — safe to navigate away','jobs')}<div class="panel">`;
   if(!js.length)h+='<div class="empty">No jobs yet — scans, builds, writes and verifies report their progress here.</div>';
   else{h+='<table><tr><th style="width:52%">Job</th><th>Progress</th><th>State</th></tr>';
-    for(const j of js)h+=`<tr><td>${esc(j.label)}${jobArtifact(j)}${jobWrites(j,cfg)}</td>
+    for(const j of js)h+=`<tr><td><a href="#job/${j.id}" style="color:var(--act);font-weight:600">${esc(j.label)}</a>${jobArtifact(j)}${jobWrites(j,cfg)}</td>
       <td><div class="bar"><div style="width:${Math.round((j.progress||0)*100)}%"></div></div>${jobTelemetry(j)}</td>
-      <td><span class="stamp ${j.status==='COMPLETED'?'VERIFIED':j.status==='FAILED'?'FAILED':'BUILDING'}">${esc(j.status)}</span></td></tr>`;
+      <td><span class="stamp ${jobStamp(j.status)}">${esc(j.status)}</span></td></tr>`;
     h+='</table>'}
   $('#view').innerHTML=h+'</div>';
   clearTimeout(jobsTimer);
   if(js.some(j=>j.status==='RUNNING'))jobsTimer=setTimeout(()=>{if(location.hash==='#jobs')vJobs()},1000);
+}
+function jobStamp(st){return st==='COMPLETED'?'VERIFIED':st==='FAILED'?'FAILED':st==='INTERRUPTED'?'INTERRUPTED':'BUILDING';}
+/* ---------------- Job detail — "what did I just do, to what, where can I see it?" ----
+   A single job's plain summary, live counters while running, and an ARTIFACTS list
+   where every output has a Show action that opens the thing itself. */
+let jobDetailTimer;
+const ARTIFACT_ICON={package:'📦',file:'📄',label:'🏷',kit:'🗝',catalog:'🗂',export:'📤',volume:'💽',drift:'🔀'};
+function artifactRow(a){
+  const meta=[];
+  if(a.count)meta.push(a.count.toLocaleString()+(a.kind==='catalog'?' records':a.kind==='package'?' files':''));
+  if(a.size)meta.push(tmBytes(a.size));
+  const show=a.show_view?`<button class="btn ghost" style="font-size:11px;padding:2px 12px" onclick='showArtifact(${JSON.stringify(a)})'>Show →</button>`:'';
+  return `<tr>
+    <td style="width:22px">${ARTIFACT_ICON[a.kind]||'•'}</td>
+    <td><div style="font-weight:600">${esc(a.label||a.kind)}</div>${a.path?`<div class="dim mono" style="font-size:11px;word-break:break-all">${esc(a.path)}</div>`:''}</td>
+    <td class="num dim" style="font-size:11.5px;white-space:nowrap">${meta.join(' · ')}</td>
+    <td style="text-align:right">${show}</td></tr>`;
+}
+// Route a Show action to the view that contains the artifact.
+function showArtifact(a){
+  const v=a.show_view,id=a.show_id;
+  if(v==='explore'){exploreGo(id,a.show_path||'','validation');return;}
+  if(v==='drift'){location.hash='#integrity';vDrift(id,'');return;}
+  if(v==='packages'){loc('packages');return;}
+  if(v==='volumes'){loc('volumes');return;}
+  loc('jobs');
+}
+function jobDuration(j){
+  const start=Date.parse(j.created_at);if(isNaN(start))return '';
+  const end=j.finished_at?Date.parse(j.finished_at):(j.status==='RUNNING'?Date.now():NaN);
+  if(isNaN(end))return '';
+  return fmtETA((end-start)/1000)||'0s';
+}
+async function vJobDetail(id){
+  id=parseInt(id,10);
+  let j,cfg={};
+  try{j=await api('GET','/api/jobs/'+id);}catch(e){$('#view').innerHTML=hdr('Job','','jobs')+`<div class="panel"><div class="err">${esc(e.message)}</div><button class="btn ghost" onclick="loc('jobs')">← All jobs</button></div>`;return;}
+  try{const c=await api('GET','/api/config');cfg=(c&&c.config)||{};}catch(e){}
+  const r=j.result||{};
+  const dur=jobDuration(j);
+  const running=j.status==='RUNNING';
+  let h=`${hdr('Job — '+esc(j.label),'what ran, on what, and where to see the results','jobs')}
+    <div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:baseline;flex-wrap:wrap">
+        <div><span class="stamp ${jobStamp(j.status)}">${esc(j.status)}</span> <span class="dim" style="font-size:12px;margin-left:6px">${esc(j.kind)}</span></div>
+        <button class="btn ghost" style="font-size:11px;padding:2px 12px" onclick="loc('jobs')">← All jobs</button></div>
+      <div class="dim" style="font-size:12px;margin-top:8px">Started ${esc((j.created_at||'').slice(0,19).replace('T',' '))} UTC${dur?` · ${running?'running for':'took'} ${dur}`:''}</div>
+      ${jobWrites(j,cfg)}
+      ${running?`<div style="margin-top:10px"><div class="bar"><div style="width:${Math.round((j.progress||0)*100)}%"></div></div>${jobTelemetry(j)}</div>`:''}`;
+  // "View results" — hash/scan jobs open the Explorer scoped to what they covered.
+  if(['scan','verify','reconcile','dock'].includes(j.kind)&&r.collection_id){
+    h+=`<div style="margin-top:12px"><button class="btn" onclick="exploreGo(${r.collection_id},'${esc(r.path||'')}','validation')">View results in Explorer →</button></div>`;
+  }
+  h+=`</div>`;
+  // ARTIFACTS
+  h+=`<div class="panel"><div class="row" style="align-items:baseline"><h2 style="flex:1;margin:0">Artifacts</h2><span class="dim" style="font-size:11.5px">what this job produced</span></div>`;
+  if((j.artifacts||[]).length){
+    h+=`<table style="width:100%;margin-top:8px">${j.artifacts.map(artifactRow).join('')}</table>`;
+  }else if(running){
+    h+=`<div class="dim" style="margin-top:8px">Artifacts appear here as the job produces them…</div>`;
+  }else{
+    h+=`<div class="dim" style="margin-top:8px">This job recorded no artifacts.</div>`;
+  }
+  h+=`</div>`;
+  $('#view').innerHTML=h;
+  clearTimeout(jobDetailTimer);
+  if(running)jobDetailTimer=setTimeout(()=>{if((location.hash||'').startsWith('#job/'+id))vJobDetail(id)},1000);
 }
 /* Escrow-bundle blurb for the kit result — built with plain concatenation to keep
    the dlg template from nesting three levels deep (which trips some JS parsers). */
@@ -2731,6 +2897,27 @@ async function vSettings(){
     <textarea id="ks" class="full" rows="3" style="font:12px var(--mono)">${esc((cfg.keystore_paths||[]).join('\n'))}</textarea>
     <div class="help">One folder per line, on at least two different physical devices. A keystore holds the passphrases that lock and unlock your encrypted backups; without them, encrypted backups can't be built or restored. Your secrets never touch the catalog.${ks.ok?' <b style="color:var(--ok)">In sync ✓</b>':''}</div>
     <div class="row" style="margin-top:12px"><button class="btn" onclick="saveCfg()">Save storage settings</button></div>
+  </div>`;
+
+  // ---- 2b. Back up this app (migration to a new computer) ----
+  const aec=cfg.auto_export_cadence||'off';
+  h+=`<div class="panel"><h2>Back up this app's records</h2>
+    <div class="help">One file that carries everything this tool knows — the catalog, settings, and job history — so it can move to a new computer or OS. It is <b>not</b> your file content; it's the brain. <a href="${HANDBOOK}12-moving-to-a-new-computer.md" target="_blank" rel="noopener" style="color:var(--act)">Moving to a new computer →</a></div>
+    <div class="row" style="margin-top:12px;gap:8px">
+      <button class="btn" onclick="appBackupDlg()">Back up this app's records…</button>
+      <button class="btn ghost" onclick="appRestoreDlg()">Restore from an app backup…</button>
+    </div>
+    <label style="margin-top:16px">Automatic backups (optional)</label>
+    <div class="row" style="gap:8px;align-items:flex-start">
+      <div style="flex:1"><input id="aed" class="full" value="${esc(cfg.auto_export_dir||'')}" placeholder="a folder on a NAS or always-connected drive">${browseBtn('aed')}</div>
+      <select id="aec" class="full" style="max-width:180px">
+        <option value="off"${aec==='off'?' selected':''}>Off</option>
+        <option value="daily"${aec==='daily'?' selected':''}>Every day</option>
+        <option value="weekly"${aec==='weekly'?' selected':''}>Every week</option>
+      </select>
+    </div>
+    <div class="help">When set, the app writes one backup per period into that folder (keys never included). One per day/week — it won't pile up. Shown on the <a href="#where" class="wherelink">Where your data lives</a> map.</div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="saveCfg()">Save backup settings</button></div>
   </div>`;
 
   // ---- 3. Integrity (unified) ----
@@ -3065,6 +3252,7 @@ async function saveCfg(){
   const int=(id,dflt)=>{const v=gv(id);if(v==null)return undefined;const n=parseInt(v);return isNaN(n)?dflt:n;};
   const body={};const put=(k,v)=>{if(v!==undefined)body[k]=v;};
   put('staging_dir',gt('st'));
+  put('auto_export_dir',gt('aed'));put('auto_export_cadence',gv('aec'));
   const ksv=gv('ks');if(ksv!=null)body.keystore_paths=ksv.split('\n').map(s=>s.trim()).filter(Boolean);
   put('default_profile',gt('defprof'));
   put('required_copies',int('rc',2));
@@ -3106,6 +3294,78 @@ async function pickRender(path){let data;
       <button class="btn" onclick="pickUse()">Use this folder</button></div>`;
   $('#pick').innerHTML=h}
 function pickUse(){const p=(($('#pickpath')||{}).value||'').trim()||_pickPath;const d=$('#pick');if(d)d.close();if(_pickCb)_pickCb(p)}
+
+/* ---- file picker: like the folder picker but lists FILES too, for pointing at a
+   specific file (e.g. an app-backup .tar). Optional accept suffix filters the list. */
+let _pfCb=null,_pfAccept='';
+function pickFileBtn(id,accept){return `<button type="button" class="btn ghost" style="padding:4px 10px;font-size:12px;margin-top:4px" onclick="pickFile((($('#${id}')||{}).value||'').trim(),p=>{const el=$('#${id}');if(el)el.value=p},'${accept||''}')">Browse…</button>`}
+async function pickFile(start,cb,accept){_pfCb=cb;_pfAccept=(accept||'').toLowerCase();let d=$('#pickf');if(!d){d=document.createElement('dialog');d.id='pickf';document.body.append(d)}await pickFileRender(start||'');d.showModal()}
+async function pickFileRender(path){let data;
+  try{data=await api('GET','/api/browse?files=1'+(path?('&path='+encodeURIComponent(path)):''))}catch(e){toast(e.message,1);return}
+  const cur=data.path||'';window._pfDirs=data.dirs||[];window._pfParent=data.roots?'':(data.parent||'');
+  window._pfFiles=(data.files||[]).filter(f=>!_pfAccept||f.name.toLowerCase().endsWith(_pfAccept));
+  let h=`<h1>Choose a backup file</h1>
+    <div class="row" style="gap:6px;margin-bottom:8px">
+      ${data.roots?'<span class="dim mono" style="font-size:11px">drives &amp; common roots</span>':`<button class="btn ghost" style="padding:6px 10px" onclick="pickFileRender(window._pfParent)">Up</button>`}
+      <input id="pffpath" class="full" style="flex:1;font:12px var(--mono)" value="${esc(cur)}" placeholder="type a path to a .tar backup"></div>
+    <div style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:6px">`;
+  const dirs=window._pfDirs,files=window._pfFiles;
+  if(!dirs.length&&!files.length)h+='<div class="dim" style="padding:12px">Nothing to choose here.</div>';
+  for(let i=0;i<dirs.length;i++)h+=`<div class="row" style="padding:6px 10px;border-bottom:1px solid var(--line-2);cursor:pointer;gap:8px" onclick="pickFileRender(window._pfDirs[${i}].path)"><span style="flex:1">📁 ${esc(dirs[i].name)}/</span></div>`;
+  for(let i=0;i<files.length;i++)h+=`<div class="row" style="padding:6px 10px;border-bottom:1px solid var(--line-2);cursor:pointer;gap:8px" onclick="pickFileUse(window._pfFiles[${i}].path)"><span style="flex:1">📄 ${esc(files[i].name)}</span></div>`;
+  h+=`</div><div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn ghost" onclick="document.querySelector('#pickf').close()">Cancel</button>
+      <button class="btn" onclick="pickFileUse((($('#pffpath')||{}).value||'').trim())">Use this path</button></div>`;
+  $('#pickf').innerHTML=h}
+function pickFileUse(p){if(!p)return;const d=$('#pickf');if(d)d.close();if(_pfCb)_pfCb(p)}
+
+/* ================= App backup (export/restore) ================= */
+function appBackupDlg(){
+  dlg(`<h1>Back up this app's records</h1>
+    <div class="help" style="margin-bottom:10px">Writes one <span class="mono">.tar</span> file (plus a <span class="mono">.sha256</span> checksum) holding the catalog, settings, and job history — everything the tool knows. Put it on a USB drive or NAS to carry to a new computer. It contains <b>no file content</b>.</div>
+    <label>Destination folder</label>
+    <input id="abdest" class="full" placeholder="e.g. a USB drive or NAS folder">${browseBtn('abdest')}
+    <label class="row" style="gap:8px;align-items:flex-start;margin-top:14px"><input id="abkeys" type="checkbox" style="width:auto;margin-top:3px"><span><b>Your encryption keys are NOT in this backup.</b> Copy your keystore files separately, or check this box to include them (they are secrets — only for a backup you keep private).</span></label>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Create backup</button></div>`,
+  async()=>{
+    const dest=(($('#abdest')||{}).value||'').trim();if(!dest){toast('Destination folder required',1);throw new Error('dest')}
+    const keys=!!($('#abkeys')&&$('#abkeys').checked);
+    if(keys&&!confirm('Include your encryption keystores (secrets) in this backup? Anyone with the file could decrypt your archives. Only continue for a backup you will keep private.'))throw new Error('cancelled');
+    await api('POST','/api/appbackup/export',{dest_dir:dest,include_keys:keys});
+    toast('Backup started — see Jobs for the file it writes',1);loc('jobs');
+  });
+}
+function appRestoreDlg(){
+  dlg(`<h1>Restore from an app backup</h1>
+    <div class="err" style="margin-bottom:10px">This <b>replaces</b> the app's current records with the backup's. Your current catalog, settings, and job history are automatically backed up first (to a <span class="mono">pre-restore-…</span> folder), so it's reversible.</div>
+    <label>Backup file (.tar)</label>
+    <input id="arpath" class="full" placeholder="path to mnemosyne-appbackup-….tar">${pickFileBtn('arpath','.tar')}
+    <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="appRestoreInspect()">Check this backup</button></div>
+    <div id="arinfo" class="dim" style="font-size:12px;margin-top:8px"></div>
+    <div class="row" style="margin-top:16px"><button class="btn" onclick="go()">Restore (replace current records)</button></div>`,
+  async()=>{
+    const p=(($('#arpath')||{}).value||'').trim();if(!p){toast('Backup file required',1);throw new Error('path')}
+    const r=await api('POST','/api/appbackup/restore',{tar_path:p});
+    appRestoreSummary(r);
+  });
+}
+async function appRestoreInspect(){
+  const p=(($('#arpath')||{}).value||'').trim();if(!p){toast('Enter a backup file path first',1);return}
+  const el=$('#arinfo');if(el)el.textContent='Checking…';
+  try{const m=await api('POST','/api/appbackup/inspect',{tar_path:p});
+    if(el)el.innerHTML=`<span style="color:var(--ok)">✓ Valid backup</span> — schema v${m.schema_version}, made ${esc((m.created||'').slice(0,10))} by ${esc(m.app_version||'?')}, ${(m.members||[]).length} item(s)${m.includes_keys?' · <b>includes keystores</b>':''}.`;
+  }catch(e){if(el)el.innerHTML=`<span class="err">${esc(e.message)}</span>`;}
+}
+function appRestoreSummary(r){
+  dlg(`<h1>Records restored</h1>
+    <div class="panel"><div style="font-size:14px">Recovered <b>${r.archives}</b> archive(s), <b>${(r.files||0).toLocaleString()}</b> file(s), <b>${r.volumes}</b> volume(s), <b>${r.packages}</b> package(s), and <b>${r.jobs}</b> job(s). Verification history (<b>${r.verify_events}</b> recorded check(s)) came across intact.</div>
+    ${r.included_keys?'<div class="dim" style="margin-top:6px">Encryption keystores were included and restored.</div>':'<div class="dim" style="margin-top:6px">Encryption keys were not in this backup — copy your keystore files onto this machine and point <b>Settings → keystores</b> at them.</div>'}
+    <div class="dim" style="margin-top:8px">Your previous records were saved to <span class="mono">${esc(r.pre_restore_dir||'')}</span>.</div>
+    ${r.read_only?`<div class="err" style="margin-top:8px">${esc(r.read_only_why||'')}</div>`:''}
+    <div style="margin-top:10px;font-size:13px"><b>Next:</b> plug in any drive and the app will recognize it by its serial — no re-adopting needed.</div></div>
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="go()">Go to Home</button></div>`,
+  async()=>{loc('home');});
+}
 
 /* ================= Events ================= */
 const ROLE_ROUTE_ORDER=['ORIGINALS','DELIVERABLES','SIDECARS','PROJECT-FILES','OTHER'];
@@ -3493,7 +3753,7 @@ function dlg(html,onGo){let d=$('#dlg');if(!d){d=document.createElement('dialog'
   dlgGo=async()=>{try{await onGo();d.close()}catch(e){toast(e.message,1)}};
   d.showModal()}
 function go(){if(dlgGo)dlgGo()}
-const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,cardcheck:vCardCheck,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,quarantine:vQuarantine,keys:vKeys,jobs:vJobs,settings:vSettings,where:vWhere};
+const views={home:vHome,vault:vVault,protection:vProtection,integrity:vIntegrity,packages:vChunks,burn:vBurn,volumes:vVolumes,locations:vLocations,dock:vDock,cardcheck:vCardCheck,events:vEvents,templates:vTemplates,plans:vPlans,conflicts:vConflicts,quarantine:vQuarantine,keys:vKeys,jobs:vJobs,job:vJobDetail,explore:vExplore,settings:vSettings,where:vWhere};
 function loc(v){location.hash='#'+v}
 
 /* ---- grouped, collapsible navigation with plain job-description tooltips ---- */
@@ -3526,6 +3786,7 @@ const NAV_GROUPS=[
   ]},
   {id:'CHECK',situational:true,items:[
     ['integrity','Verify','How thoroughly to check your backups — and run those checks','guided'],
+    ['explore','Explore data','Browse any archive or drive — structure, sizes, and what’s verified','standard'],
     ['conflicts','Conflicts','Two versions of one file disagree — pick which to keep','standard'],
   ]},
   {id:'RECOVER',situational:true,items:[
@@ -3557,7 +3818,7 @@ function navGroupCollapsed(g){const s=navCollapsedState();return (id=>id in s?s[
 let _navStart=false; // show the "start here" cue on Home while the catalog is empty
 function renderNav(){
   const box=$('#navgroups');if(!box)return;
-  const active=(location.hash||'#home').slice(1);
+  const active=(location.hash||'#home').slice(1).split('/')[0];
   const guided=_uiMode==='guided';
   const link=([v,label,desc])=>`<a href="#${v}" data-v="${v}" title="${esc(desc)}" data-desc="${esc(desc)}"${v===active?' class="on"':''}>${esc(label)}${(v==='home'&&_navStart)?'<span class="navstart">start here</span>':''}</a>`;
   box.innerHTML=NAV_GROUPS.map(g=>{
@@ -3634,9 +3895,14 @@ function injectModeChrome(v){
     pre+=`<div class="purpose">${esc(viewDesc[v])}</div>`;
   if(pre)view.insertAdjacentHTML('afterbegin',pre);
 }
-function route(){const v=(location.hash||'#home').slice(1);
+function route(){const raw=(location.hash||'#home').slice(1);
+  // Parametric routes: "view/arg" (e.g. job/12, explore/7). The base view keys the
+  // views map + nav highlight; the arg is passed to the view function.
+  const sl=raw.indexOf('/');
+  const v=sl>=0?raw.slice(0,sl):raw;
+  const arg=sl>=0?decodeURIComponent(raw.slice(sl+1)):undefined;
   renderNav(); // active item's group auto-expands + highlights
-  Promise.resolve((views[v]||vHome)()).then(()=>injectModeChrome(v)).catch(e=>toast(e.message,1));
+  Promise.resolve((views[v]||vHome)(arg)).then(()=>injectModeChrome(v)).catch(e=>toast(e.message,1));
 }
 window.addEventListener('hashchange',route);
 // Load the saved view mode before the first paint, then render.

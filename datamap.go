@@ -80,6 +80,19 @@ func (a *App) DataMap() DataMap {
 	}
 	dm.Writes = append(dm.Writes, staging)
 
+	appbk := DataLocation{
+		Name: "App backups (export)",
+		What: "One-file snapshots of everything the tool knows — the catalog, settings, and job history — so it can move to a new computer. Written only when you run \"Back up this app's records\" or turn on automatic backups.",
+		Path: cfg.AutoExportDir,
+	}
+	if strings.TrimSpace(cfg.AutoExportDir) == "" {
+		appbk.Missing = true
+		appbk.Warn = "Automatic app backups are off. Run one anytime from Settings, or set a folder + cadence there."
+	} else {
+		appbk.Note = "Automatic cadence: " + autoExportCadenceLabel(cfg.AutoExportCadence) + "."
+	}
+	dm.Writes = append(dm.Writes, appbk)
+
 	dm.Writes = append(dm.Writes,
 		DataLocation{
 			Name: "Destinations you choose",

@@ -632,12 +632,13 @@ type KeyMeta struct { // secrets are NEVER here — keystore files only
 }
 
 type Job struct {
-	ID        int       `json:"id"`
-	Kind      string    `json:"kind"`
-	Label     string    `json:"label"`
-	Status    string    `json:"status"` // RUNNING COMPLETED FAILED
-	Progress  float64   `json:"progress"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         int        `json:"id"`
+	Kind       string     `json:"kind"`
+	Label      string     `json:"label"`
+	Status     string     `json:"status"` // RUNNING COMPLETED FAILED INTERRUPTED
+	Progress   float64    `json:"progress"`
+	CreatedAt  time.Time  `json:"created_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"` // set when the job reaches a terminal state
 	// Live telemetry for byte-moving jobs (copy/write/mirror): current throughput
 	// and estimated time remaining, surfaced on the job row instead of a bare %.
 	RateMBps   float64        `json:"rate_mbps,omitempty"`
@@ -647,6 +648,30 @@ type Job struct {
 	FilesDone  int64          `json:"files_done,omitempty"`  // count-based progress (scan/drift/dock/mirror)
 	FilesTotal int64          `json:"files_total,omitempty"` // total files this job will touch (0 = unknown)
 	Result     map[string]any `json:"result,omitempty"`      // the finished job's artifact/summary (path, counts, …)
+	// Artifacts is the structured list of concrete things the job produced —
+	// packages staged, files copied, labels/kits generated, catalog records touched.
+	// Each carries a Show action (a view + id the UI routes to). Recorded as the job
+	// produces them and persisted alongside the job, so a finished job can always
+	// answer "what did I make, and where can I see it?" (the show-the-artifact rule,
+	// made structural). See Artifact.
+	Artifacts []Artifact `json:"artifacts,omitempty"`
+}
+
+// Artifact is one concrete output a Job produced. The Show* fields locate it in
+// the UI so a job's detail view can open the thing itself (the package's detail,
+// the archive explorer scoped to what a scan covered, the volume, an export path).
+type Artifact struct {
+	Kind  string `json:"kind"`  // package | file | label | kit | catalog | export | volume | drift
+	Label string `json:"label"` // human name ("NSP-C0003", "142 files cataloged")
+	Path  string `json:"path,omitempty"`
+	Size  int64  `json:"size,omitempty"`
+	Count int    `json:"count,omitempty"`
+	// Show action target — the view + id the UI routes to. ShowView is a UI view
+	// name ("packages"→chunk, "explore"→collection, "volumes"→volume, "drift"→
+	// collection); ShowPath optionally scopes the explorer to a sub-path.
+	ShowView string `json:"show_view,omitempty"`
+	ShowID   int    `json:"show_id,omitempty"`
+	ShowPath string `json:"show_path,omitempty"`
 }
 
 type Audit struct {
@@ -996,6 +1021,7 @@ type Store struct {
 		mu   sync.Mutex
 		next int
 		rows []*Job
+		path string // jobs.json sidecar (persists the board across restarts)
 	}
 }
 
@@ -1020,6 +1046,7 @@ func OpenStore(dataDir string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{path: filepath.Join(dataDir, "catalog.json")}
+	s.jobs.path = filepath.Join(dataDir, "jobs.json")
 	s.c.NextID = map[string]int{}
 	existed := false
 	var raw []byte
@@ -1115,6 +1142,12 @@ func OpenStore(dataDir string) (*Store, error) {
 	if recovered {
 		_ = s.save()
 	}
+	// Load the persisted job board (sidecar), reconciling any job left RUNNING —
+	// its goroutine died with the previous process — to INTERRUPTED so it is picked
+	// up and visible with its partial artifacts rather than silently lost. The work
+	// itself isn't auto-resumed; resumable ops (burn, span) are re-triggered by the
+	// operator, and the chunk-status recovery above already reset mid-flight builds.
+	s.loadJobs()
 	return s, nil
 }
 
@@ -2923,7 +2956,68 @@ func (s *Store) KeyMetas() []*KeyMeta {
 	return append([]*KeyMeta{}, s.c.Keys...)
 }
 
-// ---- jobs (in-memory; a restart clears the board, catalog is truth) ----
+// ---- jobs (persisted to a jobs.json sidecar; in-progress ones are picked up as
+// INTERRUPTED on the next open — see loadJobs) --------------------------------
+
+// saveJobs persists the job board to the sidecar (atomic temp-swap, same shape as
+// writeCatalog). Called ONLY on meaningful transitions — create, artifact change,
+// and terminal status — never on progress/telemetry ticks (those fire many times a
+// second and stay in-memory; they carry nothing worth surviving a restart). Caller
+// holds s.jobs.mu.
+func (s *Store) saveJobs() {
+	if s.jobs.path == "" {
+		return
+	}
+	b, err := json.MarshalIndent(struct {
+		Next int    `json:"next"`
+		Rows []*Job `json:"rows"`
+	}{s.jobs.next, s.jobs.rows}, "", " ")
+	if err != nil {
+		return
+	}
+	tmp := s.jobs.path + ".tmp"
+	if os.WriteFile(tmp, b, 0o644) == nil {
+		_ = os.Rename(tmp, s.jobs.path)
+	}
+}
+
+// loadJobs restores the board from the sidecar on open. A job still marked RUNNING
+// belonged to a process that has since exited, so it can never complete — flip it
+// to INTERRUPTED (and clear stale live telemetry) so the UI shows it honestly.
+func (s *Store) loadJobs() {
+	if s.jobs.path == "" {
+		return
+	}
+	b, err := os.ReadFile(s.jobs.path)
+	if err != nil || len(b) == 0 {
+		return
+	}
+	var in struct {
+		Next int    `json:"next"`
+		Rows []*Job `json:"rows"`
+	}
+	if json.Unmarshal(b, &in) != nil {
+		return
+	}
+	s.jobs.mu.Lock()
+	defer s.jobs.mu.Unlock()
+	s.jobs.next = in.Next
+	changed := false
+	for _, j := range in.Rows {
+		if j.Status == "RUNNING" {
+			j.Status = "INTERRUPTED"
+			j.RateMBps, j.ETASeconds = 0, 0
+			changed = true
+		}
+		if j.ID > s.jobs.next {
+			s.jobs.next = j.ID
+		}
+	}
+	s.jobs.rows = in.Rows
+	if changed {
+		s.saveJobs()
+	}
+}
 
 func (s *Store) NewJob(kind, label string) *Job {
 	s.jobs.mu.Lock()
@@ -2931,12 +3025,14 @@ func (s *Store) NewJob(kind, label string) *Job {
 	s.jobs.next++
 	j := &Job{ID: s.jobs.next, Kind: kind, Label: label, Status: "RUNNING", CreatedAt: time.Now().UTC()}
 	s.jobs.rows = append(s.jobs.rows, j)
+	s.saveJobs()
 	return j
 }
 
 func (s *Store) SetJob(id int, progress float64, label, status string) {
 	s.jobs.mu.Lock()
 	defer s.jobs.mu.Unlock()
+	terminal := false
 	for _, j := range s.jobs.rows {
 		if j.ID == id {
 			if progress >= 0 {
@@ -2947,9 +3043,60 @@ func (s *Store) SetJob(id int, progress float64, label, status string) {
 			}
 			if status != "" {
 				j.Status = status
+				if status == "COMPLETED" || status == "FAILED" || status == "INTERRUPTED" {
+					terminal = true
+					now := time.Now().UTC()
+					j.FinishedAt = &now
+				}
 			}
 		}
 	}
+	// Persist only when a job reaches a terminal state — progress-only updates stay
+	// in-memory (the sidecar carries outcomes, not live progress).
+	if terminal {
+		s.saveJobs()
+	}
+}
+
+// AppendJobArtifact records one artifact on a running job and persists it, so a
+// job's detail view fills in as the work produces outputs.
+func (s *Store) AppendJobArtifact(id int, a Artifact) {
+	s.jobs.mu.Lock()
+	defer s.jobs.mu.Unlock()
+	for _, j := range s.jobs.rows {
+		if j.ID == id {
+			j.Artifacts = append(j.Artifacts, a)
+			s.saveJobs()
+			return
+		}
+	}
+}
+
+// SetJobArtifacts replaces a job's artifact list (used when a job reports all its
+// artifacts at once on completion) and persists.
+func (s *Store) SetJobArtifacts(id int, arts []Artifact) {
+	s.jobs.mu.Lock()
+	defer s.jobs.mu.Unlock()
+	for _, j := range s.jobs.rows {
+		if j.ID == id {
+			j.Artifacts = arts
+			s.saveJobs()
+			return
+		}
+	}
+}
+
+// Job returns a single job by ID (nil if unknown).
+func (s *Store) Job(id int) *Job {
+	s.jobs.mu.Lock()
+	defer s.jobs.mu.Unlock()
+	for _, j := range s.jobs.rows {
+		if j.ID == id {
+			cp := *j
+			return &cp
+		}
+	}
+	return nil
 }
 
 // SetJobTelemetry updates a running job's live throughput/ETA (0s clear it).
@@ -2975,6 +3122,7 @@ func (s *Store) SetJobResult(id int, result map[string]any) {
 			j.RateMBps, j.ETASeconds = 0, 0
 		}
 	}
+	s.saveJobs()
 }
 
 func (s *Store) Jobs() []*Job {

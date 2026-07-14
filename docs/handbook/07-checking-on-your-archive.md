@@ -116,7 +116,46 @@ You should now have every archive rescanned, every medium freshly verified, and 
 - **A status stays purple after you verified.** The verify may not have been level B, or the copy is on a medium your policy disallows. Re-run the verify at level B, or move that copy to an allowed medium.
 - **You're overwhelmed by the report.** Start with red only. One red item fixed is real progress. The app never deletes anything, so you can take your time.
 
+## Seeing what happened
+
+Every job — a scan, a build, a write, a verify — should answer three plain
+questions: **what did it do, to what, and where can I see the result?** Two places
+answer them.
+
+**After any job: open its detail.** On the **Jobs** page, click any row — running
+or finished. You get a plain summary (what ran, on what, how long it took), live
+counters while it's still going (files done, MB/s), and an **Artifacts** list: every
+concrete thing the job produced — a package staged (with its folder and size), files
+copied, a catalog record touched, a drift report. Each artifact has a **Show**
+button that opens the thing itself, so you're never left wondering where the output
+went. Jobs are remembered across restarts; if one was cut off by a shutdown it shows
+as **INTERRUPTED**, so you know to run it again rather than assuming it finished.
+
+**After any scan or verify: open the Explorer.** A scan or verify job's detail has a
+**View results** button that opens the **Explorer** (also reachable on its own from
+**Check → Explore data**). The Explorer draws your archive as a size-weighted map —
+each rectangle is a folder or file, and its area is how many bytes it holds — beside
+a breakdown panel (totals, largest folders, file roles, counts by type). Switch the
+colouring to **Validation** to see, at a glance, what is actually proven:
+
+- **Green ✓** — a verified copy of this file exists on your media.
+- **Neutral** — the file is hashed and catalogued, but no copy has been verified yet.
+- **Red ✗** — a copy that should hold this file **failed** its last check.
+
+Colour is always paired with text, so the state is readable without relying on
+colour alone. Click any block to zoom in; use the breadcrumb to zoom back out. This
+is the fastest way to confirm a checkup did what you expected: run a verify, open the
+Explorer in Validation colouring, and watch the reds turn green.
+
+The same Explorer browses an **unplugged drive** you've inventoried — pick it under
+**Drive snapshots** — so you can look through a drive's captured contents (structure,
+sizes, roles) without plugging it back in.
+
+---
+
 ## Screenshots to capture
 
 - `../img/07-checking-on-your-archive-verify.png` — "Verify a medium…" dialog on the Packages tab with level B selected.
 - `../img/07-checking-on-your-archive-drift.png` — "Rescan & compare" drift report showing unarchived/modified/missing/moved files.
+- `../img/07-checking-on-your-archive-jobdetail.png` — a finished job's detail view with its Artifacts list and Show actions.
+- `../img/07-checking-on-your-archive-explorer.png` — the Explorer with Validation colouring, greens and reds beside the breakdown panel.

@@ -79,6 +79,23 @@ func driftSeverity(s string) int {
 	return 1
 }
 
+// validationSeverity ranks catalog-derived verify states for the folder rollup,
+// higher = more attention-worthy. FAILED wins so a folder holding any failed-verify
+// file shows red; a fully-verified folder shows green.
+func validationSeverity(s string) int {
+	switch s {
+	case "FAILED":
+		return 5
+	case "UNHASHED":
+		return 3
+	case "HASHED":
+		return 2
+	case "VERIFIED":
+		return 1
+	}
+	return 0
+}
+
 // treemapAgg accumulates one child (directory or file) at the current level.
 type treemapAgg struct {
 	name        string
@@ -121,9 +138,21 @@ func (s *Store) Treemap(collectionID int, dirPath, colorBy string) TreemapResult
 	}
 	locs := s.locationsMapLocked()
 	fileCopies := map[int]map[string]physCopy{}
+	// failedFiles: files backed by a chunk copy whose last verify FAILED (VerifyOK
+	// explicitly false). Used only by the "validation" coloring — a verified copy
+	// (fileCopies) still wins, so red marks files whose backups failed a check.
+	failedFiles := map[int]bool{}
 	for _, ch := range s.c.Chunks {
 		if ch.CollectionID != collectionID || ch.Status == "FAILED" {
 			continue
+		}
+		for _, cp := range ch.Copies {
+			if cp.VerifyOK != nil && !*cp.VerifyOK {
+				for _, cf := range ch.Files {
+					failedFiles[cf.FileID] = true
+				}
+				break
+			}
 		}
 		pcs := chunkPhysCopies(ch, vols, locs)
 		if len(pcs) == 0 {
@@ -160,12 +189,17 @@ func (s *Store) Treemap(collectionID int, dirPath, colorBy string) TreemapResult
 		}
 	}
 	useDrift := strings.EqualFold(colorBy, "drift") && res.DriftAvailable
+	useValidation := strings.EqualFold(colorBy, "validation")
 	if useDrift {
 		res.ColorBy = "drift"
+	} else if useValidation {
+		res.ColorBy = "validation"
 	}
 	severity := statusSeverity
 	if useDrift {
 		severity = driftSeverity
+	} else if useValidation {
+		severity = validationSeverity
 	}
 
 	profCache := map[string]*Profile{}
@@ -231,7 +265,21 @@ func (s *Store) Treemap(collectionID int, dirPath, colorBy string) TreemapResult
 
 		// Status of this file in the active coloring mode.
 		var st string
-		if useDrift {
+		if useValidation {
+			// Catalog-derived verify state: a verified copy wins (green); otherwise a
+			// file whose backup failed a check is red; a hashed-but-unverified file is
+			// neutral; an unhashed one is grey.
+			switch {
+			case len(fileCopies[f.ID]) > 0:
+				st = "VERIFIED"
+			case failedFiles[f.ID]:
+				st = "FAILED"
+			case f.Hash != "":
+				st = "HASHED"
+			default:
+				st = "UNHASHED"
+			}
+		} else if useDrift {
 			if v, ok := driftByRel[normPath(f.RelPath)]; ok {
 				st = v
 			} else {
@@ -348,4 +396,135 @@ func lastSeg(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// ExploreStatBucket is one (name, files, bytes) row in the Explorer info panel —
+// used for the largest-folders, per-role, and per-extension breakdowns.
+type ExploreStatBucket struct {
+	Name  string `json:"name"`
+	Files int    `json:"files"`
+	Bytes int64  `json:"bytes"`
+}
+
+// ExploreStats is the info panel beside the treemap: totals plus the largest
+// folders, role breakdown, and per-extension counts, all scoped to dirPath.
+type ExploreStats struct {
+	CollectionID   int                 `json:"collection_id"`
+	Path           string              `json:"path"`
+	TotalFiles     int                 `json:"total_files"`
+	TotalBytes     int64               `json:"total_bytes"`
+	LargestFolders []ExploreStatBucket `json:"largest_folders"`
+	Roles          []ExploreStatBucket `json:"roles"`
+	Extensions     []ExploreStatBucket `json:"extensions"`
+}
+
+// exploreStatsMaxRows caps each breakdown list so a million-file archive still
+// returns a readable panel (the treemap's own folding handles the map).
+const exploreStatsMaxRows = 24
+
+// ExploreStats computes the Explorer info-panel breakdown for one archive, scoped
+// to dirPath ("" = whole archive). Pure catalog read — never walks the disk, the
+// same contract as Treemap. Largest folders are the immediate children of dirPath
+// (directories), matching what the treemap draws at that level.
+func (s *Store) ExploreStats(collectionID int, dirPath string) ExploreStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res := ExploreStats{CollectionID: collectionID, Path: dirPath}
+	folderPath := map[int]string{}
+	for _, fo := range s.c.Folders {
+		if fo.CollectionID == collectionID {
+			folderPath[fo.ID] = filepath.ToSlash(fo.Path)
+		}
+	}
+	P := strings.TrimRight(filepath.ToSlash(dirPath), "/")
+	nP := normPath(P)
+	archiveRoot := P == ""
+
+	folders := map[string]*statAcc{}
+	roles := map[string]*statAcc{}
+	exts := map[string]*statAcc{}
+	bump := func(m map[string]*statAcc, key string, bytes int64) {
+		a := m[key]
+		if a == nil {
+			a = &statAcc{}
+			m[key] = a
+		}
+		a.files++
+		a.bytes += bytes
+	}
+
+	for _, f := range s.c.Files {
+		if f.CollectionID != collectionID {
+			continue
+		}
+		root := folderPath[f.FolderID]
+		full := filepath.ToSlash(filepath.Join(root, f.RelPath))
+
+		// Immediate child folder of the current level this file rolls up into.
+		var childName string
+		if archiveRoot {
+			childName = lastSeg(root)
+		} else {
+			nFull := normPath(full)
+			if nFull != nP && !strings.HasPrefix(nFull, nP+"/") {
+				continue // not under the zoomed directory
+			}
+			if len(full) <= len(P)+1 {
+				continue
+			}
+			rest := full[len(P)+1:]
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				childName = rest[:i] // a sub-directory
+			} else {
+				childName = "" // a file directly at this level (no folder bucket)
+			}
+		}
+
+		res.TotalFiles++
+		res.TotalBytes += f.SizeBytes
+		if childName != "" {
+			bump(folders, childName, f.SizeBytes)
+		}
+		role := f.Role
+		if role == "" {
+			role = RoleOther
+		}
+		bump(roles, role, f.SizeBytes)
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(f.RelPath), "."))
+		if ext == "" {
+			ext = "(none)"
+		}
+		bump(exts, ext, f.SizeBytes)
+	}
+
+	res.LargestFolders = topBuckets(folders, exploreStatsMaxRows)
+	res.Roles = topBuckets(roles, 0)
+	res.Extensions = topBuckets(exts, exploreStatsMaxRows)
+	return res
+}
+
+// statAcc accumulates files+bytes for one Explorer breakdown bucket.
+type statAcc struct {
+	files int
+	bytes int64
+}
+
+// topBuckets flattens an accumulator map into rows sorted by bytes desc (name as
+// tiebreak). limit<=0 returns all rows.
+func topBuckets(m map[string]*statAcc, limit int) []ExploreStatBucket {
+	out := make([]ExploreStatBucket, 0, len(m))
+	for name, a := range m {
+		out = append(out, ExploreStatBucket{Name: name, Files: a.files, Bytes: a.bytes})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Bytes != out[j].Bytes {
+			return out[i].Bytes > out[j].Bytes
+		}
+		return out[i].Name < out[j].Name
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }

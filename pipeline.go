@@ -94,6 +94,12 @@ type Config struct {
 	UpdateCheck    bool   `json:"update_check"`              // show a "check the releases page" reminder card; never auto-downloads or phones home
 	LabelSize      string `json:"label_size,omitempty"`      // default printable label size, "W H" (e.g. "2.25in 1.25in")
 	DefaultProfile string `json:"default_profile,omitempty"` // protection profile assigned to a new archive; blank = the built-in 3-2-1 default
+	// ---- app-state backup (see appbackup.go) ----
+	// Optional gentle continuity: when AutoExportCadence is "daily" or "weekly" and
+	// AutoExportDir is set, the app writes one app-backup bundle per period into that
+	// folder (keys never included). Default off. Shown in "Where your data lives".
+	AutoExportDir     string `json:"auto_export_dir,omitempty"`
+	AutoExportCadence string `json:"auto_export_cadence,omitempty"` // "off" (default) | "daily" | "weekly"
 }
 
 // UI mode values (purely presentational).
@@ -158,6 +164,11 @@ func (a *App) SaveConfig(in map[string]any) (Config, error) {
 	}
 	for _, ks := range cfg.KeystorePaths {
 		if err := a.Store.AssertOutsideSources(ks); err != nil {
+			return cfg, err
+		}
+	}
+	if cfg.AutoExportDir != "" {
+		if err := a.Store.AssertOutsideSources(cfg.AutoExportDir); err != nil {
 			return cfg, err
 		}
 	}

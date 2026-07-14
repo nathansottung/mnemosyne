@@ -59,6 +59,17 @@ func main() {
 	}
 	app := &App{DataDir: *dataDir, Store: store}
 	setHashAccel(app.LoadConfig().HashAccel) // apply the persisted hash-acceleration preference at startup
+
+	// Optional gentle continuity: if an auto-export cadence is configured, write one
+	// app-backup bundle per period. A single hourly ticker suffices — maybeAutoExport
+	// is a cheap no-op when off or when this period's file already exists. Best-effort;
+	// a failed auto-export never affects the running app. See appbackup.go.
+	go func() {
+		_ = app.maybeAutoExport(time.Now())
+		for range time.Tick(time.Hour) {
+			_ = app.maybeAutoExport(time.Now())
+		}
+	}()
 	if ro, why := store.ReadOnly(); ro {
 		log.Printf("READ-ONLY: %s", why)
 	}
@@ -381,6 +392,12 @@ func runJob(app *App, kind, label string, fn func(progress func(float64, string)
 			return
 		}
 		app.Store.SetJob(j.ID, 1, "", "COMPLETED")
+		// A job may report its structured artifacts under the "artifacts" key of its
+		// result (the show-the-artifact rule, made structural). Lift them onto the job
+		// record; the rest of the result stays as the free-form summary.
+		if arts, ok := res["artifacts"].([]Artifact); ok && len(arts) > 0 {
+			app.Store.SetJobArtifacts(j.ID, arts)
+		}
 		app.Store.SetJobResult(j.ID, res)
 	}()
 	return map[string]any{"job_id": j.ID, "status": "RUNNING", "label": label}
@@ -526,6 +543,64 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, res)
 	})
+	// App-state backup (see appbackup.go): one plain-tar file + a .sha256 sidecar that
+	// carries the whole brain (catalog, config, job history, format overrides) to a new
+	// machine. Keystores are excluded unless include_keys is set.
+	mux.HandleFunc("POST /api/appbackup/export", func(w http.ResponseWriter, r *http.Request) {
+		b := body(r)
+		dest := s(b, "dest_dir")
+		if strings.TrimSpace(dest) == "" {
+			jsonErr(w, 400, fmt.Errorf("dest_dir (a destination folder) required"))
+			return
+		}
+		includeKeys := bl(b, "include_keys")
+		jsonOut(w, runJob(app, "appbackup", "Back up app records → "+dest, func(p func(float64, string)) (map[string]any, error) {
+			p(0.1, "gathering records")
+			res, err := app.ExportAppBackup(dest, includeKeys)
+			if err != nil {
+				return nil, err
+			}
+			arts := []Artifact{
+				{Kind: "export", Label: filepath.Base(res.TarPath), Path: res.TarPath, Size: res.Bytes},
+				{Kind: "file", Label: filepath.Base(res.SidecarPath), Path: res.SidecarPath},
+			}
+			return map[string]any{
+				"tar_path": res.TarPath, "sidecar_path": res.SidecarPath, "bytes": res.Bytes,
+				"member_count": res.MemberCount, "includes_keys": res.IncludesKeys, "artifacts": arts,
+			}, nil
+		}))
+	})
+	// Read-only validation for a pre-restore preview: hashes + schema check, no writes.
+	mux.HandleFunc("POST /api/appbackup/inspect", func(w http.ResponseWriter, r *http.Request) {
+		tarPath := s(body(r), "tar_path")
+		if strings.TrimSpace(tarPath) == "" {
+			jsonErr(w, 400, fmt.Errorf("tar_path required"))
+			return
+		}
+		man, err := app.InspectAppBackup(tarPath)
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		jsonOut(w, man)
+	})
+	// Restore REPLACES current records (after backing them up first). Verifies the
+	// bundle end-to-end before touching anything; reopens + swaps the store on success.
+	mux.HandleFunc("POST /api/appbackup/restore", func(w http.ResponseWriter, r *http.Request) {
+		tarPath := s(body(r), "tar_path")
+		if strings.TrimSpace(tarPath) == "" {
+			jsonErr(w, 400, fmt.Errorf("tar_path required"))
+			return
+		}
+		res, err := app.RestoreAppBackup(tarPath)
+		if err != nil {
+			jsonErr(w, 400, err)
+			return
+		}
+		app.Store.Log("restore", fmt.Sprintf("app backup restored: %d archives, %d files, %d volumes, %d packages, %d jobs",
+			res.Archives, res.Files, res.Volumes, res.Packages, res.Jobs))
+		jsonOut(w, res)
+	})
 	// Integrity presets — unify the assurance knobs into ARCHIVAL/BALANCED/FAST,
 	// globally or per archive. Individual knobs stay editable (→ "Custom").
 	mux.HandleFunc("GET /api/integrity", func(w http.ResponseWriter, r *http.Request) {
@@ -639,7 +714,18 @@ func api(mux *http.ServeMux, app *App) {
 		}
 		jsonOut(w, runJob(app, "scan", "Scan "+root, func(p func(float64, string)) (map[string]any, error) {
 			n, err := app.ScanFolder(id, root, p)
-			return map[string]any{"files": n}, err
+			if err != nil {
+				return nil, err
+			}
+			// Scope + artifact: a scan cataloged n files under this archive; "View
+			// results" opens the Explorer scoped to the scanned folder.
+			return map[string]any{
+				"files": n, "collection_id": id, "path": root,
+				"artifacts": []Artifact{{
+					Kind: "catalog", Label: fmt.Sprintf("%d files cataloged", n), Count: n,
+					ShowView: "explore", ShowID: id, ShowPath: root,
+				}},
+			}, nil
 		}))
 	})
 	// Adopt a folder-"drive" of loose files into a SOURCELESS archive (union by hash).
@@ -676,7 +762,11 @@ func api(mux *http.ServeMux, app *App) {
 			d, err := app.ReconcileCollection(id, p)
 			var res map[string]any
 			if d != nil {
-				res = map[string]any{"collection_id": id, "changes": d.Changes()}
+				res = map[string]any{"collection_id": id, "changes": d.Changes(),
+					"artifacts": []Artifact{{
+						Kind: "drift", Label: fmt.Sprintf("Drift report — %d change(s)", d.Changes()),
+						Count: d.Changes(), ShowView: "drift", ShowID: id,
+					}}}
 			}
 			return res, err
 		}))
@@ -1377,6 +1467,17 @@ func api(mux *http.ServeMux, app *App) {
 		jsonOut(w, app.Store.Treemap(id, r.URL.Query().Get("path"), r.URL.Query().Get("color")))
 	})
 
+	// Explorer info panel — totals + largest folders, role breakdown, and per-extension
+	// counts scoped to ?path=. Pure catalog read, same as treemap.
+	register(mux, "GET /api/collections/{id}/explore-stats", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r)
+		if app.Store.Collection(id) == nil {
+			jsonErr(w, 404, fmt.Errorf("archive not found"))
+			return
+		}
+		jsonOut(w, app.Store.ExploreStats(id, r.URL.Query().Get("path")))
+	})
+
 	// BagIt conformant-bag export — institutional handoff. Writes a valid bag
 	// (data/ payload + manifests + COMPARISON.md) for the archive.
 	register(mux, "POST /api/collections/{id}/bagit-export", func(w http.ResponseWriter, r *http.Request) {
@@ -1445,7 +1546,27 @@ func api(mux *http.ServeMux, app *App) {
 			return
 		}
 		jsonOut(w, runJob(app, "build", "Build "+c.Name, func(p func(float64, string)) (map[string]any, error) {
-			return nil, app.BuildChunk(id, p)
+			if err := app.BuildChunk(id, p); err != nil {
+				return nil, err
+			}
+			// Re-read the freshly built chunk for its staged path and payload size, and
+			// record the staged package as the job's artifact (Show → its Packages detail).
+			bc := app.Store.Chunk(id)
+			arts := []Artifact{}
+			res := map[string]any{"chunk_id": id}
+			if bc != nil {
+				size := bc.EncBytes
+				if size == 0 {
+					size = bc.DataBytes
+				}
+				res["staged_dir"], res["files"] = bc.StagedDir, bc.FileCount
+				arts = append(arts, Artifact{
+					Kind: "package", Label: bc.Name + " (staged)", Path: bc.StagedDir, Size: size,
+					Count: bc.FileCount, ShowView: "packages", ShowID: id,
+				})
+			}
+			res["artifacts"] = arts
+			return res, nil
 		}))
 	})
 	register(mux, "POST /api/chunks/{id}/write", func(w http.ResponseWriter, r *http.Request) {
@@ -2400,6 +2521,15 @@ func api(mux *http.ServeMux, app *App) {
 	})
 
 	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) { jsonOut(w, app.Store.Jobs()) })
+	// One job with its full artifact list — the job detail view's source.
+	register(mux, "GET /api/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		j := app.Store.Job(pathID(r))
+		if j == nil {
+			jsonErr(w, 404, fmt.Errorf("job not found"))
+			return
+		}
+		jsonOut(w, j)
+	})
 }
 
 func offsiteWord(off bool) string {
