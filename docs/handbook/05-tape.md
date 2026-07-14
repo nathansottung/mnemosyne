@@ -74,7 +74,7 @@ If a Package fits on one tape, this is all you do.
 
 1. Make sure your tape is inserted and shows as a drive letter (Step 1).
 2. On the **Packages** tab, find the package you want to write.
-3. Start the write to tape. Every path box has a **📁 Browse…** button if you need to point at the tape's drive letter.
+3. Start the write to tape. Every path box has a **Browse…** button if you need to point at the tape's drive letter.
 4. Watch the **Jobs** tab. Long jobs run in the background there, with a progress bar, a live speed in MB/s (megabytes per second), and an ETA (estimated time remaining).
 
 ![Jobs tab showing a tape write in progress with MB/s and ETA](../img/05-tape-write.png)

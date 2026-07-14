@@ -113,13 +113,13 @@ func keySheet(ref, note, fingerprint, pass string) string {
 	}
 	b.WriteString("fingerprint:  " + fingerprint + "   (SHA-256 of the passphrase)\n")
 	b.WriteString("length:       " + fmt.Sprintf("%d characters", len(pass)) + "\n\n")
-	b.WriteString("⚠ SECRET: these characters ARE the passphrase in the clear — the same secret\n")
+	b.WriteString("SECRET: these characters ARE the passphrase in the clear — the same secret\n")
 	b.WriteString("as the QR card. Store this sheet like a key: locked, off-site, access-controlled.\n\n")
 	b.WriteString("HOW TO USE (no scanner, no special software):\n")
 	b.WriteString("  • Retype every GROUP left-to-right, top-to-bottom, with NO spaces. That\n")
 	b.WriteString("    exact string is the passphrase.\n")
 	b.WriteString("  • The [XXXX] code after each line is that line's CRC-16 (CCITT) check —\n")
-	b.WriteString("    Mnemosyne ▸ Keys ▸ \"Enter key from sheet\" checks every line and pinpoints\n")
+	b.WriteString("    Mnemosyne -> Keys -> \"Enter key from sheet\" checks every line and pinpoints\n")
 	b.WriteString("    the exact line to fix if a single character is wrong.\n")
 	b.WriteString("  • Tool-free FINAL proof: the SHA-256 of the whole passphrase equals the\n")
 	b.WriteString("    fingerprint above. Retype it all, then check by hand with:\n")
@@ -206,14 +206,14 @@ func keyPageHTML(ref, note, fingerprint, pass, qrDataURI string) string {
 	b.WriteString(fmt.Sprintf(`<tr><td>length</td><td>%d characters</td></tr>`, len(pass)))
 	b.WriteString(`<tr><td>fingerprint</td><td class="mono fp">` + html.EscapeString(fingerprint) + `</td></tr>`)
 	b.WriteString(`</tbody></table></div>`)
-	b.WriteString(`<p class="howto">Retype every group below left-to-right, top-to-bottom, <strong>no spaces</strong> — that string is the passphrase. The <code>CRC-16</code> after each line lets <em>Keys ▸ Enter key from sheet</em> pinpoint a mistyped line; the tool-free final proof is that the whole passphrase's SHA-256 equals the <em>fingerprint</em> above.</p>`)
+	b.WriteString(`<p class="howto">Retype every group below left-to-right, top-to-bottom, <strong>no spaces</strong> — that string is the passphrase. The <code>CRC-16</code> after each line lets <em>Keys → Enter key from sheet</em> pinpoint a mistyped line; the tool-free final proof is that the whole passphrase's SHA-256 equals the <em>fingerprint</em> above.</p>`)
 	b.WriteString(`<table class="payload"><thead><tr><th>#</th><th>characters (groups of 4)</th><th>CRC-16</th></tr></thead><tbody>`)
 	for _, ln := range keyLines(pass) {
 		b.WriteString(fmt.Sprintf(`<tr><td class="ln">L%02d</td><td class="mono chars">%s</td><td class="mono crc">%s</td></tr>`,
 			ln.No, html.EscapeString(ln.Groups), ln.Code))
 	}
 	b.WriteString(`</tbody></table>`)
-	b.WriteString(`<p class="warn">⚠ SECRET IN THE CLEAR — anyone who reads this page can decrypt the packages. Locked, off-site, access-controlled, exactly like a keystore.</p>`)
+	b.WriteString(`<p class="warn"><strong>Warning:</strong> SECRET IN THE CLEAR — anyone who reads this page can decrypt the packages. Locked, off-site, access-controlled, exactly like a keystore.</p>`)
 	b.WriteString(`</section>`)
 	return b.String()
 }

@@ -40,13 +40,13 @@ import (
 	"time"
 )
 
-const driveEncWarning = "⚠ DRIVE-LEVEL AES (e.g. stenc/LTO hardware encryption) — this medium's bytes are " +
+const driveEncWarning = "DRIVE-LEVEL AES (e.g. stenc/LTO hardware encryption) — this medium's bytes are " +
 	"hardware ciphertext that ONLY a compatible drive holding the drive key can read. It is OUTSIDE the " +
 	"par2→gpg→tar restore story: gpg cannot help, par2 cannot repair what it cannot read. If the drive key " +
 	"is lost, this medium is UNRECOVERABLE by any tool. Preserve the drive key separately from Mnemosyne's keystores."
 
 // driveEncShort is the compact inventory-cell flag.
-const driveEncShort = "⚠ DRIVE-ENCRYPTED (stenc/LTO hardware; drive key required — outside gpg)"
+const driveEncShort = "DRIVE-ENCRYPTED (stenc/LTO hardware; drive key required — outside gpg)"
 
 // anyDriveEncrypted reports whether any volume in the map is drive-encrypted — the
 // trigger for the loud Recovery-Kit banner.

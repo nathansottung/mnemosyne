@@ -483,7 +483,7 @@ func (a *App) AdoptFolder(mountPath string, collectionID, volumeID int, progress
 		summary += fmt.Sprintf(" · %d second-shooter group(s) kept (different camera bodies)", scan.SecondShooter)
 	}
 	if scan.Open > 0 {
-		summary += fmt.Sprintf(" · ⚠ %d content conflict(s) need review", scan.Open)
+		summary += fmt.Sprintf(" · %d content conflict(s) need review", scan.Open)
 	}
 	a.Store.Log("adopt", coll.Name+": "+summary)
 	progress(1.0, summary)

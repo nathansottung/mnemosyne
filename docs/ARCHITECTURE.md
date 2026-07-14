@@ -18,8 +18,8 @@ main.go        HTTP server + REST API + embedded UI (//go:embed ui).
                binds localhost by default; a non-localhost bind (containers)
                REFUSES to start without a bearer token, and authMiddleware then
                gates every /api call (static UI stays public so it can prompt).
-                 │
-                 ▼
+                 |
+                 v
 pipeline.go    App + Config. Keystores, parallel Scan, Plan (group files into
                media-sized packages), BuildChunk (tar → gpg → par2 → manifest
                → RESTORE.txt). The "policy" layer.
@@ -126,8 +126,8 @@ profiles.go    Protection Profiles + the six-status 3-2-1 model. Built-in
                derivation across copies × distinct media kinds × offsite, folder
                worst-of aggregation, and the recompute job. Reads the catalog via
                Store methods; the persisted structs live in store.go.
-                 │
-                 ▼
+                 |
+                 v
 store.go       The catalog. ALL persisted structs (Archive/Collection, File,
                Chunk/Package, Segment, Volume, Copy, VerifyEvent, DriftReport,
                BurnQueue, Profile, Assignment, ProtectionSummary …) and the
@@ -188,32 +188,32 @@ Both are now **proven at build time**, before a package can ever reach media:
 
 ```
   source files on disk
-        │  SHA-256 each (parallel scan)              ← File.Hash / ChunkFileRef.Hash
-        ▼
+        |  SHA-256 each (parallel scan)              ← File.Hash / ChunkFileRef.Hash
+        v
   tar (POSIX, no compression)
-        │  SHA-256 of the tar                        ← Chunk.TarHash
-        │  ── stage_verify: stream-read the tar with Go's archive/tar (no
-        │     extraction, no external tool), hash every member, compare each to
-        │     the catalog's source hash. Proves the package CONTAINS the source,
-        │     byte-exact.                             ← BuildVerified.Contents
-        ▼
+        |  SHA-256 of the tar                        ← Chunk.TarHash
+        |  -- stage_verify: stream-read the tar with Go's archive/tar (no
+        |     extraction, no external tool), hash every member, compare each to
+        |     the catalog's source hash. Proves the package CONTAINS the source,
+        |     byte-exact.                             ← BuildVerified.Contents
+        v
   payload  =  tar            (plaintext package)
           or  gpg(tar)       (encrypted package, AES-256)
-        │  SHA-256 of the payload as written to media ← Chunk.EncHash  ("enc_hash")
-        │  ── crypt_verify (encrypted only): gpg -d piped straight into a SHA-256
-        │     hasher (no plaintext to disk), result compared to tar_hash. Proves
-        │     the ciphertext DECRYPTS back to the verified tar.
-        │                                            ← BuildVerified.DecryptRoundtrip
-        ▼
+        |  SHA-256 of the payload as written to media ← Chunk.EncHash  ("enc_hash")
+        |  -- crypt_verify (encrypted only): gpg -d piped straight into a SHA-256
+        |     hasher (no plaintext to disk), result compared to tar_hash. Proves
+        |     the ciphertext DECRYPTS back to the verified tar.
+        |                                            ← BuildVerified.DecryptRoundtrip
+        v
   par2 parity  (computed OVER the payload)
-        │
-        ▼
+        |
+        v
   [spanning only] payload byte-split into segments
-        │  SHA-256 of each segment's bytes            ← Segment.Hash
-        ▼
+        |  SHA-256 of each segment's bytes            ← Segment.Hash
+        v
   bytes on a Volume
-        │  read-back SHA-256 after write / on verify  ← Copy.VerifyOK + VerifyEvent
-        ▼
+        |  read-back SHA-256 after write / on verify  ← Copy.VerifyOK + VerifyEvent
+        v
   a verified Copy  (package × volume, with location)
 ```
 
@@ -266,8 +266,8 @@ custody chain at whatever link the medium can prove — no more, no less:
 
 ```
   adopted medium
-        │  SHA-256 of the payload as it exists now   ← Chunk.EncHash (ALWAYS known)
-        ▼
+        |  SHA-256 of the payload as it exists now   ← Chunk.EncHash (ALWAYS known)
+        v
   ADOPTED-VERIFIED package + a verified Copy on the operator's volume
 ```
 
@@ -337,8 +337,8 @@ throughput, memory, and search. Numbers on a Windows dev box (SSD):
 
 | Metric | Baseline (per-mutation, pretty JSON) | After this pass | Gate (≤ ~3s) |
 |---|---|---|---|
-| SAVE (marshal + atomic write) | 2.65 s | **0.83 s** | ✅ pass |
-| LOAD (`OpenStore`) | 5.11 s | **4.36 s** | ❌ over |
+| SAVE (marshal + atomic write) | 2.65 s | **0.83 s** | ✓ pass |
+| LOAD (`OpenStore`) | 5.11 s | **4.36 s** | ✗ over |
 | Insert 100k via `UpsertFile` | O(n²) — minutes | **0.27 s (~375k/s)** | — |
 | Adoption write cost (1000 mutations) | ~14 min if unbatched | **~2 writes total** | — |
 | Search (path / hash-prefix / ext) | — | **0.2–0.4 s** | — |
@@ -692,14 +692,14 @@ depend on Mnemosyne's Go code existing.
 ## Request/job lifecycle
 
 ```
-browser ──HTTP──▶ main.go handler ──▶ runJob(app, kind, label, fn)
-                                          │  spawns a goroutine, returns a Job id
-                                          ▼
+browser --HTTP--> main.go handler --> runJob(app, kind, label, fn)
+                                          |  spawns a goroutine, returns a Job id
+                                          v
                                     App method (BuildChunk / WriteChunk / …)
-                                          │  progress(f, msg) updates the Job
-                                          ▼
-                                    Store methods ──▶ atomic save to catalog.json
-browser ◀──poll GET /api/jobs── Job status (RUNNING/COMPLETED/FAILED)
+                                          |  progress(f, msg) updates the Job
+                                          v
+                                    Store methods --> atomic save to catalog.json
+browser <--poll GET /api/jobs-- Job status (RUNNING/COMPLETED/FAILED)
 ```
 
 Read-only calls (config, search, volume/drift reads) return synchronously;

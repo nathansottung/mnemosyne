@@ -53,14 +53,14 @@ You can also reach this from the **Vault** tab using the **Protection…** butto
 
 Once a profile is assigned, every file shows exactly one status. Each status is **always shown three ways at once — a colour, an icon, and words** — so it is easy to read even if colours are hard for you to tell apart. The six statuses are:
 
-- **UNASSIGNED** — gray ○ — no profile or no plan yet.
-- **NOT_BACKED_UP** — red ✕ — no verified copy exists. Not safe.
-- **PARTIAL** — amber ◐ — some of the goal is met, but not all.
-- **COMPLETE** — green ✓ — the full goal is met. This is what you want.
-- **OVER_COMPLETE** — blue ✓+ — more copies than the goal asks for. Extra safe.
-- **OUT_OF_POLICY** — purple ⚠ — something breaks the rules and needs attention.
+- **UNASSIGNED** — gray — no profile or no plan yet.
+- **NOT_BACKED_UP** — red — no verified copy exists. Not safe.
+- **PARTIAL** — amber — some of the goal is met, but not all.
+- **COMPLETE** — green — the full goal is met. This is what you want.
+- **OVER_COMPLETE** — blue — more copies than the goal asks for. Extra safe.
+- **OUT_OF_POLICY** — purple — something breaks the rules and needs attention.
 
-After your first backup, your archive will likely show **PARTIAL (amber ◐)**, because you have one copy but not yet three, two kinds, and one offsite.
+After your first backup, your archive will likely show **PARTIAL (amber)**, because you have one copy but not yet three, two kinds, and one offsite.
 
 An example PARTIAL message reads: **"2/3 copies · kinds ok · 0/1 offsite"**. Here is how to read that:
 
@@ -70,7 +70,7 @@ An example PARTIAL message reads: **"2/3 copies · kinds ok · 0/1 offsite"**. H
 
 ![A file showing PARTIAL status with the 2/3 copies message](../img/04-partial-status.png)
 
-The goal is to turn every part of that message green: 3/3 copies, kinds ok, and 1/1 offsite. When all parts are met, the status becomes **COMPLETE (green ✓)**.
+The goal is to turn every part of that message green: 3/3 copies, kinds ok, and 1/1 offsite. When all parts are met, the status becomes **COMPLETE (green)**.
 
 ---
 
@@ -83,7 +83,7 @@ More copies come from writing the same package to more volumes.
 2. Go to the **Packages** tab and click **Write to volume…** on your VERIFIED package.
    The write dialog opens.
 
-3. Click **📁 Browse…** and choose the second drive.
+3. Click **Browse…** and choose the second drive.
    The path appears in the box.
 
 4. **Register the second drive as a new Volume.** Give it a **label** (like `Backup Drive B`), a **kind**, a **location**, and an **Onsite/Offsite** choice.
@@ -126,14 +126,14 @@ Tip: update the volume's **location** text to match where it now lives (for exam
 ## How to know it worked
 
 - The archive uses the **3-2-1 Standard** profile (shown on the Protection tab).
-- Your files show **COMPLETE (green ✓)**, and the status message reads all-met: **3/3 copies · kinds ok · 1/1 offsite**.
+- Your files show **COMPLETE (green)**, and the status message reads all-met: **3/3 copies · kinds ok · 1/1 offsite**.
 - On the **Volumes** tab you can see three volumes, at least two of different **kinds**, and one marked **Offsite**.
 - Every copy that counts reached **VERIFIED** — remember, only verified copies count toward the goal.
 
 ## If something went wrong
 
-- **Status still shows PARTIAL (amber ◐).** Read the message. It tells you exactly what is missing — for example `2/3 copies` means make one more copy; `0/1 offsite` means mark a copy's volume Offsite (and physically move it).
-- **Status shows OUT_OF_POLICY (purple ⚠).** Something breaks the rules — for example, a required copy's volume can no longer be verified, or two copies are on the same kind of media when two kinds are required. Open the archive on the Protection tab to see the detail, then add or fix a copy.
+- **Status still shows PARTIAL (amber).** Read the message. It tells you exactly what is missing — for example `2/3 copies` means make one more copy; `0/1 offsite` means mark a copy's volume Offsite (and physically move it).
+- **Status shows OUT_OF_POLICY (purple).** Something breaks the rules — for example, a required copy's volume can no longer be verified, or two copies are on the same kind of media when two kinds are required. Open the archive on the Protection tab to see the detail, then add or fix a copy.
 - **A new copy did not raise the count.** Check the **Jobs** tab — the write may still be running or may have failed verify. Only a **VERIFIED** copy counts. Re-run **Write to volume…** if needed.
 - **"kinds ok" never appears.** Both your copies may be the same kind of media (for example two HDDs). Make one copy on a genuinely different kind — SSD, tape, or optical discs.
 - **You cannot mark a volume Offsite.** Make sure you opened the volume's **detail page** first, then look for **Mark offsite**. You can also set Onsite/Offsite when registering a volume during a write.

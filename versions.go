@@ -247,7 +247,7 @@ func (a *App) retainedVersionsMD() string {
 	}
 	var b strings.Builder
 	b.WriteString("\n## Files with multiple retained versions\n\n")
-	b.WriteString(fmt.Sprintf("%d file(s) below have changed since first archived. Mnemosyne never deleted the old bytes — they stay sealed in whatever package still holds them — so **every listed version remains restorable**. Each line is `vN · date · in PACKAGE on MEDIUM`; restore a specific one with Mnemosyne (file ▸ version) or by hand from the named package per `RESTORE_RUNBOOK.md`.\n\n", len(files)))
+	b.WriteString(fmt.Sprintf("%d file(s) below have changed since first archived. Mnemosyne never deleted the old bytes — they stay sealed in whatever package still holds them — so **every listed version remains restorable**. Each line is `vN · date · in PACKAGE on MEDIUM`; restore a specific one with Mnemosyne (file → version) or by hand from the named package per `RESTORE_RUNBOOK.md`.\n\n", len(files)))
 	for _, f := range files {
 		views := a.Store.FileVersions(f.ID)
 		b.WriteString("### `" + mdCell(f.RelPath) + "` — " + fmt.Sprintf("%d versions\n\n", len(views)))

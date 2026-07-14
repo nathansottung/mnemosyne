@@ -37,7 +37,7 @@ Scanning reads your files and records a "hash" for each one. A "hash" is a short
 1. On the `Family Photos` row, click **Scan folder…**.
    A dialog opens asking for a **"Folder to catalog (walked recursively; every file SHA-256 hashed)"**. "Walked recursively" just means it looks inside every subfolder too. "SHA-256" is the type of fingerprint it uses.
 
-2. Click **📁 Browse…** and choose the folder that holds the photos you want to back up.
+2. Click **Browse…** and choose the folder that holds the photos you want to back up.
    The folder's path appears in the box.
 
 3. Start the scan.
@@ -106,7 +106,7 @@ Writing copies the built package onto your physical drive. A "Copy" is one packa
 2. On the **Packages** tab, click **Write to volume…** on your STAGED package.
    A dialog opens.
 
-3. Click **📁 Browse…** and choose the destination folder or drive — your external drive.
+3. Click **Browse…** and choose the destination folder or drive — your external drive.
    The path appears in the box.
 
 4. Pick a **Volume**. Since this is your first drive, **register a new one right there**. Give it:

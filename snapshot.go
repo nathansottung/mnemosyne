@@ -109,7 +109,7 @@ func (a *App) driveReport(snap *VolumeSnapshot) DriveReport {
 	sort.Slice(rep.Roles, func(i, j int) bool { return rep.Roles[i].Bytes > rep.Roles[j].Bytes })
 	for _, r := range rep.Roles {
 		if r.Critical && r.Files > 0 {
-			rep.Notes = append(rep.Notes, fmt.Sprintf("⚠ %d CATALOG file(s) (%s) — edit/organizational state, not the photos; keep the originals, they are the archive.",
+			rep.Notes = append(rep.Notes, fmt.Sprintf("%d CATALOG file(s) (%s) — edit/organizational state, not the photos; keep the originals, they are the archive.",
 				r.Files, r.Role))
 		}
 	}
@@ -211,7 +211,7 @@ func (a *App) mirrorVerdict(snap *VolumeSnapshot, peers []DrivePeer) *MirrorVerd
 	}
 	if same {
 		mv.AtRisk = true
-		mv.Verdict = fmt.Sprintf("⚠ MIRROR of %s (%.0f%% identical), but redundancy is AT RISK — both copies are in %s. One incident there loses both.",
+		mv.Verdict = fmt.Sprintf("MIRROR of %s (%.0f%% identical), but redundancy is AT RISK — both copies are in %s. One incident there loses both.",
 			best.Label, best.IdenticalPct, locName)
 	} else {
 		mv.Verdict = fmt.Sprintf("✓ MIRROR of %s (%.0f%% identical) — a healthy offsite pair (%s vs %s).",

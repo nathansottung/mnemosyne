@@ -24,7 +24,7 @@ Big reassurance: making a Recovery Kit only **reads** from your archive and **wr
 3. Click **Export Recovery Kit…**.
    A window opens asking where to save the kit.
 
-4. Click **📁 Browse…** and choose an output folder — ideally on a **removable drive** like a USB stick, not inside any of your scanned source folders.
+4. Click **Browse…** and choose an output folder — ideally on a **removable drive** like a USB stick, not inside any of your scanned source folders.
    You should now see your chosen folder in the box.
 
 5. Start the export.

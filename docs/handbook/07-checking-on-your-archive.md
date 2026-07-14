@@ -73,12 +73,12 @@ white):
 
 | Colour | Status | What it means | What to do |
 |--------|--------|---------------|------------|
-| 🟢 Green | **COMPLETE ✓** | Fully backed up and verified, meeting your goal. | Nothing. You're good. |
-| 🔵 Blue | **OVER_COMPLETE ✓+** | More protected than your goal asks (e.g. an extra copy). | Nothing — this is a good "problem." |
-| 🟠 Amber | **PARTIAL ◐** | Backed up, but a gap remains (e.g. "2/3 copies · 0/1 offsite"). | Add whatever the message says is short. |
-| 🔴 Red | **NOT_BACKED_UP ✕** | No verified copy exists yet. | Back it up now. |
-| 🟣 Purple | **OUT_OF_POLICY ⚠** | A verify is overdue, or a copy sits on a medium you've disallowed. | Re-verify it, or move/replace the copy. |
-| ⚪ Gray | **UNASSIGNED ○** | No protection profile is set, so there's no goal to measure against. | Assign a profile on the **Protection** tab. |
+| Green | **COMPLETE** | Fully backed up and verified, meeting your goal. | Nothing. You're good. |
+| Blue | **OVER_COMPLETE** | More protected than your goal asks (e.g. an extra copy). | Nothing — this is a good "problem." |
+| Amber | **PARTIAL** | Backed up, but a gap remains (e.g. "2/3 copies · 0/1 offsite"). | Add whatever the message says is short. |
+| Red | **NOT_BACKED_UP** | No verified copy exists yet. | Back it up now. |
+| Purple | **OUT_OF_POLICY** | A verify is overdue, or a copy sits on a medium you've disallowed. | Re-verify it, or move/replace the copy. |
+| Gray | **UNASSIGNED** | No protection profile is set, so there's no goal to measure against. | Assign a profile on the **Protection** tab. |
 
 Work down the list by colour: clear the reds first (no copy at all), then the
 ambers (a gap), then the purples (overdue or out-of-policy), then any grays (give
@@ -104,7 +104,7 @@ You should now have every archive rescanned, every medium freshly verified, and 
 
 - Each medium you verified passed at level B (Full).
 - You ran **Rescan & compare** on every archive and acted on the drift report.
-- No **NOT_BACKED_UP ✕** (red) items remain unaddressed.
+- No **NOT_BACKED_UP** (red) items remain unaddressed.
 - Nothing is flagged **verify due** anymore.
 - You have a fresh date written down for the checkup.
 

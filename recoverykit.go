@@ -274,7 +274,7 @@ func writeVolumesTable(b *strings.Builder, volm map[int]*Volume) {
 		}
 		label := v.Label
 		if v.DriveEncrypted {
-			label += " ⚠🔒" // drive-level AES — flagged loud in the notes below
+			label += " (drive-encrypted)" // drive-level AES — flagged loud in the notes below
 		}
 		body.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n",
 			mdCell(label), mdCell(barcode), mdCell(v.Kind), mdCell(loc), mdCell(serial), mdCell(model), cap))
@@ -299,7 +299,7 @@ func writeVolumesTable(b *strings.Builder, volm map[int]*Volume) {
 		}
 	}
 	if len(enc) > 0 {
-		b.WriteString("\n> ### 🔒 DRIVE-ENCRYPTED MEDIA — READ THIS\n>\n> " + driveEncWarning + "\n>\n")
+		b.WriteString("\n> ### DRIVE-ENCRYPTED MEDIA — READ THIS\n>\n> " + driveEncWarning + "\n>\n")
 		for _, v := range enc {
 			line := "> - This medium **ALSO requires a drive-level key** — **" + mdCell(v.Label) + "**"
 			if v.Barcode != "" {
@@ -423,7 +423,7 @@ needs only widely-implemented, standardized, open-source tools — and for every
 step below there are **several independent programs** to choose from, so no
 single project going dark can strand your data.
 
-> ⚠️ **SECURITY WARNING**
+> **SECURITY WARNING**
 > %s
 >
 > The `+"`keys/`"+` folder holds, per key, a QR code and a **typable** backup of

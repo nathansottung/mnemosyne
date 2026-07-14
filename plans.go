@@ -735,7 +735,7 @@ func (a *App) ExecutePlanFromDrive(planID int, mountPath, serial string, progres
 		if streamHash != sf.Hash {
 			_ = os.Remove(tmp)
 			res.DriveDiffers++
-			a.Store.Log("plan", fmt.Sprintf("⚠ %s DIFFERS FROM ITS SNAPSHOT at %s — skipped to review", vol.Label, sf.RelPath))
+			a.Store.Log("plan", fmt.Sprintf("%s DIFFERS FROM ITS SNAPSHOT at %s — skipped to review", vol.Label, sf.RelPath))
 			continue
 		}
 		// Copy-then-verify: read the destination back before it gets its real name.

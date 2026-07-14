@@ -20,7 +20,7 @@ Here is how to set it:
 1. Click the **Settings** tab on the left.
    You should now see the settings page with boxes for folder paths.
 
-2. Under **Pipeline**, find the box labeled **"Staging folder (big + fast; the NAS itself is ideal)."** Click the **📁 Browse…** button next to it.
+2. Under **Pipeline**, find the box labeled **"Staging folder (big + fast; the NAS itself is ideal)."** Click the **Browse…** button next to it.
    A folder picker window opens.
 
 3. Pick a folder on a big, fast drive with plenty of free space. If you are not sure, make a new folder named something like `Mnemosyne-Staging` on your main drive and choose that.

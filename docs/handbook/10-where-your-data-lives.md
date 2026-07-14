@@ -58,4 +58,4 @@ While a long job runs (and after it finishes), the **Jobs** tab spells out what 
 ## Screenshots to capture
 
 - `../img/10-where-screen.png` — The "Where your data lives" screen, showing the writes table and the "never writes to" list.
-- `../img/10-jobs-writes.png` — A running job on the Jobs tab with its "✍ Writes:" line.
+- `../img/10-jobs-writes.png` — A running job on the Jobs tab with its "Writes:" line.

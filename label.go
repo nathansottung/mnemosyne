@@ -115,7 +115,7 @@ func volumeLabelHTML(v *Volume, barcodeText, labelW, labelH string) (string, err
 
 	note := ""
 	if v.DeviceNote != "" {
-		note = fmt.Sprintf(`<div class="note">⚠ %s</div>`, esc(v.DeviceNote))
+		note = fmt.Sprintf(`<div class="note"><b>Warning:</b> %s</div>`, esc(v.DeviceNote))
 	}
 
 	page := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8">
@@ -153,7 +153,7 @@ func volumeLabelHTML(v *Volume, barcodeText, labelW, labelH string) (string, err
   }
 </style></head><body>
 <div class="bar">
-  <button class="primary" onclick="window.print()">🖨 Print</button>
+  <button class="primary" onclick="window.print()">Print</button>
   <div class="grp"><span class="hint">Size:</span>
     <button onclick="setSize('2.25in','1.25in')">2.25×1.25″</button>
     <button onclick="setSize('4in','2in')">4×2″</button>

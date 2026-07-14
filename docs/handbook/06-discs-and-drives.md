@@ -93,7 +93,7 @@ A **mirror** copies an archive's files onto an external drive as ordinary, brows
 
 1. Open the **Vault** tab.
 2. Choose **Mirror backup…**.
-3. Pick the folders you want to copy. Every path box has a **📁 Browse…** button.
+3. Pick the folders you want to copy. Every path box has a **Browse…** button.
 4. Pick the target external drive as the destination.
 5. Start the mirror and watch the **Jobs** tab for progress, MB/s, and ETA.
 

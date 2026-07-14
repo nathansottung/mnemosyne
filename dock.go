@@ -211,7 +211,7 @@ func (a *App) IngestDrive(sessionID int, mountPath, serial, label, mode, level s
 			"needs_confirmation": true,
 			"volume_id":          vol.ID, "serial": vol.Serial, "label": vol.Label,
 			"health": health,
-			"message": "⚠ This drive may be failing — " + health.AdvisoryWhy + ". " +
+			"message": "Warning: This drive may be failing — " + health.AdvisoryWhy + ". " +
 				"Copy critical data off it first? Or continue the inventory anyway — the read is non-destructive and never writes to the drive.",
 		}, nil
 	}

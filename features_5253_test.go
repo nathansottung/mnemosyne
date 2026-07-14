@@ -61,7 +61,7 @@ func TestDriveEncryptionWarnsInKit(t *testing.T) {
 		t.Error("the recorded drive-key location should be surfaced")
 	}
 	// The safe (non-encrypted) tape should not be flagged.
-	if strings.Contains(md, "LTO-0008 ⚠") {
+	if strings.Contains(md, "LTO-0008 (drive-encrypted)") {
 		t.Error("a non-encrypted volume must not be flagged")
 	}
 }

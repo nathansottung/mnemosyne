@@ -141,8 +141,8 @@ single package**, not your whole archive. You set it on the **Settings** tab.
 
 ### Status (the six statuses)
 Each file gets exactly one, always shown as **colour + icon + words** together:
-**UNASSIGNED** (gray ○), **NOT_BACKED_UP** (red ✕), **PARTIAL** (amber ◐),
-**COMPLETE** (green ✓), **OVER_COMPLETE** (blue ✓+), **OUT_OF_POLICY** (purple ⚠).
+**UNASSIGNED** (gray), **NOT_BACKED_UP** (red), **PARTIAL** (amber),
+**COMPLETE** (green), **OVER_COMPLETE** (blue), **OUT_OF_POLICY** (purple).
 Only a fully verified copy counts toward reaching COMPLETE.
 
 ### tar

@@ -13,6 +13,23 @@ go vet ./...          # catches the usual mistakes
 gofmt -l .            # must print nothing — run `gofmt -w .` to fix
 ```
 
+**Pictograph check** (the emoji policy — only ✓ and ✗ are allowed anywhere):
+
+```bash
+# Prints any forbidden pictograph in the UI or docs. Must output nothing.
+# (Matches emoji, dingbats, box-drawing, and geometric shapes; excludes the
+#  permitted ✓ U+2713 and ✗ U+2717, and ordinary typography like — · … → ×.)
+python - <<'PY'
+import glob
+BAD=lambda o:((0x1F000<=o<=0x1FAFF)or(0x2600<=o<=0x27BF)or(0x2B00<=o<=0x2BFF)
+    or(0x2500<=o<=0x25FF))and o not in (0x2713,0x2717)
+for f in ['ui/index.html','README.md']+glob.glob('docs/**/*.md',recursive=True):
+    for n,line in enumerate(open(f,encoding='utf-8'),1):
+        hit=[c for c in line if BAD(ord(c))]
+        if hit: print(f"{f}:{n}: {''.join(sorted(set(hit)))}")
+PY
+```
+
 Cross-compile the release targets (all pure Go, `CGO_ENABLED=0`):
 
 ```bash
@@ -62,16 +79,31 @@ Match the surrounding code — it is intentional, not accidental:
   it. Typing a raw path by hand — v1's only option — is error-prone; the picker
   (backed by the read-only `GET /api/browse`) is the default, while the field
   stays editable so a not-yet-existing folder can still be typed.
-- **Protection status is ALWAYS colour + icon + text label together — never
-  colour alone.** The six statuses (`UNASSIGNED` ○, `NOT_BACKED_UP` ✕, `PARTIAL`
-  ◐, `COMPLETE` ✓, `OVER_COMPLETE` ✓+, `OUT_OF_POLICY` ⚠) each pair a colour with
-  an icon *and* a text label everywhere they appear (dashboard counts, workbench
-  tree dots, drift report, search results). Colour alone fails for colour-blind
-  users and in grayscale print — so it is not allowed. Use the `protBadge()`
-  helper; do not hand-roll a coloured dot. The palette is fixed: `ok #2E5E4E`,
-  `warn #9A6B1F`, `bad #A03123`, `idle #8A938C`, plus blue `#1E3D8F`
-  (over-complete) and purple `#6B2D86` (out-of-policy). **Introduce no other
-  status colours anywhere.**
+- **Protection status is ALWAYS colour + shape + text label together — never
+  colour alone.** The six statuses (`UNASSIGNED`, `NOT_BACKED_UP`, `PARTIAL`,
+  `COMPLETE`, `OVER_COMPLETE`, `OUT_OF_POLICY`) each pair a colour with a small
+  CSS-drawn dot (the shape) *and* a text label everywhere they appear (dashboard
+  counts, workbench tree dots, drift report, search results). Colour alone fails
+  for colour-blind users and in grayscale print — so it is not allowed. The
+  "shape" is drawn in CSS, never an OS emoji (see the pictograph policy below).
+  Use the `protBadge()` helper; do not hand-roll a coloured dot. The palette is
+  fixed: `ok #2E5E4E`, `warn #9A6B1F`, `bad #A03123`, `idle #8A938C`, plus blue
+  `#1E3D8F` (over-complete) and purple `#6B2D86` (out-of-policy). **Introduce no
+  other status colours anywhere.**
+- **Pictographs & emoji: only a checkmark (✓) and a cross (✗) are permitted,
+  anywhere in the product** — UI, tooltips, help lines, toasts, job labels, empty
+  states, docs, README, and handbook. `✓` means success/verified; `✗` means
+  failure. No other emoji or decorative glyph — no folder, printer, writing-hand,
+  book, package, or magnet emoji; no coloured squares or circles; no arrows used
+  as icons. OS emoji render differently on every platform and cheapen the
+  professional register, so they are banned. The permitted pair is written as
+  plain text glyphs (or inline SVG); everything else that used to be an emoji
+  becomes either colour + text, a CSS-drawn shape, or just words. **Warnings**
+  follow the colour + shape + text rule: amber (`--warn`) plus the word
+  **"Warning:"** — never a warning-sign emoji. Enforcement: `grep` the UI and
+  docs for pictographs and confirm only `✓`/`✗` remain (see the check in
+  `## Build & check`). Plain typography — em dash, middle dot, ellipsis, the
+  arrows, and math signs — is not a pictograph and is fine.
 - **Line endings are normalized by `.gitattributes`.** The repo root carries a
   `.gitattributes` with `* text=auto` plus explicit `eol=lf` for `*.go`, `*.md`,
   and `*.html`, and `eol=crlf` for `*.bat` (so `cmd.exe` parses batch files

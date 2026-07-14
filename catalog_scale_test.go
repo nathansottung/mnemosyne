@@ -170,7 +170,7 @@ func fakeHash(i int) string {
 func round(d time.Duration) string { return d.Round(time.Millisecond).String() }
 func gate(d time.Duration) string {
 	if d > 3*time.Second {
-		return "OVER 3s ⚠"
+		return "OVER 3s"
 	}
 	return "ok"
 }

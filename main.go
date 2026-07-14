@@ -60,7 +60,7 @@ func main() {
 	app := &App{DataDir: *dataDir, Store: store}
 	setHashAccel(app.LoadConfig().HashAccel) // apply the persisted hash-acceleration preference at startup
 	if ro, why := store.ReadOnly(); ro {
-		log.Printf("⚠ READ-ONLY: %s", why)
+		log.Printf("READ-ONLY: %s", why)
 	}
 
 	// The bearer token: env MNEMO_AUTH_TOKEN wins (container-friendly), else the

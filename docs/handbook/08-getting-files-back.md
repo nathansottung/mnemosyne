@@ -28,10 +28,10 @@ Use this when you deleted or lost a single file and you know which package it li
    A restore window opens.
    ![The restore window](../img/08-restore-window.png)
 
-4. In the box labeled **Source (package folder on the medium; blank = recorded location)**, click **📁 Browse…** and point to the package folder on your drive. If you leave it blank, Mnemosyne uses the location it remembers.
+4. In the box labeled **Source (package folder on the medium; blank = recorded location)**, click **Browse…** and point to the package folder on your drive. If you leave it blank, Mnemosyne uses the location it remembers.
    You should now see the source path filled in (or left blank on purpose).
 
-5. In the box labeled **Restore into**, click **📁 Browse…** and pick a **new, empty folder** to receive the file — for example a folder called `Restored` on your desktop. **Never** pick one of your original folders.
+5. In the box labeled **Restore into**, click **Browse…** and pick a **new, empty folder** to receive the file — for example a folder called `Restored` on your desktop. **Never** pick one of your original folders.
    You should now see your chosen output folder in the box.
 
 6. In the box labeled **Only these paths (optional, one per line)**, type the path of the single file you want, exactly as it appears in the package. For example: `photos/2019/beach.jpg`. One file per line.
@@ -134,7 +134,7 @@ This rebuilds Mnemosyne's catalog (its list of what you have and where) **from t
 3. Plug in your first backup drive (or load the disc/tape) so it mounts.
    You should now see it appear on your computer as a drive letter or folder.
 
-4. Click the **Volumes** tab, then click **Adopt media…** and point it (with **📁 Browse…**) at that drive's mount, choosing the archive from step 2.
+4. Click the **Volumes** tab, then click **Adopt media…** and point it (with **Browse…**) at that drive's mount, choosing the archive from step 2.
    You should now see an adoption job start — check the **Jobs** tab.
 
 5. Wait for it to finish, then repeat step 3 and 4 for **each** backup drive, disc, or tape you own.

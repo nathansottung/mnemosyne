@@ -312,10 +312,10 @@ func (a *App) writeFinalizeSidecar(mountPath string, v *Volume, as finalizeAsses
 	}
 	b.WriteString(fmt.Sprintf("- **Packages:** %d · **On-medium bytes:** %s\n", fin.Packages, humanBytes(fin.Bytes)))
 	if fin.Forced {
-		b.WriteString(fmt.Sprintf("- **⚠ FORCED seal:** %s — overriding: %s\n", fin.ForceReason, strings.Join(fin.Overrides, "; ")))
+		b.WriteString(fmt.Sprintf("- **FORCED seal:** %s — overriding: %s\n", fin.ForceReason, strings.Join(fin.Overrides, "; ")))
 	}
 	if v.DriveEncrypted {
-		b.WriteString("\n> ### 🔒 DRIVE-ENCRYPTED\n>\n> " + driveEncWarning + "\n")
+		b.WriteString("\n> ### DRIVE-ENCRYPTED\n>\n> " + driveEncWarning + "\n")
 		if v.DriveEncNote != "" {
 			b.WriteString(">\n> Drive key: " + v.DriveEncNote + "\n")
 		} else {

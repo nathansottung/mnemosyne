@@ -23,7 +23,7 @@ in which house — each verified copy lives on.
 
 ---
 
-## 📖 New here? Start with the Handbook
+## New here? Start with the Handbook
 
 **Not a developer? [Read the User Handbook →](docs/handbook/00-what-is-this.md)**
 — a plain-language, task-based guide written for a careful novice (a photographer,
@@ -250,7 +250,7 @@ different location and the package is fully protected.
 
 Mnemosyne follows the life of your data. Each step earns its place:
 
-### 📇 Catalog
+### Catalog
 - **Scan** SHA-256-hashes every file at the source — *because a backup you
   can't prove is intact is just hope; the source hash is the root of the
   custody chain.*
@@ -258,7 +258,7 @@ Mnemosyne follows the life of your data. Each step earns its place:
   hold it — *because in 15 years the only question that matters is "where are
   the Smiths' files?"*
 
-### 📦 Package
+### Package
 - **Plan** groups files into media-sized **packages** (folder-aware, parity-
   budgeted) — *because a package is the OAIS "archival unit": self-contained,
   one per medium, independently restorable.*
@@ -289,7 +289,7 @@ Mnemosyne follows the life of your data. Each step earns its place:
   eject-and-continue and full reboot-resume — *because a 200 GB package
   shouldn't be un-backup-able just because your discs are 100 GB.*
 
-### 🪞 Mirror — the browsable complement to packages
+### Mirror — the browsable complement to packages
 
 Mnemosyne backs up two ways, and they are peers — every archive can have both:
 
@@ -322,7 +322,7 @@ Mnemosyne backs up two ways, and they are peers — every archive can have both:
   the live, browsable form for the spinning drive on the shelf.* Use whichever
   fits the medium — or both, for belt-and-suspenders.
 
-### ✍️ Write
+### ️ Write
 - **RAM ring buffer** decouples reading from writing so a slow tape never
   starves — *because tape and optical punish stop-start writes.*
 - **Throttle (MB/s)** caps the write rate — *because sustained writes cook
@@ -331,7 +331,7 @@ Mnemosyne backs up two ways, and they are peers — every archive can have both:
 - **Read-back verify** re-hashes what actually landed on the medium — *because
   "the write returned success" is not the same as "the bytes are on the disc."*
 
-### ✅ Verify
+### ✓ Verify
 
 Every hop of the custody chain is now independently proven — nothing is trusted
 transitively:
@@ -363,7 +363,7 @@ source → [contents-verified] tar → [roundtrip-verified] ciphertext
   verified copies as *under-protected* — *because two copies in two locations
   is the actual goal, and gaps should be visible at a glance.*
 
-### 🎛 How much integrity do I need?
+### How much integrity do I need?
 
 Mnemosyne has many independent integrity knobs — build-verify depth, par2
 redundancy, routine verify level, the re-verify window, read-back. Rather than
@@ -400,7 +400,7 @@ integrity settings used at build/write time (in the `build_verified` block), so
 the media self-document how much assurance they were created with — a FAST-built
 package says so, on the medium, decades from now.
 
-### 🎚 Tiered verification — levels A / B / C
+### Tiered verification — levels A / B / C
 
 Re-hashing a 100 TB mirror set in full, on a schedule, is often impractical — so
 verification has three levels, letting you trade cost against assurance **without
@@ -426,7 +426,7 @@ a cheap check can never be mistaken for a full one. (Level C hashes only the fir
 and last 4 MiB, so a mid-file corruption is invisible to it by design; that is
 exactly why C can't satisfy `COMPLETE`.)
 
-### 🛡 Protection profiles & the six-status model
+### Protection profiles & the six-status model
 
 3-2-1 is not one number — it has **three dimensions**: **three copies**, on
 **two distinct kinds of media**, with **one offsite**. A *Profile* expresses all
@@ -460,16 +460,16 @@ example: Archive **Photography** on *3-2-1 Standard*, with its subfolder
 
 **Every file gets exactly one of six statuses** (folders take the worst status
 among their children), evaluated across all three dimensions. Status is **always
-shown as colour + icon + text label together — never colour alone**:
+shown as colour + shape + text label together — never colour alone**:
 
-| Status | Meaning | Colour | Icon |
+| Status | Meaning | Colour | Shape |
 |---|---|---|---|
-| UNASSIGNED | no profile resolves | `#8A938C` gray | ○ |
-| NOT_BACKED_UP | 0 qualifying copies | `#A03123` red | ✕ |
-| PARTIAL | some protection, but at least one dimension short — the UI states which, e.g. "2/3 copies · kinds ok · 0/1 offsite" | `#9A6B1F` amber | ◐ |
-| COMPLETE | all three dimensions met, all verifies current | `#2E5E4E` green | ✓ |
-| OVER_COMPLETE | exceeds requirements | `#1E3D8F` blue | ✓+ |
-| OUT_OF_POLICY | copies on disallowed media kinds, verifies older than `verify_due_months`, or a profile/assignment change invalidated prior compliance | `#6B2D86` purple | ⚠ |
+| UNASSIGNED | no profile resolves | `#8A938C` gray | dot |
+| NOT_BACKED_UP | 0 qualifying copies | `#A03123` red | dot |
+| PARTIAL | some protection, but at least one dimension short — the UI states which, e.g. "2/3 copies · kinds ok · 0/1 offsite" | `#9A6B1F` amber | dot |
+| COMPLETE | all three dimensions met, all verifies current | `#2E5E4E` green | dot |
+| OVER_COMPLETE | exceeds requirements | `#1E3D8F` blue | dot |
+| OUT_OF_POLICY | copies on disallowed media kinds, verifies older than `verify_due_months`, or a profile/assignment change invalidated prior compliance | `#6B2D86` purple | dot |
 
 Any profile edit, assignment change, or volume offsite-flag change triggers a
 **status recomputation job** that surfaces newly `OUT_OF_POLICY` / `PARTIAL`
@@ -498,7 +498,7 @@ To make your own, **duplicate** the closest built-in and adjust the three
 dimensions (and, if you care, restrict the allowed media kinds so a copy landing
 on the wrong medium reads as `OUT_OF_POLICY`).
 
-### 🔒 Finalize — close the box and label it
+### Finalize — close the box and label it
 
 There's a moment in every archival workflow that software usually skips: the
 *ceremony* of declaring a volume **done**. You've written the copies, verified
@@ -533,11 +533,11 @@ On success the ceremony:
 4. opens the **printable label** as the last step — close the box, print the
    label, shelve it.
 
-The Volumes view shows sealed volumes distinctly (a blue 🔒 SEALED tag), and the
+The Volumes view shows sealed volumes distinctly (a blue SEALED tag), and the
 volume page carries the full seal/unseal history. Unsealing is one click, needs a
 reason, and is logged — because re-opening a sealed box should leave a mark.
 
-### 🗂 Format sustainability — will you still open these in 2050?
+### Format sustainability — will you still open these in 2050?
 
 A perfectly-verified copy is worthless if nothing can *read* the file. So
 Mnemosyne keeps an **editable format registry** and shows a **per-archive
@@ -582,7 +582,7 @@ Kit (`FORMATS.md`) and every volume inventory sidecar — so *"which tools open 
 `formats.json` in the data dir to correct or extend it (entries merge by
 extension, yours winning).
 
-### 🎚 Roles & starter templates — any creative discipline
+### Roles & starter templates — any creative discipline
 
 Photography is one profile among peers, not the assumption. Alongside the longevity
 tier, the registry tags each extension with a **role** — a small, discipline-neutral
@@ -618,7 +618,7 @@ like `smartctl`: present, a musician's or filmmaker's library clusters into sess
 date the way a photographer's does; absent, those fields are simply empty and ingest
 never fails.
 
-### 🔎 Find & track
+### Find & track
 - **Adopt existing media** — catalog archives written *before* Mnemosyne (or by
   hand with `tar`+`par2`) without rewriting a byte. Point **Volumes → Adopt
   media…** at a mount; every `*.tar` / `*.tar.gpg` payload is hashed and recorded
@@ -696,15 +696,15 @@ never fails.
   MOVED, per file-type — *because you need to know a `.NEF` went missing, and
   not be drowned in expected `.xmp` churn.*
 
-### 🗺 Treemap — where is my *risk*
+### Treemap — where is my *risk*
 
 A disk-usage treemap you already know from tools like WizTree — rectangles sized
 by bytes — but **colored by protection risk instead of by folder.** Open it from
 any Archive card (or the **Treemap** tab in the Archive workbench): every folder
 and file is a rectangle whose area is its bytes and whose fill is its
 protection status (the same six colors used everywhere else —
-🟥 not backed up, 🟧 partial, 🟩 complete, 🟦 over-complete, 🟪 out-of-policy,
-⬜ unassigned), a folder taking the worst status of anything inside it. Hover for
+not backed up, partial, complete, over-complete, out-of-policy,
+unassigned), a folder taking the worst status of anything inside it. Hover for
 name + size + status (color **and** icon **and** text — never color alone); click
 a folder to zoom in, breadcrumb to zoom back out; the legend tallies bytes per
 status for the level you're looking at. It is computed **entirely from the
@@ -717,7 +717,7 @@ my risk?"* at a glance.
 
 <!-- SCREENSHOT: docs/img/treemap.png — Archive treemap, one large red (NOT_BACKED_UP) block dominating a field of green, drift toggle top-right -->
 
-### 🧲 Dock — ingest a stack of legacy drives
+### Dock — ingest a stack of legacy drives
 - **Guided, resumable, hands-off.** Pick the Archive(s) to reconcile against,
   then dock old backup drives one at a time. Mnemosyne **watches** for each
   newly-inserted drive (polling mounts, diffed against session start) and, on one
@@ -743,7 +743,7 @@ my risk?"* at a glance.
   hashed* for comparison; the one write onto media is the drive's own sidecar,
   guarded so it can never touch a source path. The view says so plainly.
 
-### 🔓 Restore
+### Restore
 - **Three-command restore**, documented on every medium in `RESTORE.txt` —
   *because the whole point is that you (or a stranger) can get the data back
   with `par2`/`gpg`/`tar` alone, no Mnemosyne required.*
@@ -756,7 +756,7 @@ my risk?"* at a glance.
 
 ---
 
-### 🕰 Version retention
+### Version retention
 
 Mnemosyne **never had the power to delete an old version of a file.** Once bytes
 are sealed into a package on a tape or disc, they are there for good — that is the
@@ -789,7 +789,7 @@ pretending otherwise.
 
 ---
 
-### 🗑 Quarantine — never delete, made usable
+### Quarantine — never delete, made usable
 
 Mnemosyne has no delete button and never will — but "you can't remove anything" is
 only livable if there's *some* way to get a stray or superseded file out of the way.
@@ -990,7 +990,7 @@ every disc's `RESTORE.txt` says so in plain words, and the three-tool restore
 
 ## Screenshots
 
-> 📸 **Placeholders — capture these and drop them in [`docs/img/`](docs/img/).**
+> **Placeholders — capture these and drop them in [`docs/img/`](docs/img/).**
 > See [`docs/img/README.md`](docs/img/README.md) for the shot list.
 
 | | |
@@ -1043,7 +1043,7 @@ and links each unchecked step to the exact spot.
   box: a QR to scan *and* a retypable character grid (groups of 4, a **CRC-16**
   per line, and the whole passphrase proven by its SHA-256 fingerprint) so a
   human with only a keyboard can still key it in and confirm it's right. QR and
-  typed forms are the **same secret** — and *Keys ▸ Enter key from sheet* verifies
+  typed forms are the **same secret** — and *Keys > Enter key from sheet* verifies
   a retyped passphrase against the catalog without ever revealing it. (These are
   symmetric AES-256 passphrases, not GPG keypairs, so `paperkey` doesn't apply —
   the printable backup is the passphrase itself.)
